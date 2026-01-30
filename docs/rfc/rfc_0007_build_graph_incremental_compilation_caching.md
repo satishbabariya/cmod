@@ -12,6 +12,8 @@ Primary goals:
 - Safe reuse of compiled artifacts
 - Predictable rebuild triggers
 
+This RFC focuses on the **build graph data model and caching**, while RFC-0004 defines the **Build Plan IR** for execution planning. Together they provide a complete build system: this RFC constructs the module dependency graph and handles caching, then RFC-0004 converts it into an executable build plan.
+
 ---
 
 ## Motivation
@@ -208,8 +210,20 @@ Result:
 
 ---
 
+## Relationship to RFC-0004
+
+This RFC (RFC-0007) defines the **Build Graph Model** for construction and caching, while RFC-0004 defines the **Build Plan IR** for execution planning:
+
+- **RFC-0007**: Module DAG, cache layout, incremental rules
+- **RFC-0004**: BuildNode DAG, execution order, compiler interface
+
+The build graph (this RFC) represents the **what** (module dependencies), while the Build Plan IR (RFC-0004) represents the **how** (compilation steps).
+
+---
+
 ## Next RFCs
 
+- RFC-0004: Build Plan IR & Module Graph Execution (complementary)
 - RFC-0008: Toolchains, Targets & Cross-compilation
 - RFC-0009: Security, Trust & Supply Chain
 - RFC-0010: IDE Integration & Developer Experience

@@ -4,16 +4,16 @@
 Draft
 
 ## Summary
-This RFC proposes **`cmargo`** (working name): a Cargo-inspired, cross-platform tool for building, managing, and distributing **C++20+ modules** using **LLVM/Clang** as the reference frontend.
+This RFC proposes **`cmod`** (working name): a Cargo-inspired, cross-platform tool for building, managing, and distributing **C++20+ modules** using **LLVM/Clang** as the reference frontend.
 
 The goal is to make C++ modules feel as ergonomic as Rust crates:
 
 ```bash
-cmargo init
-cmargo build
-cmargo add fmt
-cmargo test
-cmargo publish
+cmod init
+cmod build
+cmod add fmt
+cmod test
+cmod publish
 ```
 
 while respecting C++ realities: multiple compilers, ABI variance, and source-based distribution.
@@ -64,7 +64,7 @@ LLVM is the **only realistic neutral foundation**.
 
 ```
 ┌─────────┐
-│ cmargo  │ CLI / UX
+│  cmod   │ CLI / UX
 └────┬────┘
      │
 ┌────▼────────────┐
@@ -92,7 +92,7 @@ LLVM is the **only realistic neutral foundation**.
 
 ```
 my_math/
-├── cmargo.toml
+├── cmod.toml
 ├── src/
 │   ├── lib.cppm
 │   ├── algebra.cppm
@@ -100,7 +100,9 @@ my_math/
 └── tests/
 ```
 
-### `cmargo.toml`
+### `cmod.toml`
+
+See **RFC-UNIFIED** for the complete schema specification. Example minimal configuration:
 
 ```toml
 [package]
@@ -108,11 +110,12 @@ name = "my_math"
 version = "0.1.0"
 edition = "2030"
 
-[modules]
+[module]
+name = "com.github.user.my_math"
 root = "src/lib.cppm"
 
 [dependencies]
-fmt = "^10.2"
+github.com/fmtlib/fmt = "^10.2"
 
 [toolchain]
 compiler = "clang"
@@ -163,7 +166,7 @@ hash(
 ### Cache Layout
 
 ```
-~/.cmargo/cache/
+~/.cmod/cache/
 └── clang-18.1.2/
     └── x86_64-apple-darwin/
         └── <hash>.pcm
@@ -177,7 +180,7 @@ Safe, deterministic, and parallel-friendly.
 
 ### Decentralized Git-based Modules (Go-style)
 
-`cmargo` **does not use a centralized registry**.
+`cmod` **does not use a centralized registry**.
 
 Instead, every dependency is a **Git repository** identified by its import path, similar to Go modules.
 
@@ -200,15 +203,16 @@ Key properties:
 
 ### Module Identity = Import Path
 
-A module’s **canonical identity** is its Git URL + module name:
+A module's **canonical identity** is its Git URL + module name:
 
 ```cpp
-export module github.fmt.fmt;
-export module satyavis.math.core;
+export module github.fmtlib.fmt;
+export module com.satyavis.math.core;
 ```
 
 Rules:
-- Domain-based prefix (reverse-DNS style)
+- Reverse-domain prefix derived from Git URL
+- Full repository path included
 - Prevents global name collisions
 - Stable across forks
 
@@ -223,14 +227,14 @@ Rules:
 v0.0.0-20260128-a1b2c3d
 ```
 
-- `cmargo.lock` pins exact commits
+- `cmod.lock` pins exact commits
 
 ---
 
 ### Offline & Vendoring
 
 ```bash
-cmargo vendor
+cmod vendor
 ```
 
 - Dependencies copied into `vendor/`
@@ -261,8 +265,8 @@ Planned:
 
 ## Interop with CMake
 
-- `cmargo build --emit-cmake`
-- `cmargo vendor`
+- `cmod build --emit-cmake`
+- `cmod vendor`
 
 Allows incremental adoption.
 
@@ -283,7 +287,7 @@ Allows incremental adoption.
 | CMake | ❌ | ⚠️ | ❌ |
 | vcpkg | ⚠️ | 🙂 | ❌ |
 | build2 | ✅ | ⚠️ | ❌ |
-| **cmargo** | ✅ | ⭐⭐⭐⭐ | ✅ |
+| **cmod** | ✅ | ⭐⭐⭐⭐ | ✅ |
 
 ---
 
@@ -298,7 +302,7 @@ Allows incremental adoption.
 ## Future Work
 
 - Language server integration
-- `cmargo fmt`, `cmargo doc`
+- `cmod fmt`, `cmod doc`
 - WASM target support
 
 ---
@@ -317,5 +321,5 @@ Allows incremental adoption.
 C++ modules need **opinionated tooling**.
 LLVM gives us the foundation.
 
-`cmargo` aims to do for C++ modules what Cargo did for Rust crates.
+`cmod` aims to do for C++ modules what Cargo did for Rust crates.
 

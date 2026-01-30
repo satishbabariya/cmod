@@ -159,6 +159,7 @@ version = "0.8.0"
 
 ## Next RFCs
 
-- RFC-0020: Lockfiles & Reproducible Builds
-- RFC-0021: Binary Artifacts & Distributed Caches
-- RFC-0022: Security, Signing & Supply-Chain Integrity
+- RFC-0003: Lockfiles & Reproducible Builds (already exists)
+- RFC-0005: Binary Artifacts & Distributed Build Caches (already exists)
+- RFC-0009: Security, Trust & Supply-Chain Integrity (already exists)
+- RFC-UNIFIED: Unified cmod.toml Schema Specification

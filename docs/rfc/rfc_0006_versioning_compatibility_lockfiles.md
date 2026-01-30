@@ -46,12 +46,15 @@ This aligns with SemVer, but ABI is first-class.
 
 ## Version Declaration
 
-Each module declares its version in `cmod.toml`:
+Each module declares its version in `cmod.toml` (see **RFC-UNIFIED** for complete schema):
 
 ```toml
+[package]
+name = "math"
+version = "1.4.2"
+
 [module]
 name = "github.com/acme/math"
-version = "1.4.2"
 
 [compat]
 cpp = ">=20"
@@ -115,16 +118,36 @@ Example:
 [[package]]
 name = "github.com/acme/math"
 version = "1.4.2"
-commit = "a13f9c2"
 source = "git"
-compiler = "clang-18"
+repo = "https://github.com/acme/math"
+commit = "a13f9c2"
+hash = "sha256:..."
+
+[package.toolchain]
+compiler = "clang"
+version = "18.1.0"
 stdlib = "libc++"
-platform = "macos-arm64"
+
+[package.targets]
+x86_64-linux-gnu = {}
+macos-arm64 = {}
 
 [[package]]
 name = "github.com/acme/geo"
 version = "0.9.4"
+source = "git"
+repo = "https://github.com/acme/geo"
 commit = "e92bb11"
+hash = "sha256:..."
+
+[package.toolchain]
+compiler = "clang"
+version = "18.1.0"
+stdlib = "libc++"
+
+[package.targets]
+x86_64-linux-gnu = {}
+macos-arm64 = {}
 ```
 
 Properties:

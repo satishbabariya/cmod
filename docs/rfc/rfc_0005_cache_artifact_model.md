@@ -1,257 +1,169 @@
-# RFC-0005: Cache & Artifact Model
+# RFC-0005: Binary Artifacts & Distributed Build Caches
 
 ## Status
 Draft
 
 ## Summary
-This RFC defines the **cache and artifact model** for `cmod`, specifying how compiler outputs—especially **C++ module artifacts (PCMs/BMIs)**—are stored, reused, invalidated, and shared safely.
-
-The cache model is designed to be:
-- Correct by construction
-- Compiler- and flag-specific
-- Deterministic
-- CI- and enterprise-friendly
+This RFC defines **binary artifact generation, caching, and distributed reuse** in **cmod**. The goal is to dramatically reduce build times by reusing previously built module artifacts while preserving correctness, reproducibility, and safety.
 
 ---
 
 ## Motivation
 
-C++ module artifacts introduce new constraints:
+C++ module builds are expensive due to:
+- Large translation units
+- Repeated template instantiations
+- Rebuilding identical dependencies across machines
 
-- PCMs are **not portable** across compilers
-- Often not portable across compiler *versions*
-- Sensitive to flags, target triples, and standard libraries
-
-Incorrect reuse leads to:
-- ODR violations
-- Silent miscompilations
-- Non-reproducible builds
-
-`cmod` therefore treats cache correctness as a **hard requirement**, not a best-effort optimization.
+Modern workflows (CI, monorepos, remote teams) require fast, cacheable builds similar to:
+- Cargo incremental + shared caches
+- Bazel remote cache
 
 ---
 
-## Design Goals
+## Goals
 
-1. Never reuse an incompatible artifact
-2. Maximize safe reuse within a workspace
-3. Enable fast CI rebuilds
-4. Keep cache logic independent of resolution and planning
-5. Make cache behavior inspectable and debuggable
+- Reuse compiled module artifacts safely
+- Support local and remote caches
+- Be transparent to developers
+- Integrate with lockfiles and toolchains
 
 ## Non-Goals
 
-- Sharing binary compatibility across compilers
-- Solving ABI stability
-- Long-term artifact archival
+- Caching final application binaries
+- Hiding ABI incompatibilities
+- Replacing full build systems
 
 ---
 
-## Artifact Types
+## Cached Artifact Types
 
-`cmod` recognizes the following artifact categories:
+`cmod` may cache:
+- C++ module BMIs (Binary Module Interfaces)
+- Compiled object files
+- Precompiled headers (if used)
+- Dependency metadata
 
-| Artifact | Description |
-|--------|-------------|
-| PCM/BMI | Compiled module interface |
-| OBJ | Object file |
-| LIB | Static or shared library |
-| BIN | Executable |
-
-Only **PCMs and OBJs** are cached by default.
+Artifacts are always associated with **exact build inputs**.
 
 ---
 
-## Cache Scope
+## Cache Key Design
 
-### Local Cache (Default)
-
-```text
-~/.cmod/cache/
-└── clang-18.1.2/
-    └── x86_64-apple-darwin/
-        └── <hash>/
-            ├── module.pcm
-            └── module.obj
-```
-
-Properties:
-- User-local
-- Compiler-specific
-- Target-specific
-- Safe by default
-
----
-
-### Workspace Cache (Optional)
-
-```text
-.project/.cmod/cache/
-```
-
-Properties:
-- Faster rebuilds within repo
-- Not shared across machines
-- Ignored by VCS
-
----
-
-### CI Cache (Explicit)
-
-CI systems MAY persist the local cache directory **verbatim**.
-
-Rules:
-- Cache keys must include compiler version
-- Cache restores are advisory, not authoritative
-
----
-
-## Cache Keys
-
-Each artifact is indexed by a **content-addressed cache key**:
+A cache key is derived from:
+- Module source hash
+- Dependency graph hash (from `cmod.lock`)
+- Compiler identity + version
+- Standard library
+- Target triple
+- Enabled features and flags
 
 ```
-hash(
-  source-content,
-  module-name,
-  compiler-id,
-  compiler-version,
-  stdlib-id,
-  target-triple,
-  compilation-flags,
-  dependent-artifact-hashes
+cache_key = hash(
+  module_sources,
+  dependency_lock,
+  toolchain,
+  target,
+  features
 )
 ```
 
-Properties:
-- Immutable
-- Deterministic
-- Collision-resistant
+Any mismatch invalidates the cache entry.
 
 ---
 
-## Cache Read Rules
+## Local Cache
 
-Before executing a BuildNode:
+- Default cache location: `~/.cache/cmod/`
+- Shared across projects and workspaces
+- LRU eviction strategy
 
-1. Compute cache key
-2. Check local cache
-3. Validate artifact integrity
-4. Use artifact if present
-
-If validation fails, artifact is discarded.
-
----
-
-## Cache Write Rules
-
-After successful node execution:
-
-1. Write artifact to temporary path
-2. Verify outputs
-3. Atomically commit to cache
-
-Partial or failed outputs are never cached.
-
----
-
-## Cache Invalidation
-
-Cache entries are invalidated implicitly by key mismatch.
-
-Explicit invalidation commands:
-
-```bash
-cmod cache clean
-cmod cache gc
+Commands:
 ```
-
-Rules:
-- No manual deletion required
-- Old artifacts are garbage-collected
-
----
-
-## PCM-Specific Rules
-
-### Strict Isolation
-
-PCMs:
-- Are never reused across compiler backends
-- Are never reused across compiler versions
-- Are never reused across standard libraries
-
----
-
-### No PCM Distribution
-
-`cmod` **does not distribute PCMs** via Git or registries.
-
-Rationale:
-- Unsafe
-- Non-portable
-- Difficult to validate
-
----
-
-## Determinism Guarantees
-
-Given:
-- Same source tree
-- Same `cmod.lock`
-- Same compiler + flags
-
-`cmod` guarantees:
-- Identical cache keys
-- Identical build plans
-- Identical final artifacts
-
----
-
-## Debugging & Introspection
-
-```bash
 cmod cache status
-cmod cache explain <module>
+cmod cache clean
 ```
 
-Provides:
-- Cache hit/miss reasons
-- Artifact provenance
-- Dependency hash breakdown
+---
+
+## Remote Cache
+
+Remote caches are **optional** and explicitly configured.
+
+```toml
+[cache]
+remote = "https://cache.acme.internal"
+mode = "read-write"
+```
+
+Supported modes:
+- `read-only`
+- `read-write`
+- `off`
+
+---
+
+## Upload & Download Policy
+
+- Artifacts are uploaded only after successful builds
+- Downloads require cache key match
+- Corrupt artifacts are discarded automatically
+
+---
+
+## CI Integration
+
+Typical CI flow:
+```
+cmod build --locked
+```
+
+- CI nodes pull artifacts from remote cache
+- Builds populate cache for future runs
+
+---
+
+## Workspace Behavior
+
+- Workspace modules share cache entries
+- Cross-module reuse enabled when keys match
+- Parallel cache fetch supported
 
 ---
 
 ## Security Considerations
 
-- Cache entries are content-verified
-- No execution of cached artifacts
-- Optional read-only cache mode
+- Cache entries are content-addressed
+- Optional signing of artifacts (see RFC-0009)
+- Remote cache authentication required
 
 ---
 
 ## Comparison
 
-| Tool | PCM Safety | Content-Addressed | Deterministic |
-|------|------------|------------------|---------------|
-| CMake | ❌ | ❌ | ❌ |
-| Bazel | ⚠️ | ✅ | ✅ |
-| build2 | ✅ | ⚠️ | ✅ |
-| **cmod** | ✅ | ✅ | ✅ |
+| System | Cache Type |
+|------|-----------|
+| Cargo | Incremental + target dir |
+| Bazel | Remote cache |
+| Buck | Distributed cache |
+
+---
+
+## Backward Compatibility
+
+- Cache disabled by default
+- Builds without cache behave identically
 
 ---
 
 ## Open Questions
 
-- Should remote cache protocols be supported?
-- Cache size limits and eviction policies?
-- Debug vs Release cache separation?
+- Should final binaries ever be cached?
+- Cache eviction policies for CI environments?
+- Multi-toolchain cache coexistence strategy?
 
 ---
 
-## Conclusion
+## Next RFC
 
-C++ module builds demand **strict cache correctness**.
-
-By using content-addressed, compiler-scoped artifacts, `cmod` achieves fast rebuilds without compromising safety—while remaining honest about C++’s ABI realities.
-
+- RFC-0009: Security, Signing & Supply-Chain Integrity

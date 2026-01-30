@@ -1,108 +1,175 @@
-# RFC-0009: Security, Trust & Supply Chain
+# RFC-0009: Security, Signing & Supply-Chain Integrity
 
 ## Status
 Draft
 
 ## Summary
-This RFC defines the security, trust, and supply chain model for **cmod**, covering signed commits, artifact verification, and trusted mirrors. The goal is to ensure that modules and dependencies are **authentic, untampered, and verifiable** in any build environment.
+This RFC defines the **security model** for **cmod**, covering module authenticity, artifact signing, dependency trust, and cache integrity. The goal is to provide strong supply-chain guarantees **without central registries** and without breaking the Git-native workflow.
 
 ---
 
 ## Motivation
 
-C++ module ecosystems are increasingly distributed via Git repositories. Risks include:
-- Malicious commits
-- Compromised dependencies
-- CI cache poisoning
-- Supply chain attacks
+Modern build systems are vulnerable to:
+- Dependency hijacking
+- Malicious commits or force-pushes
+- Cache poisoning
+- CI credential abuse
 
-cmod must provide mechanisms to guarantee **module integrity and provenance**.
-
----
-
-## Security Goals
-
-1. Authenticate module sources
-2. Verify integrity of compiled artifacts
-3. Ensure reproducible builds are trustworthy
-4. Support enterprise and air-gapped environments
+C++ ecosystems lack standardized, end-to-end supply-chain protection. cmod addresses this by combining **Git trust**, **cryptographic signing**, and **content-addressed verification**.
 
 ---
 
-## Signed Commits & Modules
+## Goals
 
-- All modules should have **commit signatures (GPG/SSH)**
-- Lockfile captures the commit hash and signature verification status
-- Verification occurs at `cmod resolve` or `cmod fetch`
+- Verify module provenance
+- Prevent tampered artifacts
+- Secure distributed caches
+- Preserve decentralization
+- Integrate cleanly with Git and CI
 
-Lockfile example:
-```toml
-[[package]]
-name = "github.com/acme/math"
-version = "1.4.2"
-commit = "a13f9c2"
-signature = "ABCDEF123456..."
-verified = true
+## Non-Goals
+
+- Enforcing a single trust authority
+- Preventing all malicious code
+- Replacing OS-level sandboxing
+
+---
+
+## Trust Model
+
+cmod follows a **trust-on-first-use (TOFU)** model:
+
+- Modules are trusted based on Git origin
+- Commits are pinned via `cmod.lock`
+- Optional cryptographic verification strengthens trust
+
+Trust is explicit, inspectable, and revocable.
+
+---
+
+## Module Signing
+
+### Source Signing
+
+Modules may optionally sign releases or commits using:
+- OpenPGP
+- Sigstore / Fulcio
+- SSH commit signing
+
+Example:
+```
+cmod verify --signatures
 ```
 
-Rules:
-- Builds fail if a required signature cannot be verified
-- Unsigned or untrusted commits require explicit override
+Verification checks:
+- Commit signature validity
+- Key identity and trust level
+- Match against lockfile commit hash
 
 ---
 
-## Artifact Integrity
+## Artifact Signing
 
-- Cache keys include a **SHA256 hash of compiled artifacts**
-- Before reuse, artifacts are validated against the hash
-- CI caches may include signed artifact manifests
+Binary artifacts (BMIs, objects) may be signed at build time.
 
----
+- Signatures stored alongside cache entries
+- Verified on download
+- Invalid signatures invalidate cache entries
 
-## Trusted Mirrors
-
-- Organizations may maintain private mirrors for internal modules
-- Mirrors are configured via `cmod config`
-- Mirror usage respects trust policies and signature validation
+This protects against cache poisoning and MITM attacks.
 
 ---
 
-## Supply Chain Policies
+## Cache Integrity
 
-- Developers may define minimum trust levels per dependency
-- Policies include:
-  - Only signed commits
-  - Verified builds
-  - Required ABI/Compiler constraints
+- All cache entries are content-addressed
+- Hash verified before use
+- Optional signature verification
 
----
-
-## Air-Gapped Builds
-
-- Vendor mode (`vendor/`) is fully compatible with signed modules
-- No network access required if all artifacts and signatures are vendored
-- Lockfile guarantees reproducibility offline
+Remote cache requirements:
+- Authenticated access
+- TLS transport
+- Explicit user opt-in
 
 ---
 
-## CI Integration
+## Lockfile Enforcement
 
-- CI pipelines can validate signatures and hashes
-- Failed validation aborts builds
-- Optional: cached verification reports
+Security-sensitive modes:
+
+```
+cmod build --locked --verify
+```
+
+Guarantees:
+- No dependency drift
+- No unsigned or unexpected modules
+- No silent resolution changes
+
+CI systems are encouraged to enforce this mode.
+
+---
+
+## Dependency Auditing
+
+Optional tooling (RFC-0018):
+- License scanning
+- Known vulnerability checks
+- Dependency graph inspection
+
+Example:
+```
+cmod audit
+```
+
+---
+
+## Revocation & Recovery
+
+- Trusted keys can be revoked locally
+- Lockfile updates required to accept new commits
+- Compromised caches can be flushed safely
+
+No global revocation authority is required.
+
+---
+
+## Comparison
+
+| System | Security Model |
+|------|---------------|
+| Cargo | Checksums + registry trust |
+| npm | Registry + signatures |
+| Bazel | Workspace trust + remote cache |
+| cmod | Git + lockfile + optional signatures |
+
+---
+
+## Backward Compatibility
+
+- All security features are opt-in
+- Unsigned modules continue to work
+- Warnings available for insecure configurations
 
 ---
 
 ## Open Questions
 
-- Which signature schemes to support beyond GPG/SSH?
-- Should artifact signing be mandatory for all modules?
-- How to manage cross-toolchain verification (clang vs gcc)?
+- Default signature requirements in CI?
+- Standard key distribution mechanisms?
+- SBOM generation support?
 
 ---
 
-## Next RFCs
+## Conclusion
 
-- RFC-0010: IDE Integration & Developer Experience (syntax-aware module browsing, auto-completion, real-time verification)
-- RFC-0011: Optional Precompiled Module Distribution (safe sharing with signature verification and cache integration)
+This RFC completes cmod’s **end-to-end supply-chain story**:
+- Git-native
+- Decentralized
+- Verifiable
+- Practical for real-world C++ projects
 
+---
+
+## End of Core RFC Series

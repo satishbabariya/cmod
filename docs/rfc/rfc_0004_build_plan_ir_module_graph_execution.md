@@ -7,10 +7,11 @@ Draft
 This RFC defines the **Build Plan Intermediate Representation (IR)** used by `cmod` to translate a resolved module graph into a **deterministic, incremental, and parallelizable build execution plan**.
 
 The Build Plan IR sits between:
-- Dependency resolution (`cmod.lock`)
+- Dependency resolution (`cmod.lock`) 
+- Module graph construction (RFC-0007)
 - Compiler backends (Clang, future GCC/MSVC)
 
-It is the **core execution model** of `cmod`.
+It is the **core execution model** of `cmod`, while RFC-0007 defines the **build graph data model**. This RFC focuses on the IR representation and execution planning, whereas RFC-0007 focuses on graph construction and caching.
 
 ---
 
@@ -268,6 +269,17 @@ Outputs:
 - How to represent header units explicitly?
 - Should unity builds be supported?
 - Cross-language (C/ObjC) nodes?
+
+---
+
+## Relationship to RFC-0007
+
+This RFC (RFC-0004) defines the **Build Plan IR** for execution planning, while RFC-0007 defines the **Build Graph Model** for construction and caching:
+
+- **RFC-0004**: BuildNode DAG, execution order, compiler interface
+- **RFC-0007**: Module DAG, cache layout, incremental rules
+
+Together they provide a complete build system: RFC-0007 constructs the module dependency graph and handles caching, then RFC-0004 converts it into an executable build plan.
 
 ---
 
