@@ -194,3 +194,168 @@ impl Default for Profile {
         Profile::Debug
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── ModuleId ───────────────────────────────────────────────
+
+    #[test]
+    fn test_module_id_from_https_github() {
+        let id = ModuleId::from_git_url("https://github.com/fmtlib/fmt").unwrap();
+        assert_eq!(id.0, "github.fmtlib.fmt");
+    }
+
+    #[test]
+    fn test_module_id_from_https_gitlab_deep() {
+        let id = ModuleId::from_git_url("https://gitlab.com/org/infra/log").unwrap();
+        assert_eq!(id.0, "gitlab.org.infra.log");
+    }
+
+    #[test]
+    fn test_module_id_strips_dotgit() {
+        let id = ModuleId::from_git_url("https://github.com/user/repo.git").unwrap();
+        assert_eq!(id.0, "github.user.repo");
+    }
+
+    #[test]
+    fn test_module_id_strips_trailing_slash() {
+        let id = ModuleId::from_git_url("https://github.com/user/repo/").unwrap();
+        assert_eq!(id.0, "github.user.repo");
+    }
+
+    #[test]
+    fn test_module_id_from_ssh() {
+        let id = ModuleId::from_git_url("ssh://git@github.com/user/repo").unwrap();
+        assert_eq!(id.0, "github.user.repo");
+    }
+
+    #[test]
+    fn test_module_id_from_git_at() {
+        let id = ModuleId::from_git_url("git@github.com:fmtlib/fmt.git").unwrap();
+        assert_eq!(id.0, "github.fmtlib.fmt");
+    }
+
+    #[test]
+    fn test_module_id_from_http() {
+        let id = ModuleId::from_git_url("http://example.com/org/proj").unwrap();
+        assert_eq!(id.0, "example.org.proj");
+    }
+
+    #[test]
+    fn test_module_id_invalid_no_protocol() {
+        assert!(ModuleId::from_git_url("just-a-name").is_none());
+    }
+
+    #[test]
+    fn test_module_id_invalid_too_short() {
+        assert!(ModuleId::from_git_url("https://github.com").is_none());
+    }
+
+    #[test]
+    fn test_module_id_is_reserved_std() {
+        assert!(ModuleId("std".to_string()).is_reserved());
+        assert!(ModuleId("std.io".to_string()).is_reserved());
+        assert!(ModuleId("stdx".to_string()).is_reserved());
+        assert!(ModuleId("stdx.ranges".to_string()).is_reserved());
+    }
+
+    #[test]
+    fn test_module_id_is_not_reserved() {
+        assert!(!ModuleId("github.fmtlib.fmt".to_string()).is_reserved());
+        assert!(!ModuleId("stdlib_compat".to_string()).is_reserved());
+    }
+
+    #[test]
+    fn test_module_id_is_local() {
+        assert!(ModuleId("local.utils".to_string()).is_local());
+        assert!(ModuleId("local.my_project".to_string()).is_local());
+    }
+
+    #[test]
+    fn test_module_id_not_local() {
+        assert!(!ModuleId("github.fmtlib.fmt".to_string()).is_local());
+    }
+
+    #[test]
+    fn test_module_id_display() {
+        let id = ModuleId("github.fmtlib.fmt".to_string());
+        assert_eq!(format!("{}", id), "github.fmtlib.fmt");
+    }
+
+    // ─── Defaults ───────────────────────────────────────────────
+
+    #[test]
+    fn test_build_type_default() {
+        assert_eq!(BuildType::default(), BuildType::Binary);
+    }
+
+    #[test]
+    fn test_optimization_level_default() {
+        assert_eq!(OptimizationLevel::default(), OptimizationLevel::Debug);
+    }
+
+    #[test]
+    fn test_compiler_default() {
+        assert_eq!(Compiler::default(), Compiler::Clang);
+    }
+
+    #[test]
+    fn test_profile_default() {
+        assert_eq!(Profile::default(), Profile::Debug);
+    }
+
+    // ─── Compiler Display ───────────────────────────────────────
+
+    #[test]
+    fn test_compiler_display() {
+        assert_eq!(format!("{}", Compiler::Clang), "clang");
+        assert_eq!(format!("{}", Compiler::Gcc), "gcc");
+        assert_eq!(format!("{}", Compiler::Msvc), "msvc");
+    }
+
+    // ─── Artifact ───────────────────────────────────────────────
+
+    #[test]
+    fn test_artifact_path() {
+        let a = Artifact::Pcm {
+            path: PathBuf::from("/tmp/mod.pcm"),
+        };
+        assert_eq!(a.path(), &PathBuf::from("/tmp/mod.pcm"));
+
+        let b = Artifact::Executable {
+            path: PathBuf::from("/tmp/app"),
+        };
+        assert_eq!(b.path(), &PathBuf::from("/tmp/app"));
+    }
+
+    // ─── Serde roundtrip ────────────────────────────────────────
+
+    #[test]
+    fn test_module_unit_kind_serde() {
+        let json = serde_json::to_string(&ModuleUnitKind::InterfaceUnit).unwrap();
+        assert_eq!(json, "\"interface_unit\"");
+
+        let parsed: ModuleUnitKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, ModuleUnitKind::InterfaceUnit);
+    }
+
+    #[test]
+    fn test_build_type_serde() {
+        let json = serde_json::to_string(&BuildType::SharedLib).unwrap();
+        assert_eq!(json, "\"shared-lib\"");
+
+        let parsed: BuildType = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, BuildType::SharedLib);
+    }
+
+    #[test]
+    fn test_node_kind_serde() {
+        let json = serde_json::to_string(&NodeKind::Interface).unwrap();
+        assert_eq!(json, "\"interface\"");
+
+        let parsed: NodeKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, NodeKind::Interface);
+    }
+}

@@ -10,24 +10,36 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
 
     eprintln!("  Verifying project...");
     let mut errors = Vec::new();
+    let mut warnings = Vec::new();
 
     // 1. Validate manifest
-    validate_manifest(&config, &mut errors, verbose);
+    validate_manifest(&config, &mut errors, &mut warnings, verbose);
 
     // 2. Validate module identity
-    validate_module_identity(&config, &mut errors, verbose);
+    validate_module_identity(&config, &mut errors, &mut warnings, verbose);
 
     // 3. Validate lockfile consistency
-    validate_lockfile(&config, &mut errors, verbose);
+    validate_lockfile(&config, &mut errors, &mut warnings, verbose);
 
     // 4. Validate source structure
-    validate_sources(&config, &mut errors, verbose);
+    validate_sources(&config, &mut errors, &mut warnings, verbose);
+
+    // 5. Validate module name matches source declaration
+    validate_module_declaration(&config, &mut errors, &mut warnings, verbose);
+
+    // Print warnings
+    if !warnings.is_empty() {
+        eprintln!("  {} warning(s):", warnings.len());
+        for (i, warn) in warnings.iter().enumerate() {
+            eprintln!("    {}. [warn] {}", i + 1, warn);
+        }
+    }
 
     if errors.is_empty() {
         eprintln!("  Verification passed. No issues found.");
         Ok(())
     } else {
-        eprintln!("  Verification found {} issue(s):", errors.len());
+        eprintln!("  Verification found {} error(s):", errors.len());
         for (i, err) in errors.iter().enumerate() {
             eprintln!("    {}. {}", i + 1, err);
         }
@@ -38,7 +50,12 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     }
 }
 
-fn validate_manifest(config: &Config, errors: &mut Vec<String>, verbose: bool) {
+fn validate_manifest(
+    config: &Config,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    verbose: bool,
+) {
     if verbose {
         eprintln!("  Checking manifest...");
     }
@@ -50,9 +67,29 @@ fn validate_manifest(config: &Config, errors: &mut Vec<String>, verbose: bool) {
             config.manifest.package.version
         ));
     }
+
+    // Check package name is not empty
+    if config.manifest.package.name.is_empty() {
+        errors.push("package name is empty".to_string());
+    }
+
+    // Warn if no edition specified
+    if config.manifest.package.edition.is_none() {
+        warnings.push("no edition specified in [package]; consider adding edition = \"2023\"".to_string());
+    }
+
+    // Warn about missing optional fields
+    if config.manifest.package.license.is_none() {
+        warnings.push("no license specified".to_string());
+    }
 }
 
-fn validate_module_identity(config: &Config, errors: &mut Vec<String>, verbose: bool) {
+fn validate_module_identity(
+    config: &Config,
+    errors: &mut Vec<String>,
+    _warnings: &mut Vec<String>,
+    verbose: bool,
+) {
     if verbose {
         eprintln!("  Checking module identity...");
     }
@@ -68,6 +105,19 @@ fn validate_module_identity(config: &Config, errors: &mut Vec<String>, verbose: 
             ));
         }
 
+        // Check module name format
+        if module.name.is_empty() {
+            errors.push("module name is empty".to_string());
+        }
+
+        // Validate module name characters (must be alphanumeric, dots, underscores, colons)
+        if !module.name.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == ':') {
+            errors.push(format!(
+                "module name '{}' contains invalid characters (allowed: alphanumeric, '.', '_', ':')",
+                module.name
+            ));
+        }
+
         // Check that root source file exists
         let root_path = config.root.join(&module.root);
         if !root_path.exists() {
@@ -76,15 +126,32 @@ fn validate_module_identity(config: &Config, errors: &mut Vec<String>, verbose: 
                 module.root.display()
             ));
         }
+
+        // If this is not a local module, validate Git URL derivation
+        if !id.is_local() {
+            if verbose {
+                eprintln!("    Module: {} (non-local)", module.name);
+            }
+        } else if verbose {
+            eprintln!("    Module: {} (local)", module.name);
+        }
     }
 }
 
-fn validate_lockfile(config: &Config, errors: &mut Vec<String>, verbose: bool) {
+fn validate_lockfile(
+    config: &Config,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    verbose: bool,
+) {
     if verbose {
         eprintln!("  Checking lockfile...");
     }
 
     if config.manifest.dependencies.is_empty() {
+        if verbose {
+            eprintln!("    No dependencies to check.");
+        }
         return;
     }
 
@@ -99,6 +166,28 @@ fn validate_lockfile(config: &Config, errors: &mut Vec<String>, verbose: bool) {
                     ));
                 }
             }
+
+            // Check for orphaned lock entries
+            for pkg in &lockfile.packages {
+                if !config.manifest.dependencies.contains_key(&pkg.name) {
+                    warnings.push(format!(
+                        "lockfile contains '{}' which is not in dependencies; run `cmod resolve`",
+                        pkg.name
+                    ));
+                }
+            }
+
+            // Check lockfile has version field
+            if lockfile.version != 1 {
+                warnings.push(format!(
+                    "lockfile version {} is unexpected (expected 1)",
+                    lockfile.version
+                ));
+            }
+
+            if verbose {
+                eprintln!("    {} locked packages", lockfile.packages.len());
+            }
         }
         Err(_) => {
             errors.push("lockfile not found; run `cmod resolve`".to_string());
@@ -106,7 +195,12 @@ fn validate_lockfile(config: &Config, errors: &mut Vec<String>, verbose: bool) {
     }
 }
 
-fn validate_sources(config: &Config, errors: &mut Vec<String>, verbose: bool) {
+fn validate_sources(
+    config: &Config,
+    errors: &mut Vec<String>,
+    _warnings: &mut Vec<String>,
+    verbose: bool,
+) {
     if verbose {
         eprintln!("  Checking source files...");
     }
@@ -125,11 +219,62 @@ fn validate_sources(config: &Config, errors: &mut Vec<String>, verbose: bool) {
             if sources.is_empty() {
                 errors.push("no C++ source files found in src/".to_string());
             } else if verbose {
-                eprintln!("    Found {} source files", sources.len());
+                eprintln!("    Found {} source files:", sources.len());
+                for s in &sources {
+                    let kind = cmod_build::runner::classify_source(s)
+                        .map(|k| format!("{:?}", k))
+                        .unwrap_or_else(|_| "unknown".to_string());
+                    eprintln!("      {} ({})", s.display(), kind);
+                }
             }
         }
         Err(e) => {
             errors.push(format!("failed to scan sources: {}", e));
+        }
+    }
+}
+
+/// Validate that the module name declared in source matches the manifest.
+fn validate_module_declaration(
+    config: &Config,
+    errors: &mut Vec<String>,
+    _warnings: &mut Vec<String>,
+    verbose: bool,
+) {
+    if verbose {
+        eprintln!("  Checking module declaration...");
+    }
+
+    if let Some(ref module) = config.manifest.module {
+        let root_path = config.root.join(&module.root);
+        if !root_path.exists() {
+            return; // Already reported in validate_module_identity
+        }
+
+        match cmod_build::runner::extract_module_name(&root_path) {
+            Ok(Some(declared_name)) => {
+                if declared_name != module.name {
+                    errors.push(format!(
+                        "module root declares 'export module {};' but manifest says '{}'",
+                        declared_name, module.name
+                    ));
+                } else if verbose {
+                    eprintln!("    Module declaration matches manifest: {}", module.name);
+                }
+            }
+            Ok(None) => {
+                errors.push(format!(
+                    "module root '{}' does not contain an 'export module' declaration",
+                    module.root.display()
+                ));
+            }
+            Err(e) => {
+                errors.push(format!(
+                    "failed to read module root '{}': {}",
+                    module.root.display(),
+                    e
+                ));
+            }
         }
     }
 }

@@ -7,6 +7,7 @@ use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
 use cmod_core::types::Profile;
 use cmod_resolver::Resolver;
+use cmod_workspace::WorkspaceManager;
 
 /// Run `cmod build` — build the current module or workspace.
 pub fn run(
@@ -31,19 +32,31 @@ pub fn run(
         config.target = Some(t);
     }
 
+    let profile_name = match config.profile {
+        Profile::Debug => "debug",
+        Profile::Release => "release",
+    };
+
+    // Check if this is a workspace build
+    if config.manifest.is_workspace() {
+        return build_workspace(&config, verbose);
+    }
+
     eprintln!(
         "  Building {} ({})",
-        config.manifest.package.name,
-        match config.profile {
-            Profile::Debug => "debug",
-            Profile::Release => "release",
-        }
+        config.manifest.package.name, profile_name
     );
 
     // Step 1: Ensure dependencies are resolved
     let _lockfile = ensure_resolved(&config)?;
 
-    // Step 2: Discover source files
+    // Step 2: Build the single module
+    build_module(&config, verbose)
+}
+
+/// Build a single module project.
+fn build_module(config: &Config, verbose: bool) -> Result<(), CmodError> {
+    // Discover source files
     let src_dir = config.src_dir();
     let sources = runner::discover_sources(&src_dir)?;
 
@@ -55,12 +68,120 @@ pub fn run(
 
     if verbose {
         eprintln!("  Found {} source files", sources.len());
+        for s in &sources {
+            eprintln!("    {}", s.display());
+        }
     }
 
-    // Step 3: Build the module graph
+    // Build the module graph
+    let graph = build_module_graph(&sources, &config.manifest.package.name)?;
+
+    if verbose {
+        let order = graph.topological_order()?;
+        eprintln!("  Build order: {}", order.join(" → "));
+    }
+
+    // Set up the compiler backend
+    let (backend, target) = setup_compiler(config);
+
+    // Set up cache
+    let cache = ArtifactCache::new(config.cache_dir());
+
+    // Execute the build
+    let build_dir = config.build_dir();
+    let build_type = config
+        .manifest
+        .build
+        .as_ref()
+        .and_then(|b| b.build_type)
+        .unwrap_or_default();
+
+    let runner = BuildRunner::new(backend, Some(cache));
+    let output = runner.build(&graph, &build_dir, &target, config.profile, build_type)?;
+
+    eprintln!("  Build complete: {}", output.display());
+    Ok(())
+}
+
+/// Build all members of a workspace.
+fn build_workspace(config: &Config, verbose: bool) -> Result<(), CmodError> {
+    let ws = WorkspaceManager::load(&config.root)?;
+
+    eprintln!(
+        "  Building workspace ({} members, {})",
+        ws.members.len(),
+        match config.profile {
+            Profile::Debug => "debug",
+            Profile::Release => "release",
+        }
+    );
+
+    // Ensure dependencies are resolved
+    let _lockfile = ensure_resolved(config)?;
+
+    let mut failed = Vec::new();
+
+    for member in &ws.members {
+        eprintln!("  Building member: {}", member.name);
+
+        let member_src = member.path.join("src");
+        let sources = runner::discover_sources(&member_src)?;
+
+        if sources.is_empty() {
+            if verbose {
+                eprintln!("    No source files, skipping.");
+            }
+            continue;
+        }
+
+        let graph = build_module_graph(&sources, &member.name)?;
+        let (backend, target) = setup_compiler(config);
+        let cache = ArtifactCache::new(config.cache_dir());
+
+        let build_dir = config
+            .build_dir()
+            .join(&member.name);
+
+        let build_type = member
+            .manifest
+            .build
+            .as_ref()
+            .and_then(|b| b.build_type)
+            .unwrap_or_default();
+
+        let runner = BuildRunner::new(backend, Some(cache));
+        match runner.build(&graph, &build_dir, &target, config.profile, build_type) {
+            Ok(output) => {
+                eprintln!("    Built: {}", output.display());
+            }
+            Err(e) => {
+                eprintln!("    Failed: {}", e);
+                failed.push(member.name.clone());
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        return Err(CmodError::BuildFailed {
+            reason: format!(
+                "workspace build failed for members: {}",
+                failed.join(", ")
+            ),
+        });
+    }
+
+    eprintln!("  Workspace build complete.");
+    Ok(())
+}
+
+/// Build a ModuleGraph from discovered source files.
+fn build_module_graph(
+    sources: &[std::path::PathBuf],
+    package_name: &str,
+) -> Result<ModuleGraph, CmodError> {
     let mut graph = ModuleGraph::new();
 
-    for source in &sources {
+    for source in sources {
         let kind = runner::classify_source(source)?;
         let module_name = runner::extract_module_name(source)?
             .unwrap_or_else(|| {
@@ -71,19 +192,31 @@ pub fn run(
                     .to_string()
             });
 
-        // For now, use simple import detection from the source content
         let imports = extract_imports_from_source(source)?;
 
+        // Filter out imports for modules not in this graph (external deps)
+        // They will be resolved via pre-built PCMs at compile time.
         graph.add_node(ModuleNode {
             name: module_name,
             kind,
             source: source.clone(),
-            package: config.manifest.package.name.clone(),
+            package: package_name.to_string(),
             imports,
         });
     }
 
-    // Step 4: Set up the compiler backend
+    // Filter imports to only include modules that exist in the graph
+    let known_modules: std::collections::BTreeSet<String> =
+        graph.nodes.keys().cloned().collect();
+    for node in graph.nodes.values_mut() {
+        node.imports.retain(|imp| known_modules.contains(imp));
+    }
+
+    Ok(graph)
+}
+
+/// Set up the Clang compiler backend from config.
+fn setup_compiler(config: &Config) -> (ClangBackend, String) {
     let cxx_standard = config
         .manifest
         .toolchain
@@ -113,24 +246,7 @@ pub fn run(
 
     backend.target = Some(target.clone());
 
-    // Step 5: Set up cache
-    let cache = ArtifactCache::new(config.cache_dir());
-
-    // Step 6: Execute the build
-    let build_dir = config.build_dir();
-    let build_type = config
-        .manifest
-        .build
-        .as_ref()
-        .and_then(|b| b.build_type)
-        .unwrap_or_default();
-
-    let runner = BuildRunner::new(backend, Some(cache));
-    let output = runner.build(&graph, &build_dir, &target, config.profile, build_type)?;
-
-    eprintln!("  Build complete: {}", output.display());
-
-    Ok(())
+    (backend, target)
 }
 
 /// Ensure dependencies are resolved; if lockfile exists, load it.

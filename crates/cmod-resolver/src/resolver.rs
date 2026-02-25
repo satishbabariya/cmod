@@ -354,3 +354,247 @@ impl Resolver {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cmod_core::manifest::{DetailedDependency, Package};
+    use std::collections::BTreeMap;
+
+    fn minimal_manifest() -> Manifest {
+        Manifest {
+            package: Package {
+                name: "test".to_string(),
+                version: "0.1.0".to_string(),
+                edition: None,
+                description: None,
+                authors: vec![],
+                license: None,
+                repository: None,
+                homepage: None,
+            },
+            module: None,
+            dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::new(),
+            build_dependencies: BTreeMap::new(),
+            features: BTreeMap::new(),
+            compat: None,
+            toolchain: None,
+            build: None,
+            test: None,
+            workspace: None,
+            cache: None,
+        }
+    }
+
+    #[test]
+    fn test_resolve_empty_deps() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let manifest = minimal_manifest();
+
+        let lockfile = resolver.resolve(&manifest, None, false, false).unwrap();
+        assert!(lockfile.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_locked_without_lockfile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let manifest = minimal_manifest();
+
+        let result = resolver.resolve(&manifest, None, true, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_locked_with_valid_lockfile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            "test_dep".to_string(),
+            Dependency::Simple("^1.0".to_string()),
+        );
+
+        let mut lockfile = Lockfile::new();
+        lockfile.upsert_package(LockedPackage {
+            name: "test_dep".to_string(),
+            version: "1.2.0".to_string(),
+            source: Some("git".to_string()),
+            repo: Some("https://example.com/test_dep".to_string()),
+            commit: Some("abc123".to_string()),
+            hash: Some("sha256:deadbeef".to_string()),
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec![],
+        });
+
+        let result = resolver
+            .resolve(&manifest, Some(&lockfile), true, false)
+            .unwrap();
+        assert_eq!(result.packages.len(), 1);
+        assert_eq!(result.packages[0].version, "1.2.0");
+    }
+
+    #[test]
+    fn test_resolve_locked_with_outdated_lockfile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            "test_dep".to_string(),
+            Dependency::Simple("^2.0".to_string()),
+        );
+
+        let mut lockfile = Lockfile::new();
+        lockfile.upsert_package(LockedPackage {
+            name: "test_dep".to_string(),
+            version: "1.2.0".to_string(),
+            source: None,
+            repo: None,
+            commit: None,
+            hash: None,
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec![],
+        });
+
+        let result = resolver.resolve(&manifest, Some(&lockfile), true, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_path_dependency() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            "local_lib".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: Some("0.1.0".to_string()),
+                git: None,
+                branch: None,
+                rev: None,
+                tag: None,
+                path: Some(PathBuf::from("./libs/local")),
+                features: vec![],
+                optional: false,
+                workspace: false,
+            }),
+        );
+
+        let lockfile = resolver.resolve(&manifest, None, false, false).unwrap();
+        assert_eq!(lockfile.packages.len(), 1);
+        assert_eq!(lockfile.packages[0].name, "local_lib");
+    }
+
+    #[test]
+    fn test_resolve_offline_fails_for_git_dep() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            "github.com/test/dep".to_string(),
+            Dependency::Simple("^1.0".to_string()),
+        );
+
+        let result = resolver.resolve(&manifest, None, false, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_dependency() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+
+        let dep = Dependency::Detailed(DetailedDependency {
+            version: Some("0.1.0".to_string()),
+            git: None,
+            branch: None,
+            rev: None,
+            tag: None,
+            path: Some(PathBuf::from("./local")),
+            features: vec![],
+            optional: false,
+            workspace: false,
+        });
+
+        let lockfile = resolver
+            .add_dependency(&mut manifest, "my_dep".to_string(), dep, None)
+            .unwrap();
+
+        assert!(manifest.dependencies.contains_key("my_dep"));
+        assert_eq!(lockfile.packages.len(), 1);
+    }
+
+    #[test]
+    fn test_add_duplicate_dependency() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+
+        manifest.dependencies.insert(
+            "existing".to_string(),
+            Dependency::Simple("^1.0".to_string()),
+        );
+
+        let dep = Dependency::Simple("^2.0".to_string());
+        let result =
+            resolver.add_dependency(&mut manifest, "existing".to_string(), dep, None);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_dependency() {
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            "pkg".to_string(),
+            Dependency::Simple("^1.0".to_string()),
+        );
+
+        Resolver::remove_dependency(&mut manifest, "pkg").unwrap();
+        assert!(manifest.dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_remove_nonexistent_dependency() {
+        let mut manifest = minimal_manifest();
+        let result = Resolver::remove_dependency(&mut manifest, "nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_reuses_locked_version() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            "dep_a".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: Some("0.1.0".to_string()),
+                git: None,
+                branch: None,
+                rev: None,
+                tag: None,
+                path: Some(PathBuf::from("./a")),
+                features: vec![],
+                optional: false,
+                workspace: false,
+            }),
+        );
+
+        // First resolve
+        let lock1 = resolver.resolve(&manifest, None, false, false).unwrap();
+        assert_eq!(lock1.packages.len(), 1);
+
+        // Second resolve with existing lock — should reuse
+        let lock2 = resolver
+            .resolve(&manifest, Some(&lock1), false, false)
+            .unwrap();
+        assert_eq!(lock2.packages.len(), 1);
+        assert_eq!(lock2.packages[0].version, lock1.packages[0].version);
+    }
+}

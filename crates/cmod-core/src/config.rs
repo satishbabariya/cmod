@@ -96,3 +96,93 @@ impl Config {
         self.root.join("src")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn setup_project() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        let toml = r#"
+[package]
+name = "test_project"
+version = "0.1.0"
+"#;
+        std::fs::write(tmp.path().join("cmod.toml"), toml).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn test_config_load() {
+        let tmp = setup_project();
+        let config = Config::load(tmp.path()).unwrap();
+        assert_eq!(config.manifest.package.name, "test_project");
+        assert_eq!(config.root, tmp.path());
+        assert_eq!(config.lockfile_path, tmp.path().join("cmod.lock"));
+        assert_eq!(config.profile, Profile::Debug);
+        assert!(!config.locked);
+        assert!(!config.offline);
+        assert!(!config.verbose);
+    }
+
+    #[test]
+    fn test_config_load_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let result = Config::load(tmp.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_load_from_subdirectory() {
+        let tmp = setup_project();
+        let subdir = tmp.path().join("src").join("deep");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let config = Config::load(&subdir).unwrap();
+        assert_eq!(config.manifest.package.name, "test_project");
+        assert_eq!(config.root, tmp.path());
+    }
+
+    #[test]
+    fn test_build_dir() {
+        let tmp = setup_project();
+        let mut config = Config::load(tmp.path()).unwrap();
+
+        assert_eq!(config.build_dir(), tmp.path().join("build/debug"));
+
+        config.profile = Profile::Release;
+        assert_eq!(config.build_dir(), tmp.path().join("build/release"));
+    }
+
+    #[test]
+    fn test_deps_dir() {
+        let tmp = setup_project();
+        let config = Config::load(tmp.path()).unwrap();
+        assert_eq!(config.deps_dir(), tmp.path().join("build/deps"));
+    }
+
+    #[test]
+    fn test_src_dir() {
+        let tmp = setup_project();
+        let config = Config::load(tmp.path()).unwrap();
+        assert_eq!(config.src_dir(), tmp.path().join("src"));
+    }
+
+    #[test]
+    fn test_config_custom_cache_dir() {
+        let tmp = TempDir::new().unwrap();
+        let toml = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[cache]
+local_path = "/custom/cache"
+"#;
+        std::fs::write(tmp.path().join("cmod.toml"), toml).unwrap();
+
+        let config = Config::load(tmp.path()).unwrap();
+        assert_eq!(config.cache_dir(), PathBuf::from("/custom/cache"));
+    }
+}

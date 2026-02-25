@@ -107,3 +107,81 @@ impl CmodError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_errors_exit_code_1() {
+        let errors = vec![
+            CmodError::BuildFailed {
+                reason: "test".into(),
+            },
+            CmodError::CompilerNotFound {
+                compiler: "clang".into(),
+            },
+            CmodError::ModuleScanFailed {
+                reason: "test".into(),
+            },
+        ];
+        for e in errors {
+            assert_eq!(e.exit_code(), EXIT_BUILD_FAILURE, "for {:?}", e);
+        }
+    }
+
+    #[test]
+    fn test_resolution_errors_exit_code_2() {
+        let errors: Vec<CmodError> = vec![
+            CmodError::DependencyNotFound {
+                name: "pkg".into(),
+            },
+            CmodError::DependencyAlreadyExists {
+                name: "pkg".into(),
+            },
+            CmodError::VersionConflict {
+                name: "pkg".into(),
+                reason: "test".into(),
+            },
+            CmodError::CircularDependency {
+                cycle: "a -> b -> a".into(),
+            },
+            CmodError::UnresolvableConstraints {
+                name: "pkg".into(),
+                reason: "test".into(),
+            },
+            CmodError::LockfileNotFound,
+            CmodError::LockfileOutdated,
+            CmodError::LockfileIntegrity {
+                reason: "bad".into(),
+            },
+        ];
+        for e in errors {
+            assert_eq!(e.exit_code(), EXIT_RESOLUTION_ERROR, "for {:?}", e);
+        }
+    }
+
+    #[test]
+    fn test_error_display() {
+        let e = CmodError::ManifestNotFound {
+            path: "/tmp/cmod.toml".into(),
+        };
+        assert_eq!(format!("{}", e), "manifest not found: /tmp/cmod.toml");
+
+        let e = CmodError::CircularDependency {
+            cycle: "a -> b -> a".into(),
+        };
+        assert_eq!(
+            format!("{}", e),
+            "circular dependency detected: a -> b -> a"
+        );
+    }
+
+    #[test]
+    fn test_io_error_conversion() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let cmod_err: CmodError = io_err.into();
+        assert_eq!(cmod_err.exit_code(), EXIT_BUILD_FAILURE);
+        assert!(format!("{}", cmod_err).contains("gone"));
+    }
+}

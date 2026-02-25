@@ -58,7 +58,11 @@ pub fn run(
     config.manifest.save(&config.manifest_path)?;
     lockfile.save(&config.lockfile_path)?;
 
-    eprintln!("  Added dependency '{}'", dep_key);
+    if let Some(pkg) = lockfile.find_package(&dep_key) {
+        eprintln!("  Added dependency '{}' v{}", dep_key, pkg.version);
+    } else {
+        eprintln!("  Added dependency '{}'", dep_key);
+    }
 
     Ok(())
 }

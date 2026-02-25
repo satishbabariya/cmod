@@ -15,3 +15,6 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

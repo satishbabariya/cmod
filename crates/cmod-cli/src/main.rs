@@ -96,6 +96,10 @@ enum Commands {
     Update {
         /// Specific dependency to update
         name: Option<String>,
+
+        /// Only allow patch-level updates (e.g., 1.2.3 → 1.2.4)
+        #[arg(long)]
+        patch: bool,
     },
 
     /// Inspect the dependency graph
@@ -144,7 +148,7 @@ fn main() {
         Commands::Test { release } => {
             commands::test::run(release, cli.locked, cli.offline, cli.verbose, cli.target)
         }
-        Commands::Update { name } => commands::update::run(name, cli.verbose),
+        Commands::Update { name, patch } => commands::update::run(name, patch, cli.verbose),
         Commands::Deps { tree } => commands::deps::run(tree),
         Commands::Cache { action } => match action {
             CacheAction::Status => commands::cache::status(),
@@ -155,6 +159,41 @@ fn main() {
 
     if let Err(e) = result {
         eprintln!("error: {}", e);
+
+        // Print helpful hints based on error type
+        if let Some(hint) = error_hint(&e) {
+            eprintln!("  hint: {}", hint);
+        }
+
         std::process::exit(e.exit_code());
+    }
+}
+
+/// Return a helpful hint string for common errors.
+fn error_hint(e: &cmod_core::error::CmodError) -> Option<&'static str> {
+    use cmod_core::error::CmodError;
+    match e {
+        CmodError::ManifestNotFound { .. } => {
+            Some("run `cmod init` to create a new project")
+        }
+        CmodError::LockfileNotFound => {
+            Some("run `cmod resolve` to generate the lockfile")
+        }
+        CmodError::LockfileOutdated => {
+            Some("run `cmod resolve` to update the lockfile")
+        }
+        CmodError::DependencyNotFound { .. } => {
+            Some("check the dependency name or add it with `cmod add <dep>`")
+        }
+        CmodError::CompilerNotFound { .. } => {
+            Some("ensure clang is installed and available on PATH")
+        }
+        CmodError::GitRepoNotFound { .. } => {
+            Some("check the Git URL and your network connection")
+        }
+        CmodError::CircularDependency { .. } => {
+            Some("review your dependency graph with `cmod deps --tree`")
+        }
+        _ => None,
     }
 }
