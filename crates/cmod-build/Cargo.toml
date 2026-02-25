@@ -1,0 +1,17 @@
+[package]
+name = "cmod-build"
+version = "0.1.0"
+edition = "2021"
+description = "Module DAG construction and build orchestration for cmod"
+
+[dependencies]
+cmod-core = { path = "../cmod-core" }
+cmod-cache = { path = "../cmod-cache" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+walkdir = { workspace = true }
+tempfile = { workspace = true }

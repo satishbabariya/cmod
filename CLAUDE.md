@@ -4,47 +4,84 @@
 
 **cmod** is a Cargo-inspired, Git-native package and build tool for modern C++20+ modules. It provides dependency resolution, build orchestration, workspace management, and caching — all without a central package registry.
 
-**Status:** RFC-driven specification phase. No implementation code exists yet. The repository contains 21 RFCs and supporting design documents that define the complete system.
+**Status:** Initial Rust implementation (Phase 0-2). The Cargo workspace compiles and has 48 passing unit tests. The 21 RFCs and design documents under `docs/` remain the canonical specification.
 
-**Planned implementation language:** Rust (with LLVM/Clang C++ APIs for build hooks).
+**Implementation language:** Rust (with LLVM/Clang C++ APIs for build hooks).
 
 ## Repository Structure
 
 ```
 cmod/
+├── Cargo.toml                             # Workspace root
+├── Cargo.lock                             # Rust dependency lockfile
 ├── CLAUDE.md                              # This file
 ├── todo.txt                               # Project-level TODO notes
 ├── .gitignore                             # Ignore rules (C++, Rust, IDE artifacts)
-└── docs/                                  # All documentation and specifications
-    ├── cmod_readme_vision.md              # High-level vision and core principles
-    ├── cmod_architecture_diagram.md       # Layered system architecture
-    ├── cmod_cli_ux_command_specification.md # Complete CLI command reference
-    ├── cmod_reference_implementation_skeleton.md # Planned Rust crate structure
-    ├── cmod_implementation_roadmap.md     # 6-phase development roadmap
-    ├── cmod_vs_existing_tools.md          # Comparison with CMake, Conan, vcpkg, Bazel
-    ├── why_cmod_exists_pitch_doc.md       # Problem statement and motivation
-    └── rfc/                               # Request for Comments (21 total)
-        ├── rfc_0001_cargo_style_c_modules_tooling_llvm_based.md  # Core: tooling foundation
-        ├── rfc_0002_module_identity_import_rules.md              # Core: module naming
-        ├── rfc_0003_lockfile_reproducible_builds.md              # Core: lockfiles
-        ├── rfc_0004_build_plan_ir_module_graph_execution.md      # Core: build DAG
-        ├── rfc_0005_cache_artifact_model.md                      # Tier 1: caching
-        ├── rfc_0006_versioning_compatibility_lockfiles.md        # Tier 1: versioning
-        ├── rfc_0007_build_graph_incremental_compilation_caching.md # Tier 1: incremental builds
-        ├── rfc_0008_toolchains_targets_cross_compilation.md      # Tier 1: cross-compilation
-        ├── rfc_0009_security_trust_supply_chain.md               # Tier 2: security
-        ├── rfc_0010_ide_integration_developer_experience.md      # Tier 2: IDE/LSP
-        ├── rfc_0011_precompiled_module_distribution.md           # Tier 3: binary distribution
-        ├── rfc_0012_advanced_build_strategies_performance_optimizations.md # Tier 3
-        ├── rfc_0013_distributed_builds_remote_execution.md       # Tier 3
-        ├── rfc_0014_module_graph_visualization_developer_tools_enhancements.md # Tier 3
-        ├── rfc_0015_cmod_ecosystem_governance_community_standards.md # Tier 4
-        ├── rfc_0016_lsp_enhancements_advanced_ide_features.md    # Tier 4
-        ├── rfc_0017_module_metadata_extensions_advanced_dependency_features.md # Tier 4
-        ├── rfc_0018_tooling_plugins_ecosystem_utilities.md       # Tier 4
-        ├── rfc_0019_workspaces_monorepos_multi_module_projects.md # Tier 4
-        ├── rfc_implementation_phases.md                          # Phase timeline
-        └── rfc_unified_cmod_schema.md                            # Consolidated cmod.toml schema
+├── crates/                                # Rust implementation
+│   ├── cmod-cli/                          # CLI binary (cmod command)
+│   │   └── src/
+│   │       ├── main.rs                    # Entry point, clap argument parsing
+│   │       └── commands/                  # Subcommand implementations
+│   │           ├── init.rs                # cmod init
+│   │           ├── add.rs                 # cmod add
+│   │           ├── remove.rs              # cmod remove
+│   │           ├── resolve.rs             # cmod resolve
+│   │           ├── build.rs               # cmod build
+│   │           ├── test.rs                # cmod test
+│   │           ├── update.rs              # cmod update
+│   │           ├── deps.rs                # cmod deps
+│   │           ├── cache.rs               # cmod cache status/clean
+│   │           └── verify.rs              # cmod verify
+│   ├── cmod-core/                         # Core types and config
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── config.rs                  # Global session context (Config)
+│   │       ├── error.rs                   # CmodError enum + exit codes
+│   │       ├── lockfile.rs                # cmod.lock parsing/writing
+│   │       ├── manifest.rs                # cmod.toml parsing/writing
+│   │       └── types.rs                   # ModuleId, BuildType, Profile, etc.
+│   ├── cmod-resolver/                     # Dependency resolution
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── git.rs                     # Git operations (clone, fetch, tags)
+│   │       ├── resolver.rs                # Resolution algorithm + lockfile generation
+│   │       └── version.rs                 # Semver constraint parsing + solving
+│   ├── cmod-build/                        # Build orchestration
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── compiler.rs                # CompilerBackend trait + ClangBackend
+│   │       ├── graph.rs                   # ModuleGraph DAG + topological sort
+│   │       ├── plan.rs                    # BuildPlan IR generation
+│   │       └── runner.rs                  # Build execution + source discovery
+│   ├── cmod-cache/                        # Artifact caching
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── cache.rs                   # ArtifactCache (store/get/evict/clean)
+│   │       └── key.rs                     # CacheKey computation (SHA-256)
+│   └── cmod-workspace/                    # Workspace management
+│       └── src/
+│           ├── lib.rs
+│           └── workspace.rs               # WorkspaceManager (load/validate/add member)
+├── docs/                                  # Design specifications
+│   ├── cmod_readme_vision.md
+│   ├── cmod_architecture_diagram.md
+│   ├── cmod_cli_ux_command_specification.md
+│   ├── cmod_reference_implementation_skeleton.md
+│   ├── cmod_implementation_roadmap.md
+│   ├── cmod_vs_existing_tools.md
+│   ├── why_cmod_exists_pitch_doc.md
+│   └── rfc/                               # 21 RFCs (see RFC Tiers below)
+└── tests/                                 # Integration tests (future)
+```
+
+## Build & Test Commands
+
+```bash
+cargo check              # Type-check all crates
+cargo build              # Compile all crates
+cargo test               # Run all 48 unit tests
+cargo build --release    # Release build
+cargo run -- <subcommand>  # Run the CLI (e.g., cargo run -- init)
 ```
 
 ## Key Design Decisions
@@ -68,42 +105,39 @@ Key data flows:
 2. **Build:** lockfile → build DAG → Clang invocations → artifacts
 3. **Cache:** cache key → local cache → remote cache (optional)
 
-## Planned Rust Crate Structure
+## Crate Responsibilities
 
-When implementation begins, the code will be organized as:
-
-| Crate | Responsibility |
-|---|---|
-| `cmod-cli` | Command parsing, UX, argument handling |
-| `cmod-core` | Config loading (`cmod.toml`), global context, error model |
-| `cmod-resolver` | Git fetch, version solving, lockfile generation |
-| `cmod-build` | Module DAG construction, Clang invocation, incremental logic |
-| `cmod-cache` | Local and remote cache management |
-| `cmod-security` | Hashing, signature verification, supply-chain validation |
-| `cmod-workspace` | Monorepo and multi-module workspace support |
-
-External dependencies: `libgit2`, LLVM/Clang driver, TOML parser.
+| Crate | Key Types | Responsibility |
+|---|---|---|
+| `cmod-core` | `Config`, `Manifest`, `Lockfile`, `CmodError`, `ModuleId` | Config loading, TOML parsing, error model, core types |
+| `cmod-cli` | `Cli`, `Commands` | clap-based CLI, subcommand dispatch |
+| `cmod-resolver` | `Resolver`, `ResolvedDep` | Git fetch, semver solving, lockfile generation |
+| `cmod-build` | `ModuleGraph`, `BuildPlan`, `BuildRunner`, `ClangBackend` | DAG construction, Clang invocation, build execution |
+| `cmod-cache` | `ArtifactCache`, `CacheKey` | Content-addressed caching, SHA-256 keys |
+| `cmod-workspace` | `WorkspaceManager`, `WorkspaceMember` | Monorepo loading, unified deps, member management |
 
 ## CLI Commands
 
-Core commands (from `docs/cmod_cli_ux_command_specification.md`):
+| Command | Description | Implementation |
+|---|---|---|
+| `cmod init [--workspace]` | Initialize a new module or workspace | `commands/init.rs` |
+| `cmod add <dep>[@version]` | Add a dependency | `commands/add.rs` |
+| `cmod remove <name>` | Remove a dependency | `commands/remove.rs` |
+| `cmod resolve` | Resolve deps → lockfile | `commands/resolve.rs` |
+| `cmod build [--release]` | Build module/workspace | `commands/build.rs` |
+| `cmod test [--release]` | Build and run tests | `commands/test.rs` |
+| `cmod update [name]` | Update dependencies | `commands/update.rs` |
+| `cmod deps [--tree]` | Inspect dependency graph | `commands/deps.rs` |
+| `cmod cache status\|clean` | Manage build cache | `commands/cache.rs` |
+| `cmod verify` | Verify integrity | `commands/verify.rs` |
 
-| Command | Purpose |
-|---|---|
-| `cmod init` | Initialize a new module or workspace |
-| `cmod add <dep>` | Add a dependency |
-| `cmod remove <name>` | Remove a dependency |
-| `cmod build` | Build current module/workspace |
-| `cmod test` | Run module tests |
-| `cmod resolve` | Generate lockfile from dependencies |
-| `cmod update` | Update dependencies |
-| `cmod cache` | Manage caches |
-| `cmod verify` | Verify security/integrity |
-| `cmod deps` | Inspect dependency graph |
+Global flags: `--locked`, `--offline`, `--verbose`, `--target <triple>`
+
+Exit codes: `0` success, `1` build failure, `2` resolution error, `3` security violation.
 
 ## Configuration Format
 
-The project uses `cmod.toml` as defined in `docs/rfc/rfc_unified_cmod_schema.md`. Key sections:
+`cmod.toml` (see `docs/rfc/rfc_unified_cmod_schema.md` for full spec):
 
 ```toml
 [package]       # name, version, edition, authors, license
@@ -118,14 +152,14 @@ Module names follow reverse-domain Git path format: `com.github.user.my_math`.
 
 ## Implementation Roadmap
 
-| Phase | Goal | Key Deliverables |
+| Phase | Status | Key Deliverables |
 |---|---|---|
-| 0 — Foundations | Deterministic dependency resolution | `cmod.toml` parser, Git resolver, lockfile, CLI: `init`/`add`/`resolve` |
-| 1 — Builds | Build real C++20 modules | LLVM integration, module DAG, incremental rebuilds, CLI: `build`/`deps` |
-| 2 — Scale | Workspaces and caching | Workspace manager, shared cache, parallel builds |
-| 3 — Distributed | CI and team acceleration | Remote cache protocol, artifact upload/download |
-| 4 — Security | Supply-chain integrity | Signature verification, `--locked --verify` modes |
-| 5 — Ecosystem | Adoption and tooling | LSP integration, plugin SDK, visualization tools |
+| 0 — Foundations | **Implemented** | `cmod.toml` parser, Git resolver, lockfile, CLI commands |
+| 1 — Builds | **Implemented** | LLVM/Clang backend, module DAG, build plan IR, build runner |
+| 2 — Scale | **Implemented** | Workspace manager, local cache, cache keys |
+| 3 — Distributed | Planned | Remote cache protocol, artifact upload/download |
+| 4 — Security | Planned | Signature verification, `--locked --verify` modes |
+| 5 — Ecosystem | Planned | LSP integration, plugin SDK, visualization tools |
 
 ## RFC Tiers
 
@@ -139,20 +173,24 @@ RFCs are organized by priority tier. When contributing, respect this ordering:
 
 ## Conventions for AI Assistants
 
-### When working with documentation
+### Working with the implementation
+- The implementation is in Rust, organized as a Cargo workspace under `crates/`.
+- Follow Cargo-idiomatic Rust conventions (snake_case, standard module layout).
+- Each crate has a focused responsibility — do not merge or split crates without updating this doc.
+- All cross-crate dependencies flow downward: `cli → {resolver, build, cache, workspace} → core`.
+- `cmod-core` has no internal crate dependencies and is the foundation.
+- Run `cargo test` after making changes. All 48 tests must pass.
+- Run `cargo check` before committing to catch compilation errors early.
+
+### Working with documentation
 - All design specifications live under `docs/`. Do not create specifications elsewhere.
 - RFCs follow the naming pattern `rfc_NNNN_<descriptive_name>.md` under `docs/rfc/`.
 - Cross-reference RFCs by number (e.g., "as defined in RFC-0002") when referencing design decisions.
 - The unified schema (`rfc_unified_cmod_schema.md`) is the canonical `cmod.toml` reference — keep it in sync with any schema changes in other RFCs.
 
-### When implementation begins
-- The implementation will be in Rust, organized as a Cargo workspace under `crates/`.
-- Follow Cargo-idiomatic Rust conventions (snake_case, standard module layout).
-- Each crate should have a focused responsibility matching the table above.
-- Prefer the crate boundaries defined in the reference skeleton — do not merge or split crates without updating the skeleton doc.
-
 ### General guidelines
 - Keep documentation concise and structured with Markdown headings and tables.
-- Maintain consistency between the roadmap, RFCs, and architecture docs when making changes.
+- Maintain consistency between the roadmap, RFCs, architecture docs, and implementation.
 - The `.gitignore` covers C++, Rust, IDE, and build artifacts — update it when adding new tooling.
-- No implementation code exists yet. If asked to start implementing, begin with Phase 0 (dependency resolution).
+- Prefer extending existing modules over creating new files.
+- `cmod-security` crate is planned but not yet created — create it when implementing Phase 4.

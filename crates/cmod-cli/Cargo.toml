@@ -1,0 +1,22 @@
+[package]
+name = "cmod-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI frontend for cmod — Cargo-inspired C++ module tooling"
+
+[[bin]]
+name = "cmod"
+path = "src/main.rs"
+
+[dependencies]
+cmod-core = { path = "../cmod-core" }
+cmod-resolver = { path = "../cmod-resolver" }
+cmod-build = { path = "../cmod-build" }
+cmod-cache = { path = "../cmod-cache" }
+cmod-workspace = { path = "../cmod-workspace" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+serde_json = { workspace = true }
+semver = { workspace = true }
