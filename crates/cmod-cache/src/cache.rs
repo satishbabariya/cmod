@@ -317,4 +317,166 @@ mod tests {
         cache.clean().unwrap();
         assert!(!cache.has("m", &key));
     }
+
+    #[test]
+    fn test_cache_list_modules() {
+        let (tmp, cache) = test_cache();
+        let key = CacheKey("k".to_string());
+        let artifact = tmp.path().join("x.o");
+        fs::write(&artifact, b"data").unwrap();
+
+        let meta = ArtifactMetadata {
+            module_name: "alpha".to_string(),
+            cache_key: key.0.clone(),
+            source_hash: "h".to_string(),
+            compiler: "c".to_string(),
+            compiler_version: "1".to_string(),
+            target: "t".to_string(),
+            created_at: "now".to_string(),
+            artifacts: vec![],
+        };
+
+        cache.store("alpha", &key, &meta, &[("x.o", &artifact)]).unwrap();
+        cache.store("beta", &key, &meta, &[("x.o", &artifact)]).unwrap();
+
+        let modules = cache.list_modules().unwrap();
+        assert_eq!(modules, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn test_cache_total_size() {
+        let (tmp, cache) = test_cache();
+        let key = CacheKey("k".to_string());
+        let artifact = tmp.path().join("data.o");
+        fs::write(&artifact, b"hello world!").unwrap(); // 12 bytes
+
+        let meta = ArtifactMetadata {
+            module_name: "m".to_string(),
+            cache_key: key.0.clone(),
+            source_hash: "h".to_string(),
+            compiler: "c".to_string(),
+            compiler_version: "1".to_string(),
+            target: "t".to_string(),
+            created_at: "now".to_string(),
+            artifacts: vec![],
+        };
+
+        cache.store("m", &key, &meta, &[("data.o", &artifact)]).unwrap();
+
+        let size = cache.total_size().unwrap();
+        assert!(size > 0, "cache size should be > 0 after storing artifacts");
+    }
+
+    #[test]
+    fn test_cache_evict_module() {
+        let (tmp, cache) = test_cache();
+        let key1 = CacheKey("k1".to_string());
+        let key2 = CacheKey("k2".to_string());
+        let artifact = tmp.path().join("x.o");
+        fs::write(&artifact, b"data").unwrap();
+
+        let meta = ArtifactMetadata {
+            module_name: "target_mod".to_string(),
+            cache_key: "k".to_string(),
+            source_hash: "h".to_string(),
+            compiler: "c".to_string(),
+            compiler_version: "1".to_string(),
+            target: "t".to_string(),
+            created_at: "now".to_string(),
+            artifacts: vec![],
+        };
+
+        cache.store("target_mod", &key1, &meta, &[("x.o", &artifact)]).unwrap();
+        cache.store("target_mod", &key2, &meta, &[("x.o", &artifact)]).unwrap();
+        cache.store("other_mod", &key1, &meta, &[("x.o", &artifact)]).unwrap();
+
+        // Evict all entries for target_mod
+        cache.evict_module("target_mod").unwrap();
+
+        assert!(!cache.has("target_mod", &key1));
+        assert!(!cache.has("target_mod", &key2));
+        // other_mod should still exist
+        assert!(cache.has("other_mod", &key1));
+    }
+
+    #[test]
+    fn test_cache_get_artifact_miss() {
+        let (_tmp, cache) = test_cache();
+        let key = CacheKey("k".to_string());
+        assert!(cache.get_artifact("missing", &key, "test.o").is_none());
+    }
+
+    #[test]
+    fn test_cache_verify_artifact() {
+        let (tmp, cache) = test_cache();
+        let key = CacheKey("k".to_string());
+        let artifact = tmp.path().join("verified.o");
+        let content = b"verified content";
+        fs::write(&artifact, content).unwrap();
+
+        // Compute the actual hash
+        let actual_hash = hash_file(&artifact).unwrap();
+
+        let meta = ArtifactMetadata {
+            module_name: "m".to_string(),
+            cache_key: key.0.clone(),
+            source_hash: "h".to_string(),
+            compiler: "c".to_string(),
+            compiler_version: "1".to_string(),
+            target: "t".to_string(),
+            created_at: "now".to_string(),
+            artifacts: vec![CachedArtifactEntry {
+                name: "verified.o".to_string(),
+                hash: actual_hash,
+                size: content.len() as u64,
+            }],
+        };
+
+        cache.store("m", &key, &meta, &[("verified.o", &artifact)]).unwrap();
+
+        // Verification should pass
+        assert!(cache.verify_artifact("m", &key, "verified.o").unwrap());
+    }
+
+    #[test]
+    fn test_cache_verify_corrupt_artifact() {
+        let (tmp, cache) = test_cache();
+        let key = CacheKey("k".to_string());
+        let artifact = tmp.path().join("corrupt.o");
+        fs::write(&artifact, b"original").unwrap();
+
+        let meta = ArtifactMetadata {
+            module_name: "m".to_string(),
+            cache_key: key.0.clone(),
+            source_hash: "h".to_string(),
+            compiler: "c".to_string(),
+            compiler_version: "1".to_string(),
+            target: "t".to_string(),
+            created_at: "now".to_string(),
+            artifacts: vec![CachedArtifactEntry {
+                name: "corrupt.o".to_string(),
+                hash: "wrong_hash".to_string(),
+                size: 8,
+            }],
+        };
+
+        cache.store("m", &key, &meta, &[("corrupt.o", &artifact)]).unwrap();
+
+        // Verification should fail (hash mismatch)
+        assert!(!cache.verify_artifact("m", &key, "corrupt.o").unwrap());
+    }
+
+    #[test]
+    fn test_cache_root() {
+        let (tmp, cache) = test_cache();
+        assert_eq!(cache.root(), tmp.path());
+    }
+
+    #[test]
+    fn test_cache_entry_dir() {
+        let (_tmp, cache) = test_cache();
+        let key = CacheKey("abc123".to_string());
+        let dir = cache.entry_dir("github.fmtlib.fmt", &key);
+        assert!(dir.ends_with("github.fmtlib.fmt/abc123"));
+    }
 }

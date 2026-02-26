@@ -315,4 +315,77 @@ mod tests {
         let name = extract_module_name(&file).unwrap();
         assert_eq!(name, Some("foo:detail".to_string()));
     }
+
+    #[test]
+    fn test_extract_module_name_none_for_legacy() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.cpp");
+        fs::write(&file, "#include <iostream>\nint main() {}\n").unwrap();
+
+        let name = extract_module_name(&file).unwrap();
+        assert_eq!(name, None);
+    }
+
+    #[test]
+    fn test_extract_module_name_impl_unit() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.cpp");
+        fs::write(&file, "module mylib;\nvoid impl() {}\n").unwrap();
+
+        let name = extract_module_name(&file).unwrap();
+        assert_eq!(name, Some("mylib".to_string()));
+    }
+
+    #[test]
+    fn test_discover_sources_empty_dir() {
+        let tmp = TempDir::new().unwrap();
+        let sources = discover_sources(tmp.path()).unwrap();
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn test_discover_sources_nonexistent_dir() {
+        let sources = discover_sources(Path::new("/nonexistent/path")).unwrap();
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn test_discover_sources_nested() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+
+        fs::write(tmp.path().join("top.cppm"), "export module top;").unwrap();
+        fs::write(sub.join("nested.cpp"), "module top;").unwrap();
+
+        let sources = discover_sources(tmp.path()).unwrap();
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn test_discover_sources_all_extensions() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.cppm"), "").unwrap();
+        fs::write(tmp.path().join("b.ixx"), "").unwrap();
+        fs::write(tmp.path().join("c.mpp"), "").unwrap();
+        fs::write(tmp.path().join("d.cpp"), "").unwrap();
+        fs::write(tmp.path().join("e.cc"), "").unwrap();
+        fs::write(tmp.path().join("f.cxx"), "").unwrap();
+        fs::write(tmp.path().join("g.h"), "").unwrap(); // should be excluded
+        fs::write(tmp.path().join("h.txt"), "").unwrap(); // should be excluded
+
+        let sources = discover_sources(tmp.path()).unwrap();
+        assert_eq!(sources.len(), 6);
+    }
+
+    #[test]
+    fn test_classify_module_preamble_with_comments() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.cppm");
+        // Module declaration should be found even with leading comments
+        fs::write(&file, "// Copyright 2024\n// License: MIT\nexport module mymod;\n").unwrap();
+
+        let kind = classify_source(&file).unwrap();
+        assert_eq!(kind, cmod_core::types::ModuleUnitKind::InterfaceUnit);
+    }
 }

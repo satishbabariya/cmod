@@ -278,4 +278,83 @@ mod tests {
         let result = graph.validate();
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_validate_valid_graph() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(make_node("a", &[]));
+        graph.add_node(make_node("b", &["a"]));
+        graph.add_node(make_node("c", &["a", "b"]));
+
+        assert!(graph.validate().is_ok());
+    }
+
+    #[test]
+    fn test_dependents() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(make_node("a", &[]));
+        graph.add_node(make_node("b", &["a"]));
+        graph.add_node(make_node("c", &["a"]));
+        graph.add_node(make_node("d", &["b"]));
+
+        let deps_of_a = graph.dependents("a");
+        assert_eq!(deps_of_a.len(), 2);
+        assert!(deps_of_a.contains(&"b"));
+        assert!(deps_of_a.contains(&"c"));
+
+        let deps_of_b = graph.dependents("b");
+        assert_eq!(deps_of_b.len(), 1);
+        assert!(deps_of_b.contains(&"d"));
+
+        let deps_of_d = graph.dependents("d");
+        assert!(deps_of_d.is_empty());
+    }
+
+    #[test]
+    fn test_invalidation_set_leaf() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(make_node("a", &[]));
+        graph.add_node(make_node("b", &["a"]));
+        graph.add_node(make_node("c", &["b"]));
+
+        // Changing a leaf only invalidates itself
+        let set = graph.invalidation_set("c");
+        assert_eq!(set.len(), 1);
+        assert!(set.contains("c"));
+    }
+
+    #[test]
+    fn test_wide_graph_topological_order() {
+        let mut graph = ModuleGraph::new();
+        for i in 0..10 {
+            graph.add_node(make_node(&format!("leaf_{}", i), &[]));
+        }
+        let leaf_names: Vec<String> = (0..10).map(|i| format!("leaf_{}", i)).collect();
+        let leaf_refs: Vec<&str> = leaf_names.iter().map(|s| s.as_str()).collect();
+        graph.add_node(make_node("root", &leaf_refs));
+
+        let order = graph.topological_order().unwrap();
+        assert_eq!(order.len(), 11);
+        // root must be last
+        let root_pos = order.iter().position(|n| n == "root").unwrap();
+        assert_eq!(root_pos, 10);
+    }
+
+    #[test]
+    fn test_single_node_graph() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(make_node("only", &[]));
+
+        let order = graph.topological_order().unwrap();
+        assert_eq!(order, vec!["only"]);
+        assert_eq!(graph.roots(), vec!["only"]);
+        assert!(graph.dependents("only").is_empty());
+        assert!(graph.validate().is_ok());
+    }
+
+    #[test]
+    fn test_default() {
+        let graph = ModuleGraph::default();
+        assert!(graph.nodes.is_empty());
+    }
 }

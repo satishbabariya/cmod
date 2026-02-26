@@ -313,5 +313,204 @@ mod tests {
     fn test_sanitize_name() {
         assert_eq!(sanitize_name("github.fmtlib.fmt"), "github_fmtlib_fmt");
         assert_eq!(sanitize_name("mod:partition"), "mod_partition");
+        assert_eq!(sanitize_name("simple"), "simple");
+        assert_eq!(sanitize_name("a/b/c"), "a_b_c");
+    }
+
+    #[test]
+    fn test_build_plan_static_lib() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            name: "mylib".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/lib.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Release,
+            BuildType::StaticLib,
+        )
+        .unwrap();
+
+        assert_eq!(plan.build_type, BuildType::StaticLib);
+        assert_eq!(plan.profile, Profile::Release);
+        // Link node output should be a .a file
+        let link_node = plan.nodes.last().unwrap();
+        assert_eq!(link_node.kind, NodeKind::Link);
+        let output_path = link_node.outputs[0].to_str().unwrap();
+        assert!(output_path.ends_with(".a"), "Expected .a output: {}", output_path);
+    }
+
+    #[test]
+    fn test_build_plan_shared_lib() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            name: "mylib".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/lib.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::SharedLib,
+        )
+        .unwrap();
+
+        let link_node = plan.nodes.last().unwrap();
+        let output_path = link_node.outputs[0].to_str().unwrap();
+        assert!(output_path.ends_with(".so"), "Expected .so output: {}", output_path);
+    }
+
+    #[test]
+    fn test_build_plan_implementation_unit() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            name: "iface".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/iface.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+        });
+        graph.add_node(ModuleNode {
+            name: "impl_unit".to_string(),
+            kind: ModuleUnitKind::ImplementationUnit,
+            source: PathBuf::from("src/impl.cpp"),
+            package: "test".to_string(),
+            imports: vec!["iface".to_string()],
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::Binary,
+        )
+        .unwrap();
+
+        // interface + implementation + link = 3 nodes
+        assert_eq!(plan.nodes.len(), 3);
+        assert_eq!(plan.nodes[0].kind, NodeKind::Interface);
+        assert_eq!(plan.nodes[1].kind, NodeKind::Implementation);
+        assert_eq!(plan.nodes[2].kind, NodeKind::Link);
+
+        // Implementation should depend on interface
+        assert!(plan.nodes[1].dependencies.contains(&"interface:iface".to_string()));
+    }
+
+    #[test]
+    fn test_build_plan_legacy_unit() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            name: "main".to_string(),
+            kind: ModuleUnitKind::LegacyUnit,
+            source: PathBuf::from("src/main.cpp"),
+            package: "test".to_string(),
+            imports: vec![],
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::Binary,
+        )
+        .unwrap();
+
+        assert_eq!(plan.nodes.len(), 2); // object + link
+        assert_eq!(plan.nodes[0].kind, NodeKind::Object);
+        assert!(plan.nodes[0].dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_build_plan_object_paths() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            name: "mod_a".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/a.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+        });
+        graph.add_node(ModuleNode {
+            name: "mod_b".to_string(),
+            kind: ModuleUnitKind::ImplementationUnit,
+            source: PathBuf::from("src/b.cpp"),
+            package: "test".to_string(),
+            imports: vec!["mod_a".to_string()],
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::Binary,
+        )
+        .unwrap();
+
+        let objs = plan.object_paths();
+        assert_eq!(objs.len(), 2); // one from interface, one from impl
+    }
+
+    #[test]
+    fn test_build_plan_diamond_deps() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            name: "base".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/base.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+        });
+        graph.add_node(ModuleNode {
+            name: "left".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/left.cppm"),
+            package: "test".to_string(),
+            imports: vec!["base".to_string()],
+        });
+        graph.add_node(ModuleNode {
+            name: "right".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/right.cppm"),
+            package: "test".to_string(),
+            imports: vec!["base".to_string()],
+        });
+        graph.add_node(ModuleNode {
+            name: "top".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/top.cppm"),
+            package: "test".to_string(),
+            imports: vec!["left".to_string(), "right".to_string()],
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::Binary,
+        )
+        .unwrap();
+
+        // 4 interface nodes + 1 link = 5
+        assert_eq!(plan.nodes.len(), 5);
+
+        // top depends on left and right
+        let top_node = plan.nodes.iter().find(|n| n.module_name.as_deref() == Some("top")).unwrap();
+        assert!(top_node.dependencies.contains(&"interface:left".to_string()));
+        assert!(top_node.dependencies.contains(&"interface:right".to_string()));
     }
 }

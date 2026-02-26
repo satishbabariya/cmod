@@ -384,4 +384,86 @@ mod tests {
         let flags = backend.common_flags();
         assert!(flags.contains(&"--target=x86_64-unknown-linux-gnu".to_string()));
     }
+
+    #[test]
+    fn test_common_flags_with_stdlib() {
+        let mut backend = ClangBackend::new("20", Profile::Debug);
+        backend.stdlib = Some("libc++".to_string());
+        let flags = backend.common_flags();
+        assert!(flags.contains(&"-stdlib=libc++".to_string()));
+    }
+
+    #[test]
+    fn test_common_flags_with_extra_flags() {
+        let mut backend = ClangBackend::new("20", Profile::Debug);
+        backend.extra_flags = vec![
+            "-fsanitize=address".to_string(),
+            "-Wall".to_string(),
+        ];
+        let flags = backend.common_flags();
+        assert!(flags.contains(&"-fsanitize=address".to_string()));
+        assert!(flags.contains(&"-Wall".to_string()));
+    }
+
+    #[test]
+    fn test_parse_p1689_multiple_rules() {
+        let json = r#"{
+            "rules": [
+                {
+                    "primary-output": "a.o",
+                    "requires": [
+                        { "logical-name": "base" }
+                    ]
+                },
+                {
+                    "primary-output": "b.o",
+                    "requires": [
+                        { "logical-name": "base" },
+                        { "logical-name": "utils" }
+                    ]
+                }
+            ]
+        }"#;
+        let imports = parse_p1689_imports(json).unwrap();
+        assert_eq!(imports, vec!["base", "base", "utils"]);
+    }
+
+    #[test]
+    fn test_parse_p1689_no_requires() {
+        let json = r#"{
+            "rules": [
+                {
+                    "primary-output": "standalone.o",
+                    "provides": [
+                        { "logical-name": "mymod", "is-interface": true }
+                    ]
+                }
+            ]
+        }"#;
+        let imports = parse_p1689_imports(json).unwrap();
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn test_parse_p1689_invalid_json() {
+        let result = parse_p1689_imports("not json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_find_executable_fallback() {
+        // A nonexistent executable should fall back to the name itself
+        let path = find_executable("definitely_not_a_real_executable_12345");
+        assert_eq!(path, PathBuf::from("definitely_not_a_real_executable_12345"));
+    }
+
+    #[test]
+    fn test_clang_backend_defaults() {
+        let backend = ClangBackend::new("20", Profile::Debug);
+        assert_eq!(backend.cxx_standard, "20");
+        assert!(backend.stdlib.is_none());
+        assert!(backend.target.is_none());
+        assert!(backend.extra_flags.is_empty());
+        assert!(matches!(backend.profile, Profile::Debug));
+    }
 }

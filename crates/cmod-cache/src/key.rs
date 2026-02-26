@@ -132,4 +132,125 @@ mod tests {
         let h3 = hash_bytes(b"world");
         assert_ne!(h1, h3);
     }
+
+    #[test]
+    fn test_cache_key_display() {
+        let inputs = CacheKeyInputs {
+            source_hash: "test".to_string(),
+            dependency_hashes: vec![],
+            compiler: "clang".to_string(),
+            compiler_version: "18".to_string(),
+            cxx_standard: "20".to_string(),
+            stdlib: "libc++".to_string(),
+            target: "x86_64".to_string(),
+            flags: vec![],
+        };
+        let key = CacheKey::compute(&inputs);
+        let display = format!("{}", key);
+        assert_eq!(display, key.0);
+        assert_eq!(display.len(), 64); // SHA-256 hex is 64 chars
+    }
+
+    #[test]
+    fn test_cache_key_differs_on_compiler_change() {
+        let base = CacheKeyInputs {
+            source_hash: "same".to_string(),
+            dependency_hashes: vec![],
+            compiler: "clang".to_string(),
+            compiler_version: "18".to_string(),
+            cxx_standard: "20".to_string(),
+            stdlib: "libc++".to_string(),
+            target: "x86_64".to_string(),
+            flags: vec![],
+        };
+        let different = CacheKeyInputs {
+            source_hash: "same".to_string(),
+            dependency_hashes: vec![],
+            compiler: "gcc".to_string(),
+            compiler_version: "18".to_string(),
+            cxx_standard: "20".to_string(),
+            stdlib: "libc++".to_string(),
+            target: "x86_64".to_string(),
+            flags: vec![],
+        };
+
+        assert_ne!(CacheKey::compute(&base), CacheKey::compute(&different));
+    }
+
+    #[test]
+    fn test_cache_key_differs_on_target_change() {
+        let key_linux = CacheKey::compute(&CacheKeyInputs {
+            source_hash: "s".to_string(),
+            dependency_hashes: vec![],
+            compiler: "clang".to_string(),
+            compiler_version: "18".to_string(),
+            cxx_standard: "20".to_string(),
+            stdlib: "libc++".to_string(),
+            target: "x86_64-unknown-linux-gnu".to_string(),
+            flags: vec![],
+        });
+        let key_darwin = CacheKey::compute(&CacheKeyInputs {
+            source_hash: "s".to_string(),
+            dependency_hashes: vec![],
+            compiler: "clang".to_string(),
+            compiler_version: "18".to_string(),
+            cxx_standard: "20".to_string(),
+            stdlib: "libc++".to_string(),
+            target: "arm64-apple-darwin".to_string(),
+            flags: vec![],
+        });
+
+        assert_ne!(key_linux, key_darwin);
+    }
+
+    #[test]
+    fn test_cache_key_differs_on_flags() {
+        let key_no_flags = CacheKey::compute(&CacheKeyInputs {
+            source_hash: "s".to_string(),
+            dependency_hashes: vec![],
+            compiler: "clang".to_string(),
+            compiler_version: "18".to_string(),
+            cxx_standard: "20".to_string(),
+            stdlib: "libc++".to_string(),
+            target: "x86_64".to_string(),
+            flags: vec![],
+        });
+        let key_with_flags = CacheKey::compute(&CacheKeyInputs {
+            source_hash: "s".to_string(),
+            dependency_hashes: vec![],
+            compiler: "clang".to_string(),
+            compiler_version: "18".to_string(),
+            cxx_standard: "20".to_string(),
+            stdlib: "libc++".to_string(),
+            target: "x86_64".to_string(),
+            flags: vec!["-fsanitize=address".to_string()],
+        });
+
+        assert_ne!(key_no_flags, key_with_flags);
+    }
+
+    #[test]
+    fn test_hash_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("test.txt");
+        std::fs::write(&path, b"test content").unwrap();
+
+        let h1 = hash_file(&path).unwrap();
+        let h2 = hash_file(&path).unwrap();
+        assert_eq!(h1, h2);
+
+        // Should match hash_bytes with same content
+        let h3 = hash_bytes(b"test content");
+        assert_eq!(h1, h3);
+    }
+
+    #[test]
+    fn test_hash_bytes_empty() {
+        let h = hash_bytes(b"");
+        // SHA-256 of empty string is well-known
+        assert_eq!(
+            h,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
 }

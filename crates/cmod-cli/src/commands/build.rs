@@ -304,3 +304,120 @@ fn default_target() -> String {
         _ => format!("{}-unknown-{}", arch, os),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_extract_imports_module() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.cppm");
+        std::fs::write(
+            &file,
+            "export module mymod;\nimport base;\nimport utils;\n",
+        )
+        .unwrap();
+
+        let imports = extract_imports_from_source(&file).unwrap();
+        assert_eq!(imports, vec!["base", "utils"]);
+    }
+
+    #[test]
+    fn test_extract_imports_skips_header_units() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.cpp");
+        std::fs::write(
+            &file,
+            "import <iostream>;\nimport \"local.h\";\nimport mymod;\n",
+        )
+        .unwrap();
+
+        let imports = extract_imports_from_source(&file).unwrap();
+        // Should only include mymod, not <iostream> or "local.h"
+        assert_eq!(imports, vec!["mymod"]);
+    }
+
+    #[test]
+    fn test_extract_imports_empty() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.cpp");
+        std::fs::write(&file, "int main() { return 0; }\n").unwrap();
+
+        let imports = extract_imports_from_source(&file).unwrap();
+        assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn test_extract_imports_with_whitespace() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.cppm");
+        std::fs::write(
+            &file,
+            "  import   base  ;\n\timport utils;\n",
+        )
+        .unwrap();
+
+        let imports = extract_imports_from_source(&file).unwrap();
+        assert_eq!(imports, vec!["base", "utils"]);
+    }
+
+    #[test]
+    fn test_default_target_is_not_empty() {
+        let target = default_target();
+        assert!(!target.is_empty());
+        // Should contain arch and os info
+        assert!(target.contains('-'));
+    }
+
+    #[test]
+    fn test_build_module_graph_single_file() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("lib.cppm");
+        std::fs::write(&file, "export module mymod;\n\nvoid hello() {}\n").unwrap();
+
+        let sources = vec![file];
+        let graph = build_module_graph(&sources, "test_pkg").unwrap();
+
+        assert_eq!(graph.nodes.len(), 1);
+        assert!(graph.nodes.contains_key("mymod"));
+        assert_eq!(graph.nodes["mymod"].package, "test_pkg");
+    }
+
+    #[test]
+    fn test_build_module_graph_filters_external_imports() {
+        let tmp = TempDir::new().unwrap();
+
+        let base = tmp.path().join("base.cppm");
+        std::fs::write(&base, "export module base;\n").unwrap();
+
+        let app = tmp.path().join("app.cppm");
+        std::fs::write(
+            &app,
+            "export module app;\nimport base;\nimport external_lib;\n",
+        )
+        .unwrap();
+
+        let sources = vec![base, app];
+        let graph = build_module_graph(&sources, "test").unwrap();
+
+        // app should only import base (external_lib filtered out)
+        let app_node = &graph.nodes["app"];
+        assert_eq!(app_node.imports, vec!["base"]);
+    }
+
+    #[test]
+    fn test_build_module_graph_legacy_source() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("main.cpp");
+        std::fs::write(&file, "#include <stdio.h>\nint main() {}\n").unwrap();
+
+        let sources = vec![file];
+        let graph = build_module_graph(&sources, "test").unwrap();
+
+        // Legacy files use filename as module name
+        assert_eq!(graph.nodes.len(), 1);
+        assert!(graph.nodes.contains_key("main"));
+    }
+}
