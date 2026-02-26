@@ -1,0 +1,17 @@
+[package]
+name = "cmod-workspace"
+version = "0.1.0"
+edition = "2021"
+description = "Workspace and monorepo management for cmod"
+
+[dependencies]
+cmod-core = { path = "../cmod-core" }
+cmod-resolver = { path = "../cmod-resolver" }
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

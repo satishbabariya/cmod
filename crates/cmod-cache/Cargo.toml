@@ -1,0 +1,19 @@
+[package]
+name = "cmod-cache"
+version = "0.1.0"
+edition = "2021"
+description = "Local and remote cache management for cmod build artifacts"
+
+[dependencies]
+cmod-core = { path = "../cmod-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+dirs = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
