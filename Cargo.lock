@@ -208,12 +208,14 @@ dependencies = [
  "cmod-cache",
  "cmod-core",
  "cmod-resolver",
+ "cmod-security",
  "cmod-workspace",
  "semver",
  "serde",
  "serde_json",
  "tempfile",
  "toml",
+ "walkdir",
 ]
 
 [[package]]
@@ -249,6 +251,24 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "cmod-security"
+version = "0.1.0"
+dependencies = [
+ "cmod-cache",
+ "cmod-core",
+ "dirs",
+ "git2",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "walkdir",
 ]
 
 [[package]]

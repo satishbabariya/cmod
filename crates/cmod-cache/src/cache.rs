@@ -26,6 +26,14 @@ pub struct CachedArtifactEntry {
     pub size: u64,
 }
 
+/// Summary of cache state.
+#[derive(Debug, Clone)]
+pub struct CacheStatus {
+    pub module_count: usize,
+    pub entry_count: u64,
+    pub total_size: u64,
+}
+
 /// Local artifact cache.
 ///
 /// Layout:
@@ -181,6 +189,31 @@ impl ArtifactCache {
         }
         modules.sort();
         Ok(modules)
+    }
+
+    /// Get a cache status summary.
+    pub fn status(&self) -> Result<CacheStatus, CmodError> {
+        let modules = self.list_modules()?;
+        let total_size = self.total_size()?;
+
+        let mut entry_count = 0u64;
+        for module in &modules {
+            let module_dir = self.root.join(module);
+            if module_dir.exists() {
+                for entry in fs::read_dir(&module_dir)? {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() {
+                        entry_count += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(CacheStatus {
+            module_count: modules.len(),
+            entry_count,
+            total_size,
+        })
     }
 
     /// Verify integrity of a cached artifact against its recorded hash.

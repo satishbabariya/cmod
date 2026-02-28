@@ -14,12 +14,14 @@ cmod-resolver = { path = "../cmod-resolver" }
 cmod-build = { path = "../cmod-build" }
 cmod-cache = { path = "../cmod-cache" }
 cmod-workspace = { path = "../cmod-workspace" }
+cmod-security = { path = "../cmod-security" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 serde_json = { workspace = true }
 semver = { workspace = true }
+walkdir = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

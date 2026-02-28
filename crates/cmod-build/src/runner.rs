@@ -1,24 +1,61 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use cmod_cache::cache::ArtifactCache;
+use cmod_cache::cache::{ArtifactCache, ArtifactMetadata, CachedArtifactEntry};
+use cmod_cache::key::{hash_file, CacheKey, CacheKeyInputs};
 use cmod_core::error::CmodError;
 use cmod_core::types::{Artifact, BuildType, NodeKind, Profile};
 
 use crate::compiler::{ClangBackend, CompilerBackend};
 use crate::graph::ModuleGraph;
-use crate::plan::BuildPlan;
+use crate::plan::{BuildNode, BuildPlan};
+
+/// Statistics from a build execution.
+#[derive(Debug, Clone, Default)]
+pub struct BuildStats {
+    /// Number of nodes that hit the cache.
+    pub cache_hits: usize,
+    /// Number of nodes that were compiled.
+    pub cache_misses: usize,
+    /// Number of nodes skipped (link nodes, etc).
+    pub skipped: usize,
+}
 
 /// Build runner that executes a build plan.
 pub struct BuildRunner {
     backend: ClangBackend,
-    #[allow(dead_code)]
     cache: Option<ArtifactCache>,
+    /// When true, skip cache lookups and always recompile.
+    pub no_cache: bool,
+    /// Maximum parallel jobs (0 = auto-detect CPU count).
+    pub max_jobs: usize,
 }
 
 impl BuildRunner {
     pub fn new(backend: ClangBackend, cache: Option<ArtifactCache>) -> Self {
-        BuildRunner { backend, cache }
+        BuildRunner {
+            backend,
+            cache,
+            no_cache: false,
+            max_jobs: 0,
+        }
+    }
+
+    /// Set the maximum parallel jobs.
+    pub fn with_jobs(mut self, jobs: usize) -> Self {
+        self.max_jobs = jobs;
+        self
+    }
+
+    /// Get the effective parallelism level.
+    pub fn effective_jobs(&self) -> usize {
+        if self.max_jobs == 0 {
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1)
+        } else {
+            self.max_jobs
+        }
     }
 
     /// Execute a full build from a module graph.
@@ -47,15 +84,183 @@ impl BuildRunner {
         fs::create_dir_all(build_dir.join("obj"))?;
 
         // Execute the plan
+        let (output, _stats) = self.execute_plan(&plan)?;
+        Ok(output)
+    }
+
+    /// Execute a full build and return statistics.
+    pub fn build_with_stats(
+        &self,
+        graph: &ModuleGraph,
+        build_dir: &Path,
+        target: &str,
+        profile: Profile,
+        build_type: BuildType,
+    ) -> Result<(PathBuf, BuildStats), CmodError> {
+        graph.validate()?;
+        let plan = BuildPlan::from_graph(
+            graph,
+            &build_dir.to_path_buf(),
+            target,
+            profile,
+            build_type,
+        )?;
+        fs::create_dir_all(build_dir.join("pcm"))?;
+        fs::create_dir_all(build_dir.join("obj"))?;
         self.execute_plan(&plan)
+    }
+
+    /// Compute a cache key for a build node.
+    fn compute_cache_key(
+        &self,
+        node: &BuildNode,
+        plan: &BuildPlan,
+    ) -> Option<(String, CacheKey)> {
+        let source = node.source.as_ref()?;
+        let module_id = node.module_name.as_ref()?;
+
+        let source_hash = hash_file(source).ok()?;
+
+        // Gather dependency hashes from the dependency output files
+        let mut dep_hashes = Vec::new();
+        for dep_id in &node.dependencies {
+            // Find the dependency node and hash its outputs
+            if let Some(dep_node) = plan.nodes.iter().find(|n| &n.id == dep_id) {
+                for output in &dep_node.outputs {
+                    if output.exists() {
+                        if let Ok(h) = hash_file(output) {
+                            dep_hashes.push(h);
+                        }
+                    }
+                }
+            }
+        }
+
+        let cxx_standard = self.backend.cxx_standard.clone();
+        let stdlib = self.backend.stdlib.clone().unwrap_or_default();
+
+        let inputs = CacheKeyInputs {
+            source_hash,
+            dependency_hashes: dep_hashes,
+            compiler: "clang".to_string(),
+            compiler_version: String::new(),
+            cxx_standard,
+            stdlib,
+            target: plan.target.clone(),
+            flags: self.backend.extra_flags.clone(),
+        };
+
+        Some((module_id.clone(), CacheKey::compute(&inputs)))
+    }
+
+    /// Try to restore a node's outputs from cache. Returns true on hit.
+    fn try_cache_restore(
+        &self,
+        module_id: &str,
+        key: &CacheKey,
+        node: &BuildNode,
+    ) -> bool {
+        let cache = match &self.cache {
+            Some(c) => c,
+            None => return false,
+        };
+
+        if self.no_cache || !cache.has(module_id, key) {
+            return false;
+        }
+
+        // Try to copy each output from cache
+        for output in &node.outputs {
+            let artifact_name = output
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("unknown");
+
+            match cache.get_artifact(module_id, key, artifact_name) {
+                Some(cached_path) => {
+                    if let Some(parent) = output.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    if fs::copy(&cached_path, output).is_err() {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+
+        true
+    }
+
+    /// Store a node's outputs into cache after successful compilation.
+    fn cache_store(
+        &self,
+        module_id: &str,
+        key: &CacheKey,
+        node: &BuildNode,
+    ) {
+        let cache = match &self.cache {
+            Some(c) => c,
+            None => return,
+        };
+
+        if self.no_cache {
+            return;
+        }
+
+        let mut artifact_entries = Vec::new();
+        let mut artifact_files = Vec::new();
+
+        for output in &node.outputs {
+            let name = output
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let hash = hash_file(output).unwrap_or_default();
+            let size = fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+
+            artifact_entries.push(CachedArtifactEntry {
+                name: name.clone(),
+                hash,
+                size,
+            });
+            artifact_files.push((name, output.clone()));
+        }
+
+        let source_hash = node
+            .source
+            .as_ref()
+            .and_then(|s| hash_file(s).ok())
+            .unwrap_or_default();
+
+        let metadata = ArtifactMetadata {
+            module_name: module_id.to_string(),
+            cache_key: key.to_string(),
+            source_hash,
+            compiler: "clang".to_string(),
+            compiler_version: String::new(),
+            target: String::new(),
+            created_at: String::new(),
+            artifacts: artifact_entries,
+        };
+
+        let file_refs: Vec<(&str, &Path)> = artifact_files
+            .iter()
+            .map(|(name, path)| (name.as_str(), path.as_path()))
+            .collect();
+
+        let _ = cache.store(module_id, key, &metadata, &file_refs);
     }
 
     /// Execute each node in the build plan sequentially.
     ///
     /// Nodes are already in topological order (dependencies first).
-    fn execute_plan(&self, plan: &BuildPlan) -> Result<PathBuf, CmodError> {
+    fn execute_plan(&self, plan: &BuildPlan) -> Result<(PathBuf, BuildStats), CmodError> {
         let pcm_map = plan.pcm_paths();
         let mut final_output = PathBuf::new();
+        let mut stats = BuildStats::default();
 
         for node in &plan.nodes {
             match node.kind {
@@ -63,6 +268,15 @@ impl BuildRunner {
                     let source = node.source.as_ref().unwrap();
                     let pcm_output = &node.outputs[0];
                     let obj_output = &node.outputs[1];
+
+                    // Try cache first
+                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                        if self.try_cache_restore(&module_id, &key, node) {
+                            eprintln!("  Cached interface: {}", source.display());
+                            stats.cache_hits += 1;
+                            continue;
+                        }
+                    }
 
                     // Build dep PCM references
                     let dep_pcms: Vec<(&str, &Path)> = node
@@ -85,12 +299,27 @@ impl BuildRunner {
                     self.backend
                         .compile_interface(source, pcm_output, obj_output, &dep_pcms)?;
 
+                    // Store in cache
+                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                        self.cache_store(&module_id, &key, node);
+                    }
+
                     eprintln!("  Compiled interface: {}", source.display());
+                    stats.cache_misses += 1;
                 }
 
                 NodeKind::Implementation => {
                     let source = node.source.as_ref().unwrap();
                     let obj_output = &node.outputs[0];
+
+                    // Try cache first
+                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                        if self.try_cache_restore(&module_id, &key, node) {
+                            eprintln!("  Cached impl: {}", source.display());
+                            stats.cache_hits += 1;
+                            continue;
+                        }
+                    }
 
                     let dep_pcms: Vec<(&str, &Path)> = node
                         .dependencies
@@ -108,12 +337,27 @@ impl BuildRunner {
                     self.backend
                         .compile_implementation(source, obj_output, &dep_pcms)?;
 
+                    // Store in cache
+                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                        self.cache_store(&module_id, &key, node);
+                    }
+
                     eprintln!("  Compiled impl: {}", source.display());
+                    stats.cache_misses += 1;
                 }
 
                 NodeKind::Object => {
                     let source = node.source.as_ref().unwrap();
                     let obj_output = &node.outputs[0];
+
+                    // Try cache first
+                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                        if self.try_cache_restore(&module_id, &key, node) {
+                            eprintln!("  Cached: {}", source.display());
+                            stats.cache_hits += 1;
+                            continue;
+                        }
+                    }
 
                     if let Some(parent) = obj_output.parent() {
                         fs::create_dir_all(parent)?;
@@ -122,7 +366,13 @@ impl BuildRunner {
                     self.backend
                         .compile_implementation(source, obj_output, &[])?;
 
+                    // Store in cache
+                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                        self.cache_store(&module_id, &key, node);
+                    }
+
                     eprintln!("  Compiled: {}", source.display());
+                    stats.cache_misses += 1;
                 }
 
                 NodeKind::Link => {
@@ -151,11 +401,12 @@ impl BuildRunner {
 
                     eprintln!("  Linked: {}", output.display());
                     final_output = output.clone();
+                    stats.skipped += 1;
                 }
             }
         }
 
-        Ok(final_output)
+        Ok((final_output, stats))
     }
 }
 

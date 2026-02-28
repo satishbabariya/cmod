@@ -1,3 +1,4 @@
+pub mod features;
 pub mod git;
 pub mod resolver;
 pub mod version;

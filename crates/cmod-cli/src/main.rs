@@ -28,6 +28,18 @@ struct Cli {
     /// Override the target triple
     #[arg(long, global = true)]
     target: Option<String>,
+
+    /// Enable specific features (comma-separated)
+    #[arg(long, global = true, value_delimiter = ',')]
+    features: Vec<String>,
+
+    /// Disable default features
+    #[arg(long, global = true)]
+    no_default_features: bool,
+
+    /// Skip build cache
+    #[arg(long, global = true)]
+    no_cache: bool,
 }
 
 #[derive(Subcommand)]
@@ -83,6 +95,10 @@ enum Commands {
         /// Build in release mode
         #[arg(long)]
         release: bool,
+
+        /// Maximum parallel compilation jobs (0 = auto)
+        #[arg(long, short, default_value = "0")]
+        jobs: usize,
     },
 
     /// Run module tests
@@ -116,7 +132,34 @@ enum Commands {
     },
 
     /// Verify integrity and security
-    Verify,
+    Verify {
+        /// Check commit signatures
+        #[arg(long)]
+        signatures: bool,
+    },
+
+    /// Visualize the module dependency graph
+    Graph {
+        /// Output format: ascii, dot, json
+        #[arg(long, default_value = "ascii")]
+        format: Option<String>,
+
+        /// Filter modules matching this pattern
+        #[arg(long)]
+        filter: Option<String>,
+    },
+
+    /// Audit dependencies for security and quality issues
+    Audit,
+
+    /// Show project status overview
+    Status,
+
+    /// Explain why a module would be rebuilt
+    Explain {
+        /// Module name to explain
+        module: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -142,8 +185,8 @@ fn main() {
         } => commands::add::run(dep, git, branch, rev, path, features, cli.locked, cli.offline),
         Commands::Remove { name } => commands::remove::run(name),
         Commands::Resolve => commands::resolve::run(cli.locked, cli.offline, cli.verbose),
-        Commands::Build { release } => {
-            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target)
+        Commands::Build { release, jobs } => {
+            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs)
         }
         Commands::Test { release } => {
             commands::test::run(release, cli.locked, cli.offline, cli.verbose, cli.target)
@@ -154,7 +197,11 @@ fn main() {
             CacheAction::Status => commands::cache::status(),
             CacheAction::Clean => commands::cache::clean(),
         },
-        Commands::Verify => commands::verify::run(cli.verbose),
+        Commands::Verify { signatures } => commands::verify::run(cli.verbose, signatures),
+        Commands::Graph { format, filter } => commands::graph::run(format, filter),
+        Commands::Audit => commands::audit::run(cli.verbose),
+        Commands::Status => commands::status::run(cli.verbose),
+        Commands::Explain { module } => commands::explain::run(module, cli.verbose),
     };
 
     if let Err(e) = result {
