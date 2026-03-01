@@ -47,6 +47,11 @@ pub struct BuildRunner {
     pub force_rebuild: bool,
     /// Maximum parallel jobs (0 = auto-detect CPU count).
     pub max_jobs: usize,
+    /// Extra PCM paths from external sources (e.g., workspace dependencies).
+    /// Maps module name to PCM file path.
+    extra_pcm_paths: HashMap<String, PathBuf>,
+    /// Extra object files to link (e.g., from workspace dependencies).
+    extra_obj_paths: Vec<PathBuf>,
 }
 
 /// Outcome of executing a single build node.
@@ -78,6 +83,8 @@ impl BuildRunner {
             no_cache: false,
             force_rebuild: false,
             max_jobs: 0,
+            extra_pcm_paths: HashMap::new(),
+            extra_obj_paths: Vec::new(),
         }
     }
 
@@ -96,6 +103,18 @@ impl BuildRunner {
     /// Enable force rebuild (ignore incremental state).
     pub fn with_force(mut self, force: bool) -> Self {
         self.force_rebuild = force;
+        self
+    }
+
+    /// Add extra PCM paths from external sources (e.g., other workspace members).
+    pub fn with_extra_pcm_paths(mut self, pcms: HashMap<String, PathBuf>) -> Self {
+        self.extra_pcm_paths = pcms;
+        self
+    }
+
+    /// Add extra object files to link (e.g., from workspace dependencies).
+    pub fn with_extra_obj_paths(mut self, objs: Vec<PathBuf>) -> Self {
+        self.extra_obj_paths = objs;
         self
     }
 
@@ -525,7 +544,8 @@ impl BuildRunner {
 
             NodeKind::Link => {
                 let output = &node.outputs[0];
-                let obj_files = plan.object_paths();
+                let mut obj_files = plan.object_paths();
+                obj_files.extend(self.extra_obj_paths.clone());
                 let obj_refs: Vec<&Path> =
                     obj_files.iter().map(|p| p.as_path()).collect();
 
@@ -578,10 +598,12 @@ impl BuildRunner {
             .map(|(i, n)| (n.id.clone(), i))
             .collect();
 
-        // Compute PCM paths for dependency resolution during compilation
-        let pcm_map: Arc<HashMap<String, PathBuf>> = Arc::new(
-            plan.pcm_paths().into_iter().collect(),
-        );
+        // Compute PCM paths for dependency resolution during compilation.
+        // Include extra PCMs from workspace dependencies.
+        let mut pcm_map_inner: HashMap<String, PathBuf> =
+            plan.pcm_paths().into_iter().collect();
+        pcm_map_inner.extend(self.extra_pcm_paths.clone());
+        let pcm_map: Arc<HashMap<String, PathBuf>> = Arc::new(pcm_map_inner);
 
         // For single-job or very small plans, use sequential execution
         if jobs <= 1 || compile_nodes.len() <= 1 {
@@ -777,7 +799,8 @@ impl BuildRunner {
         let wall_start = Instant::now();
         let build_state = BuildState::load(&plan.build_dir);
         let flags_hash = self.flags_hash();
-        let pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
+        let mut pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
+        pcm_map.extend(self.extra_pcm_paths.clone());
         let mut new_state = BuildState::default();
         let mut final_output = PathBuf::new();
         let mut stats = BuildStats::default();

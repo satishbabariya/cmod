@@ -200,9 +200,16 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, rem
     // Ensure dependencies are resolved
     let _lockfile = ensure_resolved(config)?;
 
+    // Build members in topological order so dependencies are built first
+    let ordered_members = ws.build_order()?;
+
+    // Accumulate PCM and object files from built members for cross-member imports
+    let mut workspace_pcm_paths: std::collections::HashMap<String, std::path::PathBuf> =
+        std::collections::HashMap::new();
+    let mut workspace_obj_paths: Vec<std::path::PathBuf> = Vec::new();
     let mut failed = Vec::new();
 
-    for member in &ws.members {
+    for member in &ordered_members {
         eprintln!("  Building member: {}", member.name);
 
         let member_src = member.path.join("src");
@@ -231,16 +238,45 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, rem
             .and_then(|b| b.build_type)
             .unwrap_or_default();
 
-        let mut runner = BuildRunner::new(backend, Some(cache))
+        let mut runner_instance = BuildRunner::new(backend, Some(cache))
             .with_jobs(jobs)
-            .with_force(force);
+            .with_force(force)
+            .with_extra_pcm_paths(workspace_pcm_paths.clone())
+            .with_extra_obj_paths(workspace_obj_paths.clone());
         if let Some(remote) = make_remote_cache(remote_url, verbose) {
-            runner = runner.with_remote_cache(remote);
+            runner_instance = runner_instance.with_remote_cache(remote);
         }
-        match runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type) {
+        match runner_instance.build_with_stats(&graph, &build_dir, &target, config.profile, build_type) {
             Ok((output, stats)) => {
                 print_build_stats(&stats, verbose, timings);
                 eprintln!("    Built: {}", output.display());
+
+                // Collect PCM files from this member for downstream members
+                let pcm_dir = build_dir.join("pcm");
+                if pcm_dir.exists() {
+                    for source in &sources {
+                        if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
+                            let sanitized = mod_name.replace('.', "_").replace(':', "_").replace('/', "_");
+                            let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
+                            if pcm_path.exists() {
+                                workspace_pcm_paths.insert(mod_name, pcm_path);
+                            }
+                        }
+                    }
+                }
+
+                // Collect object files from this member for downstream linking
+                let obj_dir = build_dir.join("obj");
+                if obj_dir.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&obj_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.extension().and_then(|e| e.to_str()) == Some("o") {
+                                workspace_obj_paths.push(path);
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("    Failed: {}", e);
