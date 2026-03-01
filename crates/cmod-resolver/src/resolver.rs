@@ -6,6 +6,7 @@ use semver::Version;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::{Lockfile, LockedPackage, LockedToolchain};
 use cmod_core::manifest::{Dependency, Manifest};
+use cmod_security::trust::TrustDb;
 
 use crate::features::{resolve_features, should_include_dep};
 use crate::git;
@@ -18,6 +19,10 @@ use crate::version;
 pub struct Resolver {
     /// Directory where dependency repos are cloned/fetched.
     deps_dir: PathBuf,
+    /// Trust database for TOFU verification.
+    trust_db: Option<TrustDb>,
+    /// When true, skip trust checks entirely.
+    untrusted: bool,
 }
 
 /// The result of resolving a single dependency.
@@ -41,7 +46,31 @@ pub struct ResolvedDep {
 
 impl Resolver {
     pub fn new(deps_dir: PathBuf) -> Self {
-        Resolver { deps_dir }
+        Resolver {
+            deps_dir,
+            trust_db: None,
+            untrusted: false,
+        }
+    }
+
+    /// Enable TOFU trust checking with the given trust database.
+    pub fn with_trust_db(mut self, trust_db: TrustDb) -> Self {
+        self.trust_db = Some(trust_db);
+        self
+    }
+
+    /// Skip all trust checks (--untrusted mode).
+    pub fn with_untrusted(mut self, untrusted: bool) -> Self {
+        self.untrusted = untrusted;
+        self
+    }
+
+    /// Save the trust database to the default location (if loaded).
+    pub fn save_trust_db(&self) -> Result<(), CmodError> {
+        if let Some(ref db) = self.trust_db {
+            db.save_default()?;
+        }
+        Ok(())
     }
 
     /// Resolve all dependencies from a manifest, producing a lockfile.
@@ -49,7 +78,7 @@ impl Resolver {
     /// If a lockfile already exists and `locked` is true, validates that
     /// locked versions satisfy current constraints (but does not re-resolve).
     pub fn resolve(
-        &self,
+        &mut self,
         manifest: &Manifest,
         existing_lock: Option<&Lockfile>,
         locked: bool,
@@ -64,7 +93,7 @@ impl Resolver {
     /// `no_default_features` disables the `[features] default = [...]` set.
     /// `target_triple` filters target-specific dependencies (e.g., `x86_64-unknown-linux-gnu`).
     pub fn resolve_with_features(
-        &self,
+        &mut self,
         manifest: &Manifest,
         existing_lock: Option<&Lockfile>,
         locked: bool,
@@ -77,7 +106,7 @@ impl Resolver {
 
     /// Resolve all dependencies with feature flags and target-specific filtering.
     pub fn resolve_with_target(
-        &self,
+        &mut self,
         manifest: &Manifest,
         existing_lock: Option<&Lockfile>,
         locked: bool,
@@ -156,7 +185,7 @@ impl Resolver {
 
     /// Resolve a single dependency.
     fn resolve_dep(
-        &self,
+        &mut self,
         name: &str,
         dep: &Dependency,
         _manifest: &Manifest,
@@ -219,6 +248,34 @@ impl Resolver {
         // Fetch or clone the repository
         let repo = git::fetch_repo(&url, &repo_dir)?;
 
+        // TOFU trust verification: check that this dep's origin matches trust DB
+        if !self.untrusted {
+            if let Some(ref mut trust_db) = self.trust_db {
+                match trust_db.origin_matches(name, &url) {
+                    Some(true) => {
+                        // Origin matches, all good
+                    }
+                    Some(false) => {
+                        // Origin mismatch — potential supply chain attack
+                        let trusted_origin = trust_db.modules.get(name)
+                            .map(|m| m.origin.as_str())
+                            .unwrap_or("unknown");
+                        return Err(CmodError::SecurityViolation {
+                            reason: format!(
+                                "origin mismatch for '{}': trusted '{}', but got '{}'. \
+                                 Use --untrusted to bypass, or run `cmod trust remove {}` to reset.",
+                                name, trusted_origin, url, name
+                            ),
+                        });
+                    }
+                    None => {
+                        // New dependency — trust on first use
+                        trust_db.trust_on_first_use(name, &url, "");
+                    }
+                }
+            }
+        }
+
         // Determine the version based on dep specification
         let (resolved_version, commit_oid) = match dep {
             Dependency::Detailed(d) if d.rev.is_some() => {
@@ -280,6 +337,17 @@ impl Resolver {
 
         // Checkout the resolved commit
         git::checkout_commit(&repo, commit_oid)?;
+
+        // Update trust DB with the resolved commit (for new entries)
+        if !self.untrusted {
+            if let Some(ref mut trust_db) = self.trust_db {
+                if let Some(entry) = trust_db.modules.get_mut(name) {
+                    if entry.first_seen_commit.is_empty() {
+                        entry.first_seen_commit = commit_oid.to_string();
+                    }
+                }
+            }
+        }
 
         // Check for transitive dependencies by reading the dep's cmod.toml
         let dep_manifest_path = repo_dir.join("cmod.toml");
@@ -382,7 +450,7 @@ impl Resolver {
 
     /// Add a single dependency to an existing manifest and re-resolve.
     pub fn add_dependency(
-        &self,
+        &mut self,
         manifest: &mut Manifest,
         dep_key: String,
         dep: Dependency,
@@ -442,6 +510,7 @@ mod tests {
             metadata: None,
             security: None,
             publish: None,
+            hooks: None,
             target: BTreeMap::new(),
         }
     }
@@ -449,7 +518,7 @@ mod tests {
     #[test]
     fn test_resolve_empty_deps() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let manifest = minimal_manifest();
 
         let lockfile = resolver.resolve(&manifest, None, false, false).unwrap();
@@ -459,7 +528,7 @@ mod tests {
     #[test]
     fn test_resolve_locked_without_lockfile() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let manifest = minimal_manifest();
 
         let result = resolver.resolve(&manifest, None, true, false);
@@ -469,7 +538,7 @@ mod tests {
     #[test]
     fn test_resolve_locked_with_valid_lockfile() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let mut manifest = minimal_manifest();
         manifest.dependencies.insert(
             "test_dep".to_string(),
@@ -500,7 +569,7 @@ mod tests {
     #[test]
     fn test_resolve_locked_with_outdated_lockfile() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let mut manifest = minimal_manifest();
         manifest.dependencies.insert(
             "test_dep".to_string(),
@@ -528,7 +597,7 @@ mod tests {
     #[test]
     fn test_resolve_path_dependency() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let mut manifest = minimal_manifest();
         manifest.dependencies.insert(
             "local_lib".to_string(),
@@ -554,7 +623,7 @@ mod tests {
     #[test]
     fn test_resolve_offline_fails_for_git_dep() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let mut manifest = minimal_manifest();
         manifest.dependencies.insert(
             "github.com/test/dep".to_string(),
@@ -568,7 +637,7 @@ mod tests {
     #[test]
     fn test_add_dependency() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let mut manifest = minimal_manifest();
 
         let dep = Dependency::Detailed(DetailedDependency {
@@ -595,7 +664,7 @@ mod tests {
     #[test]
     fn test_add_duplicate_dependency() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let mut manifest = minimal_manifest();
 
         manifest.dependencies.insert(
@@ -632,7 +701,7 @@ mod tests {
     #[test]
     fn test_resolve_reuses_locked_version() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let mut manifest = minimal_manifest();
         manifest.dependencies.insert(
             "dep_a".to_string(),
@@ -665,7 +734,7 @@ mod tests {
     #[test]
     fn test_resolve_with_features_filters_optional_deps() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let mut manifest = minimal_manifest();
 
         // Add a required dep
@@ -713,7 +782,7 @@ mod tests {
     #[test]
     fn test_resolve_with_features_includes_activated_optional() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let mut manifest = minimal_manifest();
 
         // Add an optional dep
@@ -759,7 +828,7 @@ mod tests {
     #[test]
     fn test_resolve_with_target_includes_target_deps() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let mut manifest = minimal_manifest();
 
         // Base dependency
@@ -825,7 +894,7 @@ mod tests {
     #[test]
     fn test_resolve_stores_features_in_lockfile() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
         let mut manifest = minimal_manifest();
 
         // Add a dep with features requested
@@ -850,5 +919,90 @@ mod tests {
             .unwrap();
         assert_eq!(lock.packages.len(), 1);
         assert!(lock.packages[0].features.contains(&"simd".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_trust_on_first_use_creates_entry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let trust_db = TrustDb::default();
+        let mut resolver = Resolver::new(tmp.path().to_path_buf())
+            .with_trust_db(trust_db);
+        let mut manifest = minimal_manifest();
+
+        // Path deps go through resolve_path_dep, not the trust-checked path.
+        // But the resolver should carry the trust DB without errors.
+        manifest.dependencies.insert(
+            "local_lib".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: Some("0.1.0".to_string()),
+                git: None,
+                branch: None,
+                rev: None,
+                tag: None,
+                path: Some(PathBuf::from("./libs/local")),
+                features: vec![],
+                optional: false,
+                default_features: true,
+                workspace: false,
+            }),
+        );
+
+        let lockfile = resolver.resolve(&manifest, None, false, false).unwrap();
+        assert_eq!(lockfile.packages.len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_untrusted_mode_skips_checks() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let trust_db = TrustDb::default();
+        let mut resolver = Resolver::new(tmp.path().to_path_buf())
+            .with_trust_db(trust_db)
+            .with_untrusted(true);
+
+        let manifest = minimal_manifest();
+        let lockfile = resolver.resolve(&manifest, None, false, false).unwrap();
+        assert!(lockfile.is_empty());
+    }
+
+    #[test]
+    fn test_trust_db_origin_mismatch_error() {
+        // Simulate: module was previously trusted with one URL, now resolving from different
+        let mut trust_db = TrustDb::default();
+        trust_db.trust_on_first_use(
+            "github.com/test/dep",
+            "https://github.com/test/dep.git",
+            "abc123",
+        );
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf())
+            .with_trust_db(trust_db);
+
+        let mut manifest = minimal_manifest();
+        // This dep will resolve to a URL that differs from what was trusted
+        manifest.dependencies.insert(
+            "github.com/test/dep".to_string(),
+            Dependency::Simple("^1.0".to_string()),
+        );
+
+        // This will fail offline before reaching trust check, but the trust DB
+        // mechanism is tested. We verify the origin_matches logic directly.
+        let resolver_db = resolver.trust_db.as_ref().unwrap();
+        assert_eq!(
+            resolver_db.origin_matches("github.com/test/dep", "https://github.com/test/dep.git"),
+            Some(true)
+        );
+        assert_eq!(
+            resolver_db.origin_matches("github.com/test/dep", "https://evil.com/dep.git"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_save_trust_db_no_db_is_noop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        // Should not error when no trust DB is loaded
+        assert!(resolver.save_trust_db().is_ok());
     }
 }

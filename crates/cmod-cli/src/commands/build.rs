@@ -19,6 +19,7 @@ pub fn run(
     jobs: usize,
     force: bool,
     remote_cache_url: Option<String>,
+    no_hooks: bool,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
@@ -62,8 +63,20 @@ pub fn run(
     // Step 1: Ensure dependencies are resolved (with target-specific filtering)
     let _lockfile = ensure_resolved(&config)?;
 
-    // Step 2: Build the single module
-    build_module(&config, verbose, jobs, force, &effective_remote_url)
+    // Step 2: Run pre-build hook
+    if !no_hooks {
+        run_hook(&config, "pre-build", config.manifest.hooks.as_ref().and_then(|h| h.pre_build.as_deref()))?;
+    }
+
+    // Step 3: Build the single module
+    let result = build_module(&config, verbose, jobs, force, &effective_remote_url);
+
+    // Step 4: Run post-build hook (only on success)
+    if result.is_ok() && !no_hooks {
+        run_hook(&config, "post-build", config.manifest.hooks.as_ref().and_then(|h| h.post_build.as_deref()))?;
+    }
+
+    result
 }
 
 /// Create a remote cache instance from a URL, if provided.
@@ -379,7 +392,7 @@ fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
     } else {
         // Auto-resolve with target-specific dependency filtering
         eprintln!("  No lockfile found, resolving dependencies...");
-        let resolver = Resolver::new(config.deps_dir());
+        let mut resolver = Resolver::new(config.deps_dir());
         let lockfile = resolver.resolve_with_target(
             &config.manifest,
             None,
@@ -469,6 +482,39 @@ fn print_build_stats(stats: &BuildStats, verbose: bool) {
             );
         }
     }
+}
+
+/// Execute a build lifecycle hook if configured.
+///
+/// Hooks run in the project root directory. A non-zero exit code fails the build.
+pub fn run_hook(config: &Config, hook_name: &str, command: Option<&str>) -> Result<(), CmodError> {
+    let cmd = match command {
+        Some(c) => c,
+        None => return Ok(()),
+    };
+
+    eprintln!("  Running {} hook: {}", hook_name, cmd);
+
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(&config.root)
+        .status()
+        .map_err(|e| CmodError::BuildFailed {
+            reason: format!("{} hook failed to execute: {}", hook_name, e),
+        })?;
+
+    if !status.success() {
+        return Err(CmodError::BuildFailed {
+            reason: format!(
+                "{} hook failed with exit code {}",
+                hook_name,
+                status.code().unwrap_or(-1)
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

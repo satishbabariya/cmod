@@ -6,6 +6,7 @@ description = "Git-based dependency resolution and lockfile management for cmod"
 
 [dependencies]
 cmod-core = { path = "../cmod-core" }
+cmod-security = { path = "../cmod-security" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

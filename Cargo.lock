@@ -244,6 +244,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "cmod-core",
+ "cmod-security",
  "git2",
  "hex",
  "semver",

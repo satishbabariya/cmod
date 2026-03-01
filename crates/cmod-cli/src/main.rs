@@ -40,6 +40,10 @@ struct Cli {
     /// Skip build cache
     #[arg(long, global = true)]
     no_cache: bool,
+
+    /// Skip TOFU trust verification for dependencies
+    #[arg(long, global = true)]
+    untrusted: bool,
 }
 
 #[derive(Subcommand)]
@@ -107,6 +111,10 @@ enum Commands {
         /// Remote cache URL (overrides manifest [cache].shared_url)
         #[arg(long)]
         remote_cache: Option<String>,
+
+        /// Skip pre-build and post-build hooks
+        #[arg(long)]
+        no_hooks: bool,
     },
 
     /// Run module tests
@@ -235,6 +243,9 @@ enum Commands {
         #[arg(long)]
         push: bool,
     },
+
+    /// Generate compile_commands.json for IDE integration
+    CompileCommands,
 }
 
 #[derive(Subcommand)]
@@ -294,9 +305,10 @@ fn main() {
             &cli.features,
             cli.no_default_features,
             cli.target.clone(),
+            cli.untrusted,
         ),
-        Commands::Build { release, jobs, force, remote_cache } => {
-            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache)
+        Commands::Build { release, jobs, force, remote_cache, no_hooks } => {
+            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache, no_hooks)
         }
         Commands::Test { release } => {
             commands::test::run(release, cli.locked, cli.offline, cli.verbose, cli.target)
@@ -331,6 +343,7 @@ fn main() {
         },
         Commands::Sbom { output } => commands::sbom::run(output, cli.verbose),
         Commands::Publish { dry_run, push } => commands::publish::run(dry_run, push, cli.verbose),
+        Commands::CompileCommands => commands::compile_commands::run(cli.verbose, cli.target.clone()),
     };
 
     if let Err(e) = result {

@@ -3,6 +3,7 @@ pub mod audit;
 pub mod build;
 pub mod cache;
 pub mod clean;
+pub mod compile_commands;
 pub mod deps;
 pub mod explain;
 pub mod fmt;

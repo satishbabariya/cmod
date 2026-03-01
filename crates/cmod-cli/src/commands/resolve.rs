@@ -2,6 +2,7 @@ use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
 use cmod_resolver::Resolver;
+use cmod_security::trust::TrustDb;
 use cmod_workspace::WorkspaceManager;
 
 /// Run `cmod resolve` — resolve dependencies and generate the lockfile.
@@ -12,6 +13,7 @@ pub fn run(
     features: &[String],
     no_default_features: bool,
     target: Option<String>,
+    untrusted: bool,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
@@ -20,11 +22,16 @@ pub fn run(
 
     // Check if this is a workspace
     if config.manifest.is_workspace() {
-        return resolve_workspace(&config, locked, offline, verbose, features, no_default_features, &target);
+        return resolve_workspace(&config, locked, offline, verbose, features, no_default_features, &target, untrusted);
     }
 
     let existing_lock = Lockfile::load(&config.lockfile_path).ok();
-    let resolver = Resolver::new(config.deps_dir());
+
+    // Load trust database for TOFU verification
+    let trust_db = TrustDb::load_default().unwrap_or_default();
+    let mut resolver = Resolver::new(config.deps_dir())
+        .with_trust_db(trust_db)
+        .with_untrusted(untrusted);
 
     let lockfile = resolver.resolve_with_target(
         &config.manifest,
@@ -35,6 +42,9 @@ pub fn run(
         no_default_features,
         target.as_deref(),
     )?;
+
+    // Save trust database after successful resolution
+    resolver.save_trust_db()?;
 
     lockfile.save(&config.lockfile_path)?;
 
@@ -65,6 +75,7 @@ fn resolve_workspace(
     features: &[String],
     no_default_features: bool,
     target: &Option<String>,
+    untrusted: bool,
 ) -> Result<(), CmodError> {
     let ws = WorkspaceManager::load(&config.root)?;
 
@@ -76,7 +87,10 @@ fn resolve_workspace(
     combined_manifest.dependencies = all_deps;
 
     let existing_lock = Lockfile::load(&ws.lockfile_path()).ok();
-    let resolver = Resolver::new(config.deps_dir());
+    let trust_db = TrustDb::load_default().unwrap_or_default();
+    let mut resolver = Resolver::new(config.deps_dir())
+        .with_trust_db(trust_db)
+        .with_untrusted(untrusted);
 
     let lockfile = resolver.resolve_with_target(
         &combined_manifest,
@@ -88,6 +102,7 @@ fn resolve_workspace(
         target.as_deref(),
     )?;
 
+    resolver.save_trust_db()?;
     lockfile.save(&ws.lockfile_path())?;
 
     eprintln!(

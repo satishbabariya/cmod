@@ -77,7 +77,7 @@ impl ClangBackend {
     }
 
     /// Common flags used for all compilations.
-    fn common_flags(&self) -> Vec<String> {
+    pub fn common_flags(&self) -> Vec<String> {
         let mut flags = vec![format!("-std=c++{}", self.cxx_standard)];
 
         if let Some(ref stdlib) = self.stdlib {

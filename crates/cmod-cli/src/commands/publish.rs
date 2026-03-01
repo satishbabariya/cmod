@@ -47,6 +47,13 @@ pub fn run(dry_run: bool, push: bool, verbose: bool) -> Result<(), CmodError> {
         }
     }
 
+    // Run pre-publish hook
+    super::build::run_hook(
+        &config,
+        "pre-publish",
+        config.manifest.hooks.as_ref().and_then(|h| h.pre_publish.as_deref()),
+    )?;
+
     if dry_run {
         eprintln!("  Dry run: would create tag '{}'", tag);
         if push {

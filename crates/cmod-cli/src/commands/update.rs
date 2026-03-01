@@ -14,7 +14,7 @@ pub fn run(name: Option<String>, patch_only: bool, verbose: bool) -> Result<(), 
         eprintln!("  Updating dependencies...");
     }
 
-    let resolver = Resolver::new(config.deps_dir());
+    let mut resolver = Resolver::new(config.deps_dir());
 
     if let Some(ref dep_name) = name {
         // Update a single dependency: remove it from the lockfile and re-resolve

@@ -52,6 +52,9 @@ pub struct Manifest {
     #[serde(default)]
     pub publish: Option<Publish>,
 
+    #[serde(default)]
+    pub hooks: Option<Hooks>,
+
     /// Target-specific dependencies, keyed by cfg expression string.
     ///
     /// In `cmod.toml` these appear as:
@@ -286,6 +289,26 @@ pub struct Publish {
     /// Tags for the release.
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+/// Build lifecycle hooks.
+///
+/// Shell commands executed at specific points in the build lifecycle.
+/// Hooks run in the project root directory and fail the build on non-zero exit.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Hooks {
+    /// Command to run before building starts.
+    #[serde(default, rename = "pre-build")]
+    pub pre_build: Option<String>,
+    /// Command to run after a successful build.
+    #[serde(default, rename = "post-build")]
+    pub post_build: Option<String>,
+    /// Command to run before publishing.
+    #[serde(default, rename = "pre-publish")]
+    pub pre_publish: Option<String>,
+    /// Command to run before testing.
+    #[serde(default, rename = "pre-test")]
+    pub pre_test: Option<String>,
 }
 
 impl Manifest {
@@ -637,6 +660,7 @@ pub fn default_manifest(name: &str) -> Manifest {
         metadata: None,
         security: None,
         publish: None,
+        hooks: None,
         target: BTreeMap::new(),
     }
 }
@@ -675,6 +699,7 @@ pub fn default_workspace_manifest(name: &str) -> Manifest {
         metadata: None,
         security: None,
         publish: None,
+        hooks: None,
         target: BTreeMap::new(),
     }
 }

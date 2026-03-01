@@ -150,6 +150,7 @@ mod tests {
             metadata: None,
             security: None,
             publish: None,
+            hooks: None,
             target: BTreeMap::new(),
         }
     }
