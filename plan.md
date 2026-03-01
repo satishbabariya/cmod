@@ -1,108 +1,126 @@
-# Next Implementation Steps — Phase 4
+# Next Implementation Steps — Phase 5
 
-## Current State (301 tests, 21 CLI commands)
+## Current State (340 tests, 26 CLI commands)
 
-**Implemented:** All core RFCs (0001-0008, 0019), plus incremental builds wired into runner,
-remote cache wired into runner, cfg() dependency filtering, SBOM generation, publish command,
-clean command, workspace subcommands, build stats reporting.
+**Implemented:** Core RFCs (0001-0008, 0019, UNIFIED), plus Phase 3-4 work:
+incremental builds, remote cache wiring, cfg() dep filtering, SBOM, publish,
+clean, workspace CLI, lint, fmt, search, run, --force, --remote-cache,
+target-specific resolution, module graph validation.
 
-**Key gaps found:** `--force` flag not exposed in CLI, resolver doesn't call
-`effective_dependencies()` for target filtering, remote cache never instantiated from
-build command, module import validation missing, no LSP server, no plugin system.
+**Remaining RFCs:** 0009 (security gaps), 0010 (IDE/compile_commands.json),
+0011 (precompiled BMI distribution), 0012 (advanced build strategies),
+0013 (distributed builds), 0014 (graph enhancements), 0015 (governance),
+0016 (advanced LSP), 0017 (dep overrides), 0018 (plugin system).
+
+**Focus:** Tier 2 RFCs (0009, 0010, 0014, 0017) + foundational pieces of
+Tier 3-4 (0011, 0018) that unlock future work.
 
 ---
 
-## Step 1: `--force` Flag + Remote Cache Activation in Build Command
+## Step 1: compile_commands.json Generation (RFC-0010)
 
-The `BuildRunner` has `force_rebuild` and `remote_cache` fields but neither is reachable
-from the CLI. Wire both through:
+Critical for IDE adoption. After building the module graph and plan, emit a
+`compile_commands.json` file that clangd/IDEs can consume.
 
-- Add `--force` flag to `Build` command in main.rs
-- Pass force flag through `build.rs` → `runner.with_force(force)`
-- Read `[cache].shared_url` from manifest, instantiate `HttpRemoteCache`, pass to runner
-- Add `--remote-cache <url>` CLI override
+- Add `generate_compile_commands()` to `cmod-build` that walks the BuildPlan
+  and emits the JSON compilation database format
+- Wire it into `build_module()` / `build_workspace()` — write to `build/`
+- Add `cmod compile-commands` standalone command for generating without building
+- Format: `[{directory, file, arguments, output}]` per source file
 
-**Files:** `crates/cmod-cli/src/main.rs`, `crates/cmod-cli/src/commands/build.rs`
+**Files:** `crates/cmod-build/src/plan.rs`, `crates/cmod-cli/src/commands/build.rs`,
+new `crates/cmod-cli/src/commands/compile_commands.rs`
 
-## Step 2: Target-Specific Dependency Filtering in Resolver
+## Step 2: Dependency Override / Patch Directives (RFC-0017)
 
-`Manifest::effective_dependencies()` exists but the resolver never calls it. When resolving
-dependencies, the resolver should use the current target triple to filter platform-specific
-deps before iterating.
+Allow overriding transitive dependencies — essential for monorepos and
+patching upstream bugs.
 
-- In `resolve_with_features()`, call `manifest.effective_dependencies(target)` instead of
-  reading `manifest.dependencies` directly
-- Thread the target triple from `Config` through to the resolver
-- Update `Resolver::resolve()` / `resolve_with_features()` to accept an optional target
+- Add `[patch]` section to manifest: `[patch."github.com/original/lib"]`
+  with `path = "../my-fork"` or `git = "..."` + `branch = "fix"`
+- Parse in manifest.rs, apply overrides in resolver before resolution
+- Overrides replace the dependency at resolution time, recorded in lockfile
 
-**Files:** `crates/cmod-resolver/src/resolver.rs`, `crates/cmod-cli/src/commands/resolve.rs`
+**Files:** `crates/cmod-core/src/manifest.rs`, `crates/cmod-resolver/src/resolver.rs`
 
-## Step 3: Module Import Validation in Graph Builder
+## Step 3: Build Hooks — pre-build / post-build (RFC-0018 foundation)
 
-The graph builder silently drops unknown imports. Add validation:
+Add manifest-driven build hooks that run shell commands before/after build.
+This is the minimal viable piece of RFC-0018 (plugin system).
 
-- After building the `ModuleGraph`, check that every import in a node's dependencies
-  either resolves to another graph node or to a dependency in the lockfile
-- Emit a clear error naming the unresolved import and which source file references it
-- Add `--allow-missing-imports` flag for migration scenarios
+- Add `[hooks]` section: `pre-build = ["./scripts/generate.sh"]`,
+  `post-build = ["./scripts/deploy.sh"]`
+- Parse in manifest.rs, execute in build command before/after compilation
+- Hooks run in project root, inherit environment, fail-fast on non-zero exit
+- Add `--no-hooks` flag to skip
 
-**Files:** `crates/cmod-build/src/graph.rs`, `crates/cmod-cli/src/commands/build.rs`
+**Files:** `crates/cmod-core/src/manifest.rs`, `crates/cmod-cli/src/commands/build.rs`,
+`crates/cmod-cli/src/main.rs`
 
-## Step 4: `cmod lint` Command
+## Step 4: Graph Build-Status Coloring & Critical Path (RFC-0014)
 
-Add a lint command that statically checks the project for common issues without building:
+Enhance `cmod graph` with build state awareness:
 
-- Manifest validation (already exists, wire to CLI)
-- Module naming convention enforcement (reverse-domain Git path)
-- Unused dependency detection (deps in manifest not imported by any source)
-- Circular import detection (already in graph.validate(), expose diagnostics)
-- Lockfile staleness check (manifest deps changed but lock not updated)
+- Load `.cmod-build-state.json` and annotate graph nodes with status
+  (up-to-date, needs-rebuild, never-built)
+- In ASCII output: prefix nodes with [✓], [!], [?] markers
+- In DOT output: color nodes green/yellow/red
+- In JSON output: add `status` and `last_build_time` fields
+- Add `--critical-path` flag showing the longest dependency chain
 
-**Files:** `crates/cmod-cli/src/commands/lint.rs`, `crates/cmod-cli/src/main.rs`
+**Files:** `crates/cmod-cli/src/commands/graph.rs`
 
-## Step 5: `cmod fmt` / Configuration File Normalization
+## Step 5: Artifact Signing & Verification (RFC-0009)
 
-Add a formatter that canonicalizes `cmod.toml`:
+Complete the security model. Currently `verify.rs` detects signature
+presence but doesn't validate. Add real verification:
 
-- Sort dependency keys alphabetically
-- Normalize version constraints to canonical form (`^1.2` → `^1.2.0`)
-- Remove duplicate/redundant fields
-- Ensure consistent key ordering ([package], [module], [dependencies], ...)
-- Support `--check` mode (exit non-zero if changes needed, for CI)
+- Add `sign_artifact()` to cmod-security that creates a detached signature
+  file (`.sig`) alongside cached artifacts using SSH key signing
+- Add `verify_artifact_signature()` that validates `.sig` files
+- Wire into cache store/restore: sign on store, verify on restore when
+  `security.verify_checksums = true`
+- Add `cmod verify --artifacts` flag to check all cached artifact signatures
 
-**Files:** `crates/cmod-cli/src/commands/fmt.rs`, `crates/cmod-cli/src/main.rs`
+**Files:** `crates/cmod-security/src/verify.rs`, `crates/cmod-cache/src/cache.rs`,
+`crates/cmod-cli/src/commands/verify.rs`
 
-## Step 6: `cmod search` Command
+## Step 6: Precompiled Module Packaging (RFC-0011 foundation)
 
-Search for C++ modules on GitHub by name/topic:
+Add ability to export/import precompiled module packages:
 
-- Use GitHub API search (`gh api search/repositories`) to find repos with cmod.toml
-- Display name, description, version, stars, last updated
-- Support `--limit`, `--sort` flags
-- Fallback for offline mode: search local cache / known registries
+- `cmod package` command: creates a `.cmod-pkg.tar.gz` containing PCM/object
+  files + metadata JSON (compiler version, target triple, source hash)
+- `cmod install <package>` command: unpacks into local cache after verifying
+  metadata compatibility with current toolchain
+- Compatibility check: compiler + version + target + stdlib must match
 
-**Files:** `crates/cmod-cli/src/commands/search.rs`, `crates/cmod-cli/src/main.rs`
+**Files:** new `crates/cmod-cli/src/commands/package.rs`,
+new `crates/cmod-cli/src/commands/install.rs`
 
-## Step 7: `cmod run` Command
+## Step 7: Build Performance Profiling (RFC-0012 + RFC-0014)
 
-Build and execute a binary module in one step (like `cargo run`):
+Add build timing and profiling output:
 
-- Build with the current profile
-- Locate the output binary from the build plan
-- Execute it, forwarding any trailing arguments
-- Support `--release` flag
+- Record per-node compilation time in `BuildStats` (already has
+  `incremental_skipped`, add `timings: Vec<(String, Duration)>`)
+- Add `--timings` flag to build command that prints a timing report
+- Add `cmod graph --timings` that annotates the graph with build durations
+- Identify and display the critical path (slowest chain)
 
-**Files:** `crates/cmod-cli/src/commands/run.rs`, `crates/cmod-cli/src/main.rs`
+**Files:** `crates/cmod-build/src/runner.rs`, `crates/cmod-cli/src/commands/build.rs`,
+`crates/cmod-cli/src/commands/graph.rs`
 
-## Step 8: Integration Test Hardening
+## Step 8: Integration Tests + Test Count Push
 
-Add end-to-end integration tests that exercise real workflows:
+Add integration tests for all new Phase 5 features:
 
-- `cmod init` → `cmod build` → `cmod clean` round-trip
-- `cmod init --workspace` → `cmod workspace add` → `cmod workspace list`
-- Manifest with `[target.'cfg(unix)'.dependencies]` → `cmod resolve`
-- `cmod sbom` output validates as JSON
-- `cmod publish --dry-run` succeeds on a clean repo
-- `cmod verify` on a real git repo with commits
+- compile_commands.json generation and format validation
+- Dependency patch/override resolution
+- Build hook execution (pre/post)
+- Graph status coloring output
+- Package export/import round-trip
+- Build timing report output
+- End-to-end workflow with patches + hooks + compile_commands
 
-**Files:** `tests/integration/` (new directory with test files)
+**Files:** `crates/cmod-cli/tests/cli_integration.rs`, unit tests in each module
