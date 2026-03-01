@@ -119,6 +119,10 @@ enum Commands {
         /// Verify lockfile integrity and package hashes before building
         #[arg(long)]
         verify: bool,
+
+        /// Display per-module compile timings
+        #[arg(long)]
+        timings: bool,
     },
 
     /// Run module tests
@@ -143,6 +147,14 @@ enum Commands {
         /// Display as a tree
         #[arg(long)]
         tree: bool,
+
+        /// Explain why a specific dependency is included
+        #[arg(long)]
+        why: Option<String>,
+
+        /// Show transitive dependency conflicts
+        #[arg(long)]
+        conflicts: bool,
     },
 
     /// Manage the build cache
@@ -290,6 +302,8 @@ enum CacheAction {
     Push,
     /// Pull cache entries from remote cache
     Pull,
+    /// Run garbage collection (evict old/oversized entries)
+    Gc,
 }
 
 fn main() {
@@ -315,19 +329,20 @@ fn main() {
             cli.target.clone(),
             cli.untrusted,
         ),
-        Commands::Build { release, jobs, force, remote_cache, no_hooks, verify } => {
-            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache, no_hooks, verify)
+        Commands::Build { release, jobs, force, remote_cache, no_hooks, verify, timings } => {
+            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache, no_hooks, verify, timings)
         }
         Commands::Test { release } => {
             commands::test::run(release, cli.locked, cli.offline, cli.verbose, cli.target)
         }
         Commands::Update { name, patch } => commands::update::run(name, patch, cli.verbose),
-        Commands::Deps { tree } => commands::deps::run(tree),
+        Commands::Deps { tree, why, conflicts } => commands::deps::run(tree, why, conflicts),
         Commands::Cache { action } => match action {
             CacheAction::Status => commands::cache::status(),
             CacheAction::Clean => commands::cache::clean(),
             CacheAction::Push => commands::cache::push(cli.verbose),
             CacheAction::Pull => commands::cache::pull(cli.verbose),
+            CacheAction::Gc => commands::cache::gc(cli.verbose),
         },
         Commands::Verify { signatures } => commands::verify::run(cli.verbose, signatures),
         Commands::Graph { format, filter, status } => commands::graph::run(format, filter, status),

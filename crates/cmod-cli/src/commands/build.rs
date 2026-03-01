@@ -21,6 +21,7 @@ pub fn run(
     remote_cache_url: Option<String>,
     no_hooks: bool,
     verify: bool,
+    timings: bool,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
@@ -53,7 +54,7 @@ pub fn run(
 
     // Check if this is a workspace build
     if config.manifest.is_workspace() {
-        return build_workspace(&config, verbose, jobs, force, &effective_remote_url);
+        return build_workspace(&config, verbose, jobs, force, &effective_remote_url, timings);
     }
 
     eprintln!(
@@ -92,7 +93,7 @@ pub fn run(
     }
 
     // Step 3: Build the single module
-    let result = build_module(&config, verbose, jobs, force, &effective_remote_url);
+    let result = build_module(&config, verbose, jobs, force, &effective_remote_url, timings);
 
     // Step 4: Run post-build hook (only on success)
     if result.is_ok() && !no_hooks {
@@ -112,7 +113,7 @@ fn make_remote_cache(url: &Option<String>, verbose: bool) -> Option<Box<dyn cmod
 }
 
 /// Build a single module project.
-fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>) -> Result<(), CmodError> {
+fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>, timings: bool) -> Result<(), CmodError> {
     // Discover source files
     let src_dir = config.src_dir();
     let sources = runner::discover_sources(&src_dir)?;
@@ -170,13 +171,13 @@ fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote
 
     let (output, stats) = runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type)?;
 
-    print_build_stats(&stats, verbose);
+    print_build_stats(&stats, verbose, timings);
     eprintln!("  Build complete: {}", output.display());
     Ok(())
 }
 
 /// Build all members of a workspace.
-fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>) -> Result<(), CmodError> {
+fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>, timings: bool) -> Result<(), CmodError> {
     let ws = WorkspaceManager::load(&config.root)?;
 
     eprintln!(
@@ -230,7 +231,7 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, rem
         }
         match runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type) {
             Ok((output, stats)) => {
-                print_build_stats(&stats, verbose);
+                print_build_stats(&stats, verbose, timings);
                 eprintln!("    Built: {}", output.display());
             }
             Err(e) => {
@@ -468,7 +469,7 @@ fn default_target() -> String {
 }
 
 /// Display build statistics to the user.
-fn print_build_stats(stats: &BuildStats, verbose: bool) {
+fn print_build_stats(stats: &BuildStats, verbose: bool, timings: bool) {
     let total_nodes = stats.cache_hits + stats.cache_misses + stats.incremental_skipped;
 
     if total_nodes == 0 {
@@ -503,6 +504,16 @@ fn print_build_stats(stats: &BuildStats, verbose: bool) {
                 stats.total_compile_time_ms as f64 / 1000.0,
                 stats.wall_time_ms as f64 / 1000.0,
             );
+        }
+    }
+
+    // Per-node timings
+    if timings && !stats.node_timings.is_empty() {
+        eprintln!("  Per-module timings:");
+        let mut sorted: Vec<_> = stats.node_timings.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1)); // slowest first
+        for (node_id, ms) in sorted {
+            eprintln!("    {:>6}ms  {}", ms, node_id);
         }
     }
 }
@@ -543,6 +554,7 @@ pub fn run_hook(config: &Config, hook_name: &str, command: Option<&str>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use tempfile::TempDir;
 
     #[test]
@@ -705,8 +717,8 @@ mod tests {
     fn test_print_build_stats_no_panic() {
         // Verify stats printing doesn't panic for various states
         let empty = BuildStats::default();
-        print_build_stats(&empty, false);
-        print_build_stats(&empty, true);
+        print_build_stats(&empty, false, false);
+        print_build_stats(&empty, true, false);
 
         let stats = BuildStats {
             cache_hits: 3,
@@ -715,8 +727,31 @@ mod tests {
             incremental_skipped: 5,
             wall_time_ms: 1500,
             total_compile_time_ms: 4000,
+            node_timings: BTreeMap::new(),
         };
-        print_build_stats(&stats, false);
-        print_build_stats(&stats, true);
+        print_build_stats(&stats, false, false);
+        print_build_stats(&stats, true, false);
+    }
+
+    #[test]
+    fn test_print_build_stats_with_timings() {
+        let mut node_timings = BTreeMap::new();
+        node_timings.insert("interface:base".to_string(), 120);
+        node_timings.insert("impl:app".to_string(), 340);
+        node_timings.insert("object:main".to_string(), 80);
+
+        let stats = BuildStats {
+            cache_hits: 0,
+            cache_misses: 3,
+            skipped: 0,
+            incremental_skipped: 0,
+            wall_time_ms: 500,
+            total_compile_time_ms: 540,
+            node_timings,
+        };
+
+        // Should not panic with timings enabled
+        print_build_stats(&stats, false, true);
+        print_build_stats(&stats, true, true);
     }
 }

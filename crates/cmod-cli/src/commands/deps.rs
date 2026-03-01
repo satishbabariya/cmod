@@ -3,15 +3,47 @@ use std::collections::{BTreeMap, BTreeSet};
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::{Lockfile, LockedPackage};
+use cmod_resolver::Resolver;
 
 /// Run `cmod deps` — display the dependency graph.
-pub fn run(tree: bool) -> Result<(), CmodError> {
+pub fn run(tree: bool, why: Option<String>, conflicts: bool) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
     let lockfile = Lockfile::load(&config.lockfile_path).map_err(|_| {
         CmodError::LockfileNotFound
     })?;
+
+    // --why <dep>: explain why a dependency is included
+    if let Some(dep_name) = why {
+        let reasons = Resolver::explain_dep(&lockfile, &dep_name);
+        if reasons.is_empty() {
+            eprintln!("  '{}' is not in the dependency graph.", dep_name);
+        } else {
+            for reason in &reasons {
+                println!("  {}", reason);
+            }
+        }
+        return Ok(());
+    }
+
+    // --conflicts: show shared transitive deps
+    if conflicts {
+        let found = Resolver::check_conflicts(&lockfile);
+        if found.is_empty() {
+            eprintln!("  No version conflicts detected.");
+        } else {
+            for c in &found {
+                println!(
+                    "  {} v{} — required by: {}",
+                    c.package,
+                    c.resolved_version,
+                    c.requesters.join(", ")
+                );
+            }
+        }
+        return Ok(());
+    }
 
     if lockfile.is_empty() {
         eprintln!("  No dependencies.");

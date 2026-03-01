@@ -129,6 +129,80 @@ pub fn pull(verbose: bool) -> Result<(), CmodError> {
     Ok(())
 }
 
+/// Run `cmod cache gc` — garbage collect old/oversized cache entries.
+pub fn gc(verbose: bool) -> Result<(), CmodError> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::load(&cwd)?;
+
+    let cache = ArtifactCache::new(config.cache_dir());
+    let size_before = cache.total_size()?;
+
+    // Parse TTL from manifest [cache].ttl
+    let max_age = config
+        .manifest
+        .cache
+        .as_ref()
+        .and_then(|c| c.ttl.as_deref())
+        .and_then(cmod_cache::parse_ttl);
+
+    // Parse max_size from manifest [cache].max_size
+    let max_bytes = config
+        .manifest
+        .cache
+        .as_ref()
+        .and_then(|c| c.max_size.as_deref())
+        .and_then(parse_size);
+
+    if max_age.is_none() && max_bytes.is_none() {
+        eprintln!("  No TTL or max_size configured in [cache]; nothing to evict.");
+        eprintln!("  Set [cache] ttl = \"7d\" or max_size = \"500M\" in cmod.toml.");
+        return Ok(());
+    }
+
+    if verbose {
+        if let Some(ref age) = max_age {
+            eprintln!("  TTL: {:?}", age);
+        }
+        if let Some(bytes) = max_bytes {
+            eprintln!("  Max size: {}", format_bytes(bytes));
+        }
+    }
+
+    let result = cache.auto_evict(max_age, max_bytes)?;
+
+    let size_after = cache.total_size()?;
+    eprintln!(
+        "  GC complete: {} entries removed, {} freed ({} → {})",
+        result.entries_removed,
+        format_bytes(result.bytes_freed),
+        format_bytes(size_before),
+        format_bytes(size_after),
+    );
+
+    Ok(())
+}
+
+/// Parse a human-readable size string like "1G", "500M", "100K" into bytes.
+fn parse_size(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    let (num_str, multiplier) = if s.ends_with('G') || s.ends_with('g') {
+        (&s[..s.len() - 1], 1024 * 1024 * 1024u64)
+    } else if s.ends_with('M') || s.ends_with('m') {
+        (&s[..s.len() - 1], 1024 * 1024u64)
+    } else if s.ends_with('K') || s.ends_with('k') {
+        (&s[..s.len() - 1], 1024u64)
+    } else {
+        (s, 1u64)
+    };
+
+    let num: u64 = num_str.parse().ok()?;
+    Some(num * multiplier)
+}
+
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;

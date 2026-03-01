@@ -476,6 +476,71 @@ impl Resolver {
         }
         Ok(())
     }
+
+    /// Check a lockfile for version conflicts across transitive dependencies.
+    ///
+    /// A conflict occurs when two packages depend on the same transitive dep
+    /// but the lockfile only pins one version. This reports cases where
+    /// different direct deps might need incompatible versions.
+    pub fn check_conflicts(lockfile: &Lockfile) -> Vec<VersionConflict> {
+        let mut dep_requesters: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+        for pkg in &lockfile.packages {
+            for dep_name in &pkg.deps {
+                dep_requesters
+                    .entry(dep_name.clone())
+                    .or_default()
+                    .push(pkg.name.clone());
+            }
+        }
+
+        let mut conflicts = Vec::new();
+        for (dep_name, requesters) in &dep_requesters {
+            if requesters.len() > 1 {
+                conflicts.push(VersionConflict {
+                    package: dep_name.clone(),
+                    requesters: requesters.clone(),
+                    resolved_version: lockfile
+                        .find_package(dep_name)
+                        .map(|p| p.version.clone())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                });
+            }
+        }
+
+        conflicts
+    }
+
+    /// Explain why a specific dependency is included in the lockfile.
+    pub fn explain_dep(lockfile: &Lockfile, dep_name: &str) -> Vec<String> {
+        let mut reasons = Vec::new();
+
+        for pkg in &lockfile.packages {
+            if pkg.deps.contains(&dep_name.to_string()) {
+                reasons.push(format!("{} (v{}) depends on {}", pkg.name, pkg.version, dep_name));
+            }
+        }
+
+        if reasons.is_empty() {
+            // It's a direct dependency
+            if lockfile.find_package(dep_name).is_some() {
+                reasons.push(format!("{} is a direct dependency", dep_name));
+            }
+        }
+
+        reasons
+    }
+}
+
+/// A version conflict where multiple packages depend on the same transitive dep.
+#[derive(Debug, Clone)]
+pub struct VersionConflict {
+    /// Name of the conflicted package.
+    pub package: String,
+    /// Packages that depend on this package.
+    pub requesters: Vec<String>,
+    /// The version that was resolved.
+    pub resolved_version: String,
 }
 
 #[cfg(test)]
@@ -1004,5 +1069,128 @@ mod tests {
         let resolver = Resolver::new(tmp.path().to_path_buf());
         // Should not error when no trust DB is loaded
         assert!(resolver.save_trust_db().is_ok());
+    }
+
+    #[test]
+    fn test_check_conflicts_none() {
+        let lockfile = Lockfile::new();
+        let conflicts = Resolver::check_conflicts(&lockfile);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_check_conflicts_shared_transitive() {
+        use cmod_core::lockfile::LockedPackage;
+
+        let mut lockfile = Lockfile::new();
+        lockfile.upsert_package(LockedPackage {
+            name: "app_a".to_string(),
+            version: "1.0.0".to_string(),
+            source: None,
+            repo: None,
+            commit: None,
+            hash: None,
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec!["common_lib".to_string()],
+            features: vec![],
+        });
+        lockfile.upsert_package(LockedPackage {
+            name: "app_b".to_string(),
+            version: "2.0.0".to_string(),
+            source: None,
+            repo: None,
+            commit: None,
+            hash: None,
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec!["common_lib".to_string()],
+            features: vec![],
+        });
+        lockfile.upsert_package(LockedPackage {
+            name: "common_lib".to_string(),
+            version: "0.5.0".to_string(),
+            source: None,
+            repo: None,
+            commit: None,
+            hash: None,
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec![],
+            features: vec![],
+        });
+
+        let conflicts = Resolver::check_conflicts(&lockfile);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].package, "common_lib");
+        assert_eq!(conflicts[0].resolved_version, "0.5.0");
+        assert!(conflicts[0].requesters.contains(&"app_a".to_string()));
+        assert!(conflicts[0].requesters.contains(&"app_b".to_string()));
+    }
+
+    #[test]
+    fn test_explain_dep_direct() {
+        use cmod_core::lockfile::LockedPackage;
+
+        let mut lockfile = Lockfile::new();
+        lockfile.upsert_package(LockedPackage {
+            name: "fmt".to_string(),
+            version: "10.2.0".to_string(),
+            source: None,
+            repo: None,
+            commit: None,
+            hash: None,
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec![],
+            features: vec![],
+        });
+
+        let reasons = Resolver::explain_dep(&lockfile, "fmt");
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains("direct dependency"));
+    }
+
+    #[test]
+    fn test_explain_dep_transitive() {
+        use cmod_core::lockfile::LockedPackage;
+
+        let mut lockfile = Lockfile::new();
+        lockfile.upsert_package(LockedPackage {
+            name: "app".to_string(),
+            version: "1.0.0".to_string(),
+            source: None,
+            repo: None,
+            commit: None,
+            hash: None,
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec!["utils".to_string()],
+            features: vec![],
+        });
+        lockfile.upsert_package(LockedPackage {
+            name: "utils".to_string(),
+            version: "0.3.0".to_string(),
+            source: None,
+            repo: None,
+            commit: None,
+            hash: None,
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec![],
+            features: vec![],
+        });
+
+        let reasons = Resolver::explain_dep(&lockfile, "utils");
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].contains("app"));
+        assert!(reasons[0].contains("depends on utils"));
+    }
+
+    #[test]
+    fn test_explain_dep_not_found() {
+        let lockfile = Lockfile::new();
+        let reasons = Resolver::explain_dep(&lockfile, "nonexistent");
+        assert!(reasons.is_empty());
     }
 }

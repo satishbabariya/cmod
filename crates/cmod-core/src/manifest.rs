@@ -240,8 +240,12 @@ pub struct Cache {
     pub local_path: Option<PathBuf>,
     #[serde(default)]
     pub shared_url: Option<String>,
+    /// Time-to-live for cache entries (e.g., "7d", "24h", "30m").
     #[serde(default)]
     pub ttl: Option<String>,
+    /// Maximum total cache size in human-readable form (e.g., "1G", "500M").
+    #[serde(default)]
+    pub max_size: Option<String>,
 }
 
 /// Project metadata for discoverability and documentation.

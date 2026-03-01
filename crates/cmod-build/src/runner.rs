@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -32,6 +32,8 @@ pub struct BuildStats {
     pub wall_time_ms: u64,
     /// Sum of individual compilation times (may exceed wall_time when parallel).
     pub total_compile_time_ms: u64,
+    /// Per-node compile times in milliseconds, keyed by node ID.
+    pub node_timings: BTreeMap<String, u64>,
 }
 
 /// Build runner that executes a build plan.
@@ -615,6 +617,7 @@ impl BuildRunner {
         let dependents = Arc::new(dependents);
         let errors: Arc<Mutex<Vec<CmodError>>> = Arc::new(Mutex::new(Vec::new()));
         let new_build_state: Arc<Mutex<BuildState>> = Arc::new(Mutex::new(BuildState::default()));
+        let node_timings: Arc<Mutex<BTreeMap<String, u64>>> = Arc::new(Mutex::new(BTreeMap::new()));
 
         // Work channel: send ready node indices to workers
         let (work_tx, work_rx) = bounded::<usize>(total);
@@ -646,6 +649,7 @@ impl BuildRunner {
                 let new_build_state = Arc::clone(&new_build_state);
                 let build_state = Arc::clone(&build_state);
                 let flags_hash = Arc::clone(&flags_hash);
+                let node_timings = Arc::clone(&node_timings);
 
                 scope.spawn(move || {
                     while let Ok(idx) = work_rx.recv() {
@@ -661,10 +665,9 @@ impl BuildRunner {
                         let node = &plan.nodes[idx];
                         match self.execute_node(node, plan, &pcm_map, Some(&build_state), &flags_hash) {
                             Ok(outcome) => {
-                                total_compile_ms.fetch_add(
-                                    outcome.time_ms() as usize,
-                                    Ordering::Relaxed,
-                                );
+                                let ms = outcome.time_ms();
+                                total_compile_ms.fetch_add(ms as usize, Ordering::Relaxed);
+                                node_timings.lock().unwrap().insert(node.id.clone(), ms);
                                 match outcome {
                                     NodeOutcome::CacheHit(_) => {
                                         cache_hits.fetch_add(1, Ordering::Relaxed);
@@ -745,6 +748,7 @@ impl BuildRunner {
             incremental_skipped: incr_skipped.load(Ordering::Relaxed),
             wall_time_ms: wall_start.elapsed().as_millis() as u64,
             total_compile_time_ms: total_compile_ms.load(Ordering::Relaxed) as u64,
+            node_timings: Arc::try_unwrap(node_timings).unwrap_or_default().into_inner().unwrap_or_default(),
         };
 
         Ok((final_output, stats))
@@ -765,6 +769,8 @@ impl BuildRunner {
 
         for node in &plan.nodes {
             let outcome = self.execute_node(node, plan, &pcm_map, Some(&build_state), &flags_hash)?;
+            let ms = outcome.time_ms();
+            stats.node_timings.insert(node.id.clone(), ms);
             match outcome {
                 NodeOutcome::CacheHit(ms) => {
                     stats.cache_hits += 1;

@@ -832,3 +832,138 @@ fn test_full_workflow_init_add_resolve_verify_clean() {
     let o = run_cmod(tmp.path(), &["clean"]);
     assert!(o.status.success(), "clean failed");
 }
+
+// ─── Phase 5 integration tests ───
+
+#[test]
+fn test_compile_commands_generation() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "ccdb_test"]);
+
+    let output = run_cmod(tmp.path(), &["compile-commands"]);
+    assert!(output.status.success(), "compile-commands failed: {:?}", String::from_utf8_lossy(&output.stderr));
+
+    // Should produce a compile_commands.json
+    assert!(tmp.path().join("compile_commands.json").exists());
+}
+
+#[test]
+fn test_build_with_verify_flag() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "verify_test"]);
+
+    // Build with --verify should work on a project with no deps
+    let output = run_cmod(tmp.path(), &["build", "--verify"]);
+    // May fail because of missing clang or linker, but should not fail on integrity
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // If it fails, it should NOT be due to an integrity violation
+    if !output.status.success() {
+        assert!(!stderr.contains("integrity mismatch") && !stderr.contains("no content hash"),
+            "integrity check should not fail on clean project: {}", stderr);
+    }
+}
+
+#[test]
+fn test_build_with_timings_flag() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "timings_test"]);
+
+    // Build with --timings should accept the flag
+    let output = run_cmod(tmp.path(), &["build", "--timings"]);
+    // Even if build fails due to missing clang, the flag should be accepted
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("unexpected argument"), "timings flag should be accepted");
+}
+
+#[test]
+fn test_build_with_no_hooks_flag() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "nohooks_test"]);
+
+    let output = run_cmod(tmp.path(), &["build", "--no-hooks"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("unexpected argument"), "no-hooks flag should be accepted");
+}
+
+#[test]
+fn test_graph_with_status_flag() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "graph_status"]);
+
+    let output = run_cmod(tmp.path(), &["graph", "--status"]);
+    assert!(output.status.success(), "graph --status failed: {:?}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_graph_dot_with_status() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "graph_dot_status"]);
+
+    let output = run_cmod(tmp.path(), &["graph", "--format", "dot", "--status"]);
+    assert!(output.status.success(), "graph --format dot --status failed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("digraph modules"));
+}
+
+#[test]
+fn test_graph_json_with_status() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "graph_json_status"]);
+
+    let output = run_cmod(tmp.path(), &["graph", "--format", "json", "--status"]);
+    assert!(output.status.success(), "graph --format json --status failed");
+}
+
+#[test]
+fn test_deps_why_flag() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "why_test"]);
+
+    // Add a path dep and resolve
+    let lib = tmp.path().join("libs/mylib");
+    fs::create_dir_all(lib.join("src")).unwrap();
+    fs::write(
+        lib.join("cmod.toml"),
+        "[package]\nname = \"mylib\"\nversion = \"0.1.0\"\n",
+    ).unwrap();
+    fs::write(lib.join("src/lib.cppm"), "export module mylib;\n").unwrap();
+    run_cmod(tmp.path(), &["add", "mylib", "--path", "./libs/mylib"]);
+    run_cmod(tmp.path(), &["resolve"]);
+
+    let output = run_cmod(tmp.path(), &["deps", "--why", "mylib"]);
+    assert!(output.status.success(), "deps --why failed: {:?}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_deps_conflicts_flag() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "conflicts_test"]);
+    run_cmod(tmp.path(), &["resolve"]);
+
+    let output = run_cmod(tmp.path(), &["deps", "--conflicts"]);
+    assert!(output.status.success(), "deps --conflicts failed: {:?}", String::from_utf8_lossy(&output.stderr));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No version conflicts") || stderr.contains("No dependencies"),
+        "should report no conflicts for clean project");
+}
+
+#[test]
+fn test_cache_gc() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "gc_test"]);
+
+    let output = run_cmod(tmp.path(), &["cache", "gc"]);
+    assert!(output.status.success(), "cache gc failed: {:?}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_untrusted_flag_accepted() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "trust_test"]);
+
+    // --untrusted is a global flag
+    let output = run_cmod(tmp.path(), &["--untrusted", "resolve"]);
+    assert!(output.status.success(), "resolve --untrusted failed: {:?}", String::from_utf8_lossy(&output.stderr));
+}
