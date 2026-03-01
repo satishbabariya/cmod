@@ -59,6 +59,8 @@ pub struct ClangBackend {
     pub extra_flags: Vec<String>,
     /// Sysroot path for cross-compilation.
     pub sysroot: Option<PathBuf>,
+    /// Enable LTO (link-time optimization).
+    pub lto: bool,
 }
 
 impl ClangBackend {
@@ -73,6 +75,7 @@ impl ClangBackend {
             profile,
             extra_flags: Vec::new(),
             sysroot: None,
+            lto: false,
         }
     }
 
@@ -101,6 +104,10 @@ impl ClangBackend {
                 flags.push("-O2".to_string());
                 flags.push("-DNDEBUG".to_string());
             }
+        }
+
+        if self.lto {
+            flags.push("-flto=thin".to_string());
         }
 
         flags.extend(self.extra_flags.clone());

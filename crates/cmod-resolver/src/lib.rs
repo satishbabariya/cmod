@@ -3,4 +3,4 @@ pub mod git;
 pub mod resolver;
 pub mod version;
 
-pub use resolver::{Resolver, VersionConflict};
+pub use resolver::{AbiWarning, Resolver, VersionConflict};

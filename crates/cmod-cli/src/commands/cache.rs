@@ -203,6 +203,49 @@ fn parse_size(s: &str) -> Option<u64> {
     Some(num * multiplier)
 }
 
+/// Run `cmod cache export` — export a cached module as a BMI package.
+pub fn export_bmi(module: &str, key: &str, output: &str, verbose: bool) -> Result<(), CmodError> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::load(&cwd)?;
+
+    let output_path = std::path::PathBuf::from(output);
+    let package = cmod_cache::export_bmi(&config.cache_dir(), module, key, &output_path)?;
+
+    eprintln!("  Exported BMI package for '{}' to {}", module, output);
+    eprintln!("  {} file(s) in package", package.files.len());
+
+    if verbose {
+        eprintln!("  Compatibility key: {}", package.metadata.compat_key());
+        for (name, hash) in &package.files {
+            eprintln!("    {} ({})", name, &hash[..12.min(hash.len())]);
+        }
+    }
+
+    Ok(())
+}
+
+/// Run `cmod cache import` — import a BMI package into the local cache.
+pub fn import_bmi(path: &str, verbose: bool) -> Result<(), CmodError> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::load(&cwd)?;
+
+    let package_path = std::path::PathBuf::from(path);
+    let metadata = cmod_cache::import_bmi(&config.cache_dir(), &package_path)?;
+
+    eprintln!(
+        "  Imported BMI for '{}' v{} ({})",
+        metadata.module_name, metadata.version, metadata.compat_key()
+    );
+
+    if verbose {
+        eprintln!("  Compiler: {} {}", metadata.compiler, metadata.compiler_version);
+        eprintln!("  Target: {}", metadata.target);
+        eprintln!("  C++ standard: {}", metadata.cxx_standard);
+    }
+
+    Ok(())
+}
+
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;

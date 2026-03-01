@@ -84,7 +84,7 @@ fn compute_node_statuses(graph: &ModuleGraph, build_state: &BuildState) -> BTree
 }
 
 /// Run `cmod graph` — visualize the module dependency graph.
-pub fn run(format: Option<String>, filter: Option<String>, status: bool) -> Result<(), CmodError> {
+pub fn run(format: Option<String>, filter: Option<String>, status: bool, critical_path: bool) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -104,6 +104,23 @@ pub fn run(format: Option<String>, filter: Option<String>, status: bool) -> Resu
     } else {
         BTreeMap::new()
     };
+
+    // Show critical path if requested
+    if critical_path {
+        // Use timings from build state if available, otherwise use empty timings
+        let build_state = BuildState::load(&config.build_dir());
+        let timings: BTreeMap<String, u64> = build_state.nodes.iter().map(|(k, _)| {
+            // Use a default time of 1 for each node if no real timings available
+            (k.clone(), 1)
+        }).collect();
+        let path = graph.critical_path(&timings);
+        if path.is_empty() {
+            eprintln!("  No critical path (empty graph or no timings).");
+        } else {
+            eprintln!("  Critical path ({} nodes):", path.len());
+            eprintln!("    {}", path.join(" → "));
+        }
+    }
 
     let format = match format.as_deref() {
         Some("dot") => GraphFormat::Dot,

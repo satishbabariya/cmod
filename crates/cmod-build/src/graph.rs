@@ -174,6 +174,53 @@ impl ModuleGraph {
             .collect()
     }
 
+    /// Compute the critical path through the graph using node timings.
+    ///
+    /// Returns the sequence of module names forming the longest path
+    /// (by total compile time), which determines the minimum build time.
+    pub fn critical_path(&self, timings: &BTreeMap<String, u64>) -> Vec<String> {
+        let order = match self.topological_order() {
+            Ok(o) => o,
+            Err(_) => return vec![],
+        };
+
+        // dp[node] = (longest_path_time_to_this_node, predecessor)
+        let mut dp: BTreeMap<&str, (u64, Option<&str>)> = BTreeMap::new();
+
+        for name in &order {
+            let node_time = timings.get(name.as_str()).copied().unwrap_or(0);
+            let node = match self.nodes.get(name.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            // Find max incoming path
+            let (best_time, best_pred) = node
+                .imports
+                .iter()
+                .filter_map(|imp| dp.get(imp.as_str()).map(|(t, _)| (*t, imp.as_str())))
+                .max_by_key(|(t, _)| *t)
+                .unwrap_or((0, ""));
+
+            let total = best_time + node_time;
+            let pred = if best_pred.is_empty() { None } else { Some(best_pred) };
+            dp.insert(name.as_str(), (total, pred));
+        }
+
+        // Find the endpoint with the longest path
+        let endpoint = dp.iter().max_by_key(|(_, (t, _))| *t).map(|(k, _)| *k);
+
+        // Trace back
+        let mut path = Vec::new();
+        let mut current = endpoint;
+        while let Some(node) = current {
+            path.push(node.to_string());
+            current = dp.get(node).and_then(|(_, pred)| *pred);
+        }
+        path.reverse();
+        path
+    }
+
     /// Get the set of modules that would need rebuilding if the given module changes.
     ///
     /// This includes the module itself plus all transitive dependents.

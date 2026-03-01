@@ -532,6 +532,105 @@ impl Resolver {
     }
 }
 
+/// An ABI compatibility warning detected during resolution.
+#[derive(Debug, Clone)]
+pub struct AbiWarning {
+    /// Name of the dependency.
+    pub package: String,
+    /// Description of the ABI issue.
+    pub reason: String,
+}
+
+impl Resolver {
+    /// Check for ABI compatibility issues across resolved dependencies.
+    ///
+    /// Compares the project's ABI configuration against dependency metadata
+    /// to detect potential incompatibilities.
+    pub fn check_abi_compat(
+        manifest: &Manifest,
+        lockfile: &Lockfile,
+    ) -> Vec<AbiWarning> {
+        let mut warnings = Vec::new();
+
+        let project_abi = manifest.abi.as_ref();
+        let project_compat = manifest.compat.as_ref();
+
+        // Extract project's minimum C++ standard
+        let project_cpp = project_compat
+            .and_then(|c| c.cpp.as_deref())
+            .and_then(|s| {
+                s.trim_start_matches(">=")
+                    .trim_start_matches("c++")
+                    .trim_start_matches("C++")
+                    .parse::<u32>()
+                    .ok()
+            });
+
+        // Check ABI variant consistency
+        if let Some(abi_conf) = project_abi {
+            let project_variant = abi_conf.variant.as_ref().map(|v| format!("{:?}", v).to_lowercase());
+
+            if let Some(ref variant) = project_variant {
+                // Check that dependency platforms are compatible
+                for pkg in &lockfile.packages {
+                    // If the project requires a specific ABI variant, warn about
+                    // dependencies that might not match (cross-platform builds)
+                    if variant == "msvc" && pkg.name.contains("linux") {
+                        warnings.push(AbiWarning {
+                            package: pkg.name.clone(),
+                            reason: format!(
+                                "dependency '{}' may not be ABI-compatible with MSVC variant",
+                                pkg.name
+                            ),
+                        });
+                    }
+                }
+            }
+
+            // Check min_cpp_standard against project
+            if let (Some(abi_min_cpp), Some(proj_cpp)) =
+                (abi_conf.min_cpp_standard.as_deref().and_then(|s| s.parse::<u32>().ok()), project_cpp)
+            {
+                if proj_cpp < abi_min_cpp {
+                    warnings.push(AbiWarning {
+                        package: manifest.package.name.clone(),
+                        reason: format!(
+                            "project C++ standard ({}) is below ABI minimum requirement ({})",
+                            proj_cpp, abi_min_cpp
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Check for mixed ABI (itanium + msvc) in the dependency graph
+        if let Some(ref compat) = project_compat {
+            if let Some(ref project_abi_variant) = compat.abi {
+                let project_abi_str = format!("{:?}", project_abi_variant).to_lowercase();
+                for pkg in &lockfile.packages {
+                    // Flag cross-ABI dependencies based on target platform hints
+                    let is_msvc_dep = pkg.name.contains("msvc") || pkg.name.contains("windows");
+                    let is_itanium_dep = pkg.name.contains("linux") || pkg.name.contains("darwin");
+
+                    if project_abi_str == "msvc" && is_itanium_dep {
+                        warnings.push(AbiWarning {
+                            package: pkg.name.clone(),
+                            reason: "potential ABI mismatch: itanium-style dep in MSVC project".to_string(),
+                        });
+                    } else if project_abi_str == "itanium" && is_msvc_dep {
+                        warnings.push(AbiWarning {
+                            package: pkg.name.clone(),
+                            reason: "potential ABI mismatch: MSVC-style dep in itanium project".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        warnings
+    }
+}
+
 /// A version conflict where multiple packages depend on the same transitive dep.
 #[derive(Debug, Clone)]
 pub struct VersionConflict {
@@ -576,6 +675,9 @@ mod tests {
             security: None,
             publish: None,
             hooks: None,
+            ide: None,
+            plugins: None,
+            abi: None,
             target: BTreeMap::new(),
         }
     }

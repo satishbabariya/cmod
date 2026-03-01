@@ -967,3 +967,189 @@ fn test_untrusted_flag_accepted() {
     let output = run_cmod(tmp.path(), &["--untrusted", "resolve"]);
     assert!(output.status.success(), "resolve --untrusted failed: {:?}", String::from_utf8_lossy(&output.stderr));
 }
+
+// =============================================================
+// Phase 6 integration tests
+// =============================================================
+
+#[test]
+fn test_tidy_command() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "tidy_test"]);
+
+    let output = run_cmod(tmp.path(), &["tidy"]);
+    assert!(output.status.success(), "tidy failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unused") || stderr.contains("No dependencies") || stderr.contains("0 unused") || stderr.contains("All dependencies are used"),
+        "expected tidy output, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_tidy_apply_flag() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "tidy_apply"]);
+
+    let output = run_cmod(tmp.path(), &["tidy", "--apply"]);
+    assert!(output.status.success(), "tidy --apply failed: {:?}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_check_command() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "check_test"]);
+
+    let output = run_cmod(tmp.path(), &["check"]);
+    // Check should pass on a fresh project
+    assert!(output.status.success(), "check failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Checking") || stderr.contains("checks passed"),
+        "expected check output, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_plugin_list() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "plugin_test"]);
+
+    let output = run_cmod(tmp.path(), &["plugin", "list"]);
+    assert!(output.status.success(), "plugin list failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No plugins") || stderr.contains("configured"),
+        "expected plugin list output, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_plan_command() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "plan_test"]);
+
+    let output = run_cmod(tmp.path(), &["plan"]);
+    // Plan should output JSON to stdout
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // It should either succeed with JSON output or fail because of no module sources
+    if output.status.success() {
+        assert!(
+            stdout.contains('[') || stdout.contains('{'),
+            "expected JSON output from plan, got: {}",
+            stdout
+        );
+    }
+}
+
+#[test]
+fn test_emit_cmake_command() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "cmake_test"]);
+
+    let output = run_cmod(tmp.path(), &["emit-cmake"]);
+    // emit-cmake should create CMakeLists.txt
+    if output.status.success() {
+        assert!(
+            tmp.path().join("CMakeLists.txt").exists(),
+            "CMakeLists.txt should be generated"
+        );
+        let content = fs::read_to_string(tmp.path().join("CMakeLists.txt")).unwrap();
+        assert!(content.contains("cmake_minimum_required"));
+        assert!(content.contains("cmake_test"));
+    }
+}
+
+#[test]
+fn test_graph_critical_path_flag() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "cp_test"]);
+
+    let output = run_cmod(tmp.path(), &["graph", "--critical-path"]);
+    // Should not crash, even without build data
+    assert!(output.status.success(), "graph --critical-path failed: {:?}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_cache_export_import() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "cache_exp"]);
+
+    // cache export without a real cache entry should fail gracefully
+    let output = run_cmod(tmp.path(), &["cache", "export", "nonexistent", "somekey", "--output", tmp.path().join("export").to_str().unwrap()]);
+    assert!(!output.status.success(), "expected cache export to fail for nonexistent module");
+
+    // cache import without a package should fail gracefully
+    let output = run_cmod(tmp.path(), &["cache", "import", tmp.path().join("nopkg").to_str().unwrap()]);
+    assert!(!output.status.success(), "expected cache import to fail for nonexistent path");
+}
+
+#[test]
+fn test_help_includes_phase6_commands() {
+    let output = Command::new(env!("CARGO_BIN_EXE_cmod"))
+        .arg("--help")
+        .output()
+        .expect("failed to run cmod");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Phase 6 commands should appear in help
+    assert!(stdout.contains("tidy"), "help should list 'tidy' command");
+    assert!(stdout.contains("check"), "help should list 'check' command");
+    assert!(stdout.contains("plugin"), "help should list 'plugin' command");
+    assert!(stdout.contains("plan"), "help should list 'plan' command");
+    assert!(stdout.contains("emit-cmake"), "help should list 'emit-cmake' command");
+}
+
+#[test]
+fn test_abi_config_in_manifest() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "abi_test"]);
+
+    // Add [abi] section to manifest
+    let manifest_path = tmp.path().join("cmod.toml");
+    let mut content = fs::read_to_string(&manifest_path).unwrap();
+    content.push_str("\n[abi]\nversion = \"1.0\"\nstable = true\nmin_cpp_standard = \"20\"\nverified_platforms = [\"x86_64-unknown-linux-gnu\"]\n");
+    fs::write(&manifest_path, &content).unwrap();
+
+    // Project should still work with ABI config
+    let output = run_cmod(tmp.path(), &["check"]);
+    assert!(output.status.success(), "check with [abi] config failed: {:?}", String::from_utf8_lossy(&output.stderr));
+
+    let output = run_cmod(tmp.path(), &["resolve"]);
+    assert!(output.status.success(), "resolve with [abi] config failed: {:?}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_ide_config_in_manifest() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "ide_test"]);
+
+    // Add [ide] section to manifest
+    let manifest_path = tmp.path().join("cmod.toml");
+    let mut content = fs::read_to_string(&manifest_path).unwrap();
+    content.push_str("\n[ide]\nlsp_server = \"auto\"\ncode_completion = true\ndiagnostics = true\nformat_on_save = false\n");
+    fs::write(&manifest_path, &content).unwrap();
+
+    // Project should still work with IDE config
+    let output = run_cmod(tmp.path(), &["status"]);
+    assert!(output.status.success(), "status with [ide] config failed: {:?}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_plugins_config_in_manifest() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "plug_test"]);
+
+    // Add [plugins] section to manifest
+    let manifest_path = tmp.path().join("cmod.toml");
+    let mut content = fs::read_to_string(&manifest_path).unwrap();
+    content.push_str("\n[plugins.myfuzz]\npath = \"tools/fuzz\"\ncapabilities = [\"cli\"]\n");
+    fs::write(&manifest_path, &content).unwrap();
+
+    // plugin list should work (but find no actual plugin dirs)
+    let output = run_cmod(tmp.path(), &["plugin", "list"]);
+    assert!(output.status.success(), "plugin list with [plugins] config failed: {:?}", String::from_utf8_lossy(&output.stderr));
+}

@@ -171,6 +171,9 @@ mod tests {
             security: None,
             publish: None,
             hooks: None,
+            ide: None,
+            plugins: None,
+            abi: None,
             target: BTreeMap::new(),
         }
     }

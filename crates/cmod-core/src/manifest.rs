@@ -55,6 +55,18 @@ pub struct Manifest {
     #[serde(default)]
     pub hooks: Option<Hooks>,
 
+    /// IDE integration settings.
+    #[serde(default)]
+    pub ide: Option<Ide>,
+
+    /// Plugin configuration.
+    #[serde(default)]
+    pub plugins: Option<BTreeMap<String, PluginEntry>>,
+
+    /// ABI compatibility metadata for BMI distribution.
+    #[serde(default)]
+    pub abi: Option<AbiConfig>,
+
     /// Target-specific dependencies, keyed by cfg expression string.
     ///
     /// In `cmod.toml` these appear as:
@@ -259,6 +271,63 @@ pub struct Metadata {
     pub links: BTreeMap<String, String>,
     #[serde(default)]
     pub documentation: Option<String>,
+    #[serde(default)]
+    pub readme: Option<String>,
+}
+
+/// IDE integration configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Ide {
+    /// LSP server mode: "auto", "on", "off".
+    #[serde(default)]
+    pub lsp_server: Option<String>,
+    /// Enable code completion integration.
+    #[serde(default)]
+    pub code_completion: Option<bool>,
+    /// Enable real-time diagnostics.
+    #[serde(default)]
+    pub diagnostics: Option<bool>,
+    /// Enable format-on-save.
+    #[serde(default)]
+    pub format_on_save: Option<bool>,
+}
+
+/// Plugin entry in the `[plugins]` section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginEntry {
+    /// Path to the plugin directory or executable.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    /// Plugin capabilities.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+/// ABI compatibility configuration for BMI distribution and version tracking.
+///
+/// Used to track ABI compatibility between modules and detect breaking
+/// changes during dependency resolution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbiConfig {
+    /// ABI version string for this module (e.g., "1.0").
+    /// Bumped when ABI-breaking changes are made.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// ABI variant: "itanium" or "msvc".
+    #[serde(default)]
+    pub variant: Option<Abi>,
+    /// Whether this module provides a stable ABI guarantee.
+    #[serde(default)]
+    pub stable: bool,
+    /// Minimum required C++ standard for ABI compatibility (e.g., "20").
+    #[serde(default)]
+    pub min_cpp_standard: Option<String>,
+    /// Platforms with verified ABI compatibility.
+    #[serde(default)]
+    pub verified_platforms: Vec<String>,
+    /// Notes on ABI-breaking changes (changelog-like).
+    #[serde(default)]
+    pub breaking_changes: Vec<String>,
 }
 
 /// Security configuration for the project.
@@ -665,6 +734,9 @@ pub fn default_manifest(name: &str) -> Manifest {
         security: None,
         publish: None,
         hooks: None,
+        ide: None,
+        plugins: None,
+        abi: None,
         target: BTreeMap::new(),
     }
 }
@@ -704,6 +776,9 @@ pub fn default_workspace_manifest(name: &str) -> Manifest {
         security: None,
         publish: None,
         hooks: None,
+        ide: None,
+        plugins: None,
+        abi: None,
         target: BTreeMap::new(),
     }
 }

@@ -183,6 +183,10 @@ enum Commands {
         /// Show build status annotations (up-to-date, needs-rebuild, never-built)
         #[arg(long)]
         status: bool,
+
+        /// Highlight the critical path (longest compile chain)
+        #[arg(long)]
+        critical_path: bool,
     },
 
     /// Audit dependencies for security and quality issues
@@ -266,6 +270,28 @@ enum Commands {
 
     /// Generate compile_commands.json for IDE integration
     CompileCommands,
+
+    /// Remove unused dependencies from cmod.toml
+    Tidy {
+        /// Actually remove unused deps (default: dry run)
+        #[arg(long)]
+        apply: bool,
+    },
+
+    /// Validate module naming, identity, and structure rules
+    Check,
+
+    /// Manage plugins
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
+
+    /// Output the build plan as JSON without executing it
+    Plan,
+
+    /// Export a CMakeLists.txt for interop with CMake-based projects
+    EmitCmake,
 }
 
 #[derive(Subcommand)]
@@ -293,6 +319,17 @@ enum ToolchainAction {
 }
 
 #[derive(Subcommand)]
+enum PluginAction {
+    /// List discovered plugins
+    List,
+    /// Run a plugin by name
+    Run {
+        /// Plugin name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum CacheAction {
     /// Show cache status and size
     Status,
@@ -304,6 +341,21 @@ enum CacheAction {
     Pull,
     /// Run garbage collection (evict old/oversized entries)
     Gc,
+    /// Export a cached module as a BMI package
+    Export {
+        /// Module name to export
+        module: String,
+        /// Cache key of the entry to export
+        key: String,
+        /// Output directory
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Import a BMI package into the local cache
+    Import {
+        /// Path to the BMI package directory
+        path: String,
+    },
 }
 
 fn main() {
@@ -343,9 +395,11 @@ fn main() {
             CacheAction::Push => commands::cache::push(cli.verbose),
             CacheAction::Pull => commands::cache::pull(cli.verbose),
             CacheAction::Gc => commands::cache::gc(cli.verbose),
+            CacheAction::Export { module, key, output } => commands::cache::export_bmi(&module, &key, &output, cli.verbose),
+            CacheAction::Import { path } => commands::cache::import_bmi(&path, cli.verbose),
         },
         Commands::Verify { signatures } => commands::verify::run(cli.verbose, signatures),
-        Commands::Graph { format, filter, status } => commands::graph::run(format, filter, status),
+        Commands::Graph { format, filter, status, critical_path } => commands::graph::run(format, filter, status, critical_path),
         Commands::Audit => commands::audit::run(cli.verbose),
         Commands::Status => commands::status::run(cli.verbose),
         Commands::Explain { module } => commands::explain::run(module, cli.verbose),
@@ -367,6 +421,14 @@ fn main() {
         Commands::Sbom { output } => commands::sbom::run(output, cli.verbose),
         Commands::Publish { dry_run, push } => commands::publish::run(dry_run, push, cli.verbose),
         Commands::CompileCommands => commands::compile_commands::run(cli.verbose, cli.target.clone()),
+        Commands::Tidy { apply } => commands::tidy::run(apply, cli.verbose),
+        Commands::Check => commands::check::run(cli.verbose),
+        Commands::Plugin { action } => match action {
+            PluginAction::List => commands::plugin::list(cli.verbose),
+            PluginAction::Run { name } => commands::plugin::run_plugin(&name, cli.verbose),
+        },
+        Commands::Plan => commands::build::plan(cli.verbose, cli.target.clone()),
+        Commands::EmitCmake => commands::build::emit_cmake(cli.verbose),
     };
 
     if let Err(e) = result {
