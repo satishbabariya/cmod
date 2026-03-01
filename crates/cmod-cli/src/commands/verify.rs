@@ -207,6 +207,14 @@ fn validate_sources(
     _warnings: &mut Vec<String>,
     verbose: bool,
 ) {
+    // Workspace roots have no source files — skip this check
+    if config.manifest.is_workspace() && config.manifest.module.is_none() {
+        if verbose {
+            eprintln!("  Skipping source check for workspace root.");
+        }
+        return;
+    }
+
     if verbose {
         eprintln!("  Checking source files...");
     }

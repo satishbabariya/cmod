@@ -54,10 +54,12 @@ fn find_binary(
     ];
 
     for dir in &search_dirs {
-        // Try exact name matches first
+        // Try exact name matches first, then common linker output names
         let candidates = [
             dir.join(name),
             dir.join(format!("{}.exe", name)),
+            dir.join("main"),
+            dir.join("main.exe"),
             dir.join("a.out"),
         ];
 
@@ -75,9 +77,13 @@ fn find_binary(
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() {
-                    // Skip object files, PCMs, and metadata
+                    // Skip object files, PCMs, metadata, and test binaries
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                     if matches!(ext, "o" | "pcm" | "json" | "a" | "so" | "dylib") {
+                        continue;
+                    }
+                    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                    if stem.starts_with("test_") || stem.ends_with("_test") {
                         continue;
                     }
                     // Check if it's an executable (on Unix, check permissions)
