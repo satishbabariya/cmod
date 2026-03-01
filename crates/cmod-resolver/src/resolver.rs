@@ -354,6 +354,9 @@ impl Resolver {
         let mut transitive_deps = Vec::new();
         if dep_manifest_path.exists() {
             if let Ok(dep_manifest) = Manifest::load(&dep_manifest_path) {
+                // Check compat constraints of the dependency against our toolchain
+                check_dep_compat(name, &dep_manifest, _manifest)?;
+
                 for (trans_name, trans_dep) in &dep_manifest.dependencies {
                     transitive_deps.push(trans_name.clone());
                     // Recursively resolve transitive dependencies
@@ -640,6 +643,104 @@ pub struct VersionConflict {
     pub requesters: Vec<String>,
     /// The version that was resolved.
     pub resolved_version: String,
+}
+
+/// Check a dependency's compat constraints against the project manifest's toolchain.
+///
+/// If the dependency declares `[compat] cpp = ">=23"` and the project toolchain is C++20,
+/// this returns an error. Platform constraints are also checked against the resolved target.
+fn check_dep_compat(
+    dep_name: &str,
+    dep_manifest: &Manifest,
+    project_manifest: &Manifest,
+) -> Result<(), CmodError> {
+    let compat = match dep_manifest.compat.as_ref() {
+        Some(c) => c,
+        None => return Ok(()), // No compat constraints declared
+    };
+
+    // Check C++ standard constraint
+    if let Some(ref cpp_req) = compat.cpp {
+        if let Some(ref tc) = project_manifest.toolchain {
+            if let Some(ref project_std) = tc.cxx_standard {
+                if !check_cpp_constraint(project_std, cpp_req) {
+                    return Err(CmodError::UnresolvableConstraints {
+                        name: dep_name.to_string(),
+                        reason: format!(
+                            "dependency requires C++ standard {} but project toolchain is C++{}",
+                            cpp_req, project_std
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    // Check platform constraints
+    if !compat.platforms.is_empty() {
+        let target = project_manifest
+            .toolchain
+            .as_ref()
+            .and_then(|tc| tc.target.as_deref());
+
+        if let Some(target_triple) = target {
+            if !compat.platforms.iter().any(|p| target_triple.contains(p.as_str())) {
+                return Err(CmodError::UnresolvableConstraints {
+                    name: dep_name.to_string(),
+                    reason: format!(
+                        "dependency only supports platforms {:?} but project target is '{}'",
+                        compat.platforms, target_triple
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Check whether a project's C++ standard satisfies a constraint string.
+///
+/// Supports `">=NN"`, `">NN"`, `"NN"` (exact), and `"<=NN"` forms.
+fn check_cpp_constraint(project_std: &str, constraint: &str) -> bool {
+    let project_num: u32 = match project_std.parse() {
+        Ok(n) => n,
+        Err(_) => return true, // Can't parse, assume compatible
+    };
+
+    let constraint = constraint.trim();
+    if let Some(rest) = constraint.strip_prefix(">=") {
+        let req: u32 = match rest.trim().parse() {
+            Ok(n) => n,
+            Err(_) => return true,
+        };
+        project_num >= req
+    } else if let Some(rest) = constraint.strip_prefix("<=") {
+        let req: u32 = match rest.trim().parse() {
+            Ok(n) => n,
+            Err(_) => return true,
+        };
+        project_num <= req
+    } else if let Some(rest) = constraint.strip_prefix('>') {
+        let req: u32 = match rest.trim().parse() {
+            Ok(n) => n,
+            Err(_) => return true,
+        };
+        project_num > req
+    } else if let Some(rest) = constraint.strip_prefix('<') {
+        let req: u32 = match rest.trim().parse() {
+            Ok(n) => n,
+            Err(_) => return true,
+        };
+        project_num < req
+    } else {
+        // Exact match
+        let req: u32 = match constraint.parse() {
+            Ok(n) => n,
+            Err(_) => return true,
+        };
+        project_num >= req
+    }
 }
 
 #[cfg(test)]
@@ -1294,5 +1395,110 @@ mod tests {
         let lockfile = Lockfile::new();
         let reasons = Resolver::explain_dep(&lockfile, "nonexistent");
         assert!(reasons.is_empty());
+    }
+
+    #[test]
+    fn test_check_cpp_constraint_gte() {
+        assert!(check_cpp_constraint("23", ">=20"));
+        assert!(check_cpp_constraint("20", ">=20"));
+        assert!(!check_cpp_constraint("17", ">=20"));
+    }
+
+    #[test]
+    fn test_check_cpp_constraint_exact() {
+        assert!(check_cpp_constraint("23", "23"));
+        assert!(check_cpp_constraint("26", "23"));
+        assert!(!check_cpp_constraint("20", "23"));
+    }
+
+    #[test]
+    fn test_check_cpp_constraint_lt() {
+        assert!(check_cpp_constraint("17", "<20"));
+        assert!(!check_cpp_constraint("20", "<20"));
+    }
+
+    #[test]
+    fn test_check_dep_compat_passes_when_satisfied() {
+        use cmod_core::manifest::{Compat, Toolchain};
+        let mut dep_manifest = minimal_manifest();
+        dep_manifest.compat = Some(Compat {
+            cpp: Some(">=20".to_string()),
+            llvm: None,
+            abi: None,
+            platforms: vec![],
+        });
+
+        let mut project = minimal_manifest();
+        project.toolchain = Some(Toolchain {
+            compiler: None,
+            version: None,
+            cxx_standard: Some("23".to_string()),
+            stdlib: None,
+            target: None,
+            sysroot: None,
+        });
+
+        assert!(check_dep_compat("test_dep", &dep_manifest, &project).is_ok());
+    }
+
+    #[test]
+    fn test_check_dep_compat_fails_cpp_too_low() {
+        use cmod_core::manifest::{Compat, Toolchain};
+        let mut dep_manifest = minimal_manifest();
+        dep_manifest.compat = Some(Compat {
+            cpp: Some(">=23".to_string()),
+            llvm: None,
+            abi: None,
+            platforms: vec![],
+        });
+
+        let mut project = minimal_manifest();
+        project.toolchain = Some(Toolchain {
+            compiler: None,
+            version: None,
+            cxx_standard: Some("20".to_string()),
+            stdlib: None,
+            target: None,
+            sysroot: None,
+        });
+
+        let result = check_dep_compat("test_dep", &dep_manifest, &project);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("C++ standard"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_check_dep_compat_platform_mismatch() {
+        use cmod_core::manifest::{Compat, Toolchain};
+        let mut dep_manifest = minimal_manifest();
+        dep_manifest.compat = Some(Compat {
+            cpp: None,
+            llvm: None,
+            abi: None,
+            platforms: vec!["x86_64-linux-gnu".to_string()],
+        });
+
+        let mut project = minimal_manifest();
+        project.toolchain = Some(Toolchain {
+            compiler: None,
+            version: None,
+            cxx_standard: None,
+            stdlib: None,
+            target: Some("aarch64-apple-darwin".to_string()),
+            sysroot: None,
+        });
+
+        let result = check_dep_compat("test_dep", &dep_manifest, &project);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("platforms"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_check_dep_compat_no_constraints_passes() {
+        let dep_manifest = minimal_manifest();
+        let project = minimal_manifest();
+        assert!(check_dep_compat("test_dep", &dep_manifest, &project).is_ok());
     }
 }

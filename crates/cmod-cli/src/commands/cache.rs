@@ -99,6 +99,9 @@ pub fn push(verbose: bool) -> Result<(), CmodError> {
 }
 
 /// Run `cmod cache pull` — pull cache entries from a remote cache.
+///
+/// Uses the lockfile to determine module names and content hashes,
+/// then constructs cache keys and fetches available artifacts.
 pub fn pull(verbose: bool) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
@@ -112,7 +115,7 @@ pub fn pull(verbose: bool) -> Result<(), CmodError> {
             "no shared cache URL configured; add [cache] shared_url to cmod.toml".to_string(),
         ))?;
 
-    let _remote = cmod_cache::HttpRemoteCache::new(
+    let remote = cmod_cache::HttpRemoteCache::new(
         remote_url,
         cmod_cache::RemoteCacheMode::ReadOnly,
     );
@@ -121,11 +124,84 @@ pub fn pull(verbose: bool) -> Result<(), CmodError> {
         eprintln!("  Remote: {}", remote_url);
     }
 
-    // Pull requires knowing what keys to fetch — this needs a lockfile
-    // with cache key metadata, or a manifest of remote entries.
-    eprintln!("  Cache pull requires a build first to determine cache keys");
-    eprintln!("  Run `cmod build` with remote cache enabled for automatic pull");
+    // Load the lockfile to get module names and hashes
+    let lockfile = cmod_core::lockfile::Lockfile::load(&config.lockfile_path)
+        .map_err(|_| CmodError::Other(
+            "no lockfile found; run `cmod resolve` first".to_string(),
+        ))?;
 
+    if lockfile.packages.is_empty() {
+        eprintln!("  No dependencies in lockfile, nothing to pull.");
+        return Ok(());
+    }
+
+    let cache = ArtifactCache::new(config.cache_dir());
+    let mut pulled = 0u32;
+    let mut skipped = 0u32;
+
+    for pkg in &lockfile.packages {
+        let hash = pkg.hash.as_deref().unwrap_or("");
+        if hash.is_empty() {
+            continue;
+        }
+
+        // Use content hash as cache key lookup
+        let key = match cmod_cache::CacheKey::from_hex(hash) {
+            Some(k) => k,
+            None => continue,
+        };
+
+        // Check if already cached locally
+        if cache.has(&pkg.name, &key) {
+            if verbose {
+                eprintln!("    {} — already cached", pkg.name);
+            }
+            skipped += 1;
+            continue;
+        }
+
+        // Check remote availability and pull
+        match remote.has(&pkg.name, &key) {
+            Ok(true) => {
+                if verbose {
+                    eprintln!("    {} — pulling from remote...", pkg.name);
+                }
+
+                let dest_dir = cache.entry_dir(&pkg.name, &key);
+                std::fs::create_dir_all(&dest_dir)?;
+
+                for artifact in &["module.pcm", "object.o", "metadata.json"] {
+                    let dest = dest_dir.join(artifact);
+                    match remote.get(&pkg.name, &key, artifact, &dest) {
+                        Ok(true) => {
+                            if verbose {
+                                eprintln!("      {} — downloaded", artifact);
+                            }
+                        }
+                        Ok(false) => {} // Not available, skip
+                        Err(e) => {
+                            if verbose {
+                                eprintln!("      {} — failed: {}", artifact, e);
+                            }
+                        }
+                    }
+                }
+                pulled += 1;
+            }
+            Ok(false) => {
+                if verbose {
+                    eprintln!("    {} — not in remote cache", pkg.name);
+                }
+            }
+            Err(e) => {
+                if verbose {
+                    eprintln!("    {} — remote check failed: {}", pkg.name, e);
+                }
+            }
+        }
+    }
+
+    eprintln!("  Pulled {} entries ({} already cached)", pulled, skipped);
     Ok(())
 }
 

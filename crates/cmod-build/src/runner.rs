@@ -723,10 +723,13 @@ impl BuildRunner {
         }
         drop(errs);
 
-        // Save the new build state
-        let final_state = new_build_state.lock().unwrap();
-        let _ = final_state.save(&plan.build_dir);
-        drop(final_state);
+        // Save the new build state with node timings
+        {
+            let mut final_state = new_build_state.lock().unwrap().clone();
+            let timings = node_timings.lock().unwrap();
+            final_state.node_timings = timings.clone();
+            let _ = final_state.save(&plan.build_dir);
+        }
 
         // Rebuild pcm_map for link phase (Arc was shared with threads)
         let link_pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
@@ -800,7 +803,8 @@ impl BuildRunner {
             }
         }
 
-        // Save updated build state
+        // Save updated build state with node timings
+        new_state.node_timings = stats.node_timings.clone();
         let _ = new_state.save(&plan.build_dir);
 
         stats.wall_time_ms = wall_start.elapsed().as_millis() as u64;

@@ -382,6 +382,12 @@ pub struct Hooks {
     /// Command to run before testing.
     #[serde(default, rename = "pre-test")]
     pub pre_test: Option<String>,
+    /// Command to run after testing completes.
+    #[serde(default, rename = "post-test")]
+    pub post_test: Option<String>,
+    /// Command to run before dependency resolution.
+    #[serde(default, rename = "pre-resolve")]
+    pub pre_resolve: Option<String>,
 }
 
 impl Manifest {

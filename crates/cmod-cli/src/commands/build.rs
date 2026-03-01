@@ -22,6 +22,8 @@ pub fn run(
     no_hooks: bool,
     verify: bool,
     timings: bool,
+    features: &[String],
+    no_default_features: bool,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
@@ -87,13 +89,19 @@ pub fn run(
         }
     }
 
+    // Step 1.7: Enforce signature policy from [security]
+    enforce_signature_policy(&config, &lockfile, verbose)?;
+
     // Step 2: Run pre-build hook
     if !no_hooks {
         run_hook(&config, "pre-build", config.manifest.hooks.as_ref().and_then(|h| h.pre_build.as_deref()))?;
     }
 
+    // Resolve activated features for compiler defines
+    let activated_features = resolve_build_features(&config.manifest, features, no_default_features);
+
     // Step 3: Build the single module
-    let result = build_module(&config, verbose, jobs, force, &effective_remote_url, timings);
+    let result = build_module(&config, verbose, jobs, force, &effective_remote_url, timings, &activated_features);
 
     // Step 4: Run post-build hook (only on success)
     if result.is_ok() && !no_hooks {
@@ -113,7 +121,7 @@ fn make_remote_cache(url: &Option<String>, verbose: bool) -> Option<Box<dyn cmod
 }
 
 /// Build a single module project.
-fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>, timings: bool) -> Result<(), CmodError> {
+fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>, timings: bool, activated_features: &[String]) -> Result<(), CmodError> {
     // Discover source files
     let src_dir = config.src_dir();
     let sources = runner::discover_sources(&src_dir)?;
@@ -142,8 +150,8 @@ fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote
         eprintln!("  Build order: {}", order.join(" → "));
     }
 
-    // Set up the compiler backend
-    let (backend, target) = setup_compiler(config);
+    // Set up the compiler backend (with feature flags as -D defines)
+    let (backend, target) = setup_compiler(config, activated_features);
 
     // Set up cache
     let cache = ArtifactCache::new(config.cache_dir());
@@ -209,7 +217,7 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, rem
 
         let graph = build_module_graph(&sources, &member.name)?;
         graph.validate()?;
-        let (backend, target) = setup_compiler(config);
+        let (backend, target) = setup_compiler(config, &[]);
         let cache = ArtifactCache::new(config.cache_dir());
 
         let build_dir = config
@@ -369,7 +377,7 @@ fn parse_p1689_imports(json_str: &str) -> Result<Vec<String>, CmodError> {
 }
 
 /// Set up the Clang compiler backend from config.
-fn setup_compiler(config: &Config) -> (ClangBackend, String) {
+fn setup_compiler(config: &Config, activated_features: &[String]) -> (ClangBackend, String) {
     let cxx_standard = config
         .manifest
         .toolchain
@@ -388,10 +396,13 @@ fn setup_compiler(config: &Config) -> (ClangBackend, String) {
         }
     }
 
-    // Enable LTO if configured in manifest
+    // Apply build section settings from manifest
     if let Some(ref build) = config.manifest.build {
         if build.lto == Some(true) {
             backend.lto = true;
+        }
+        if let Some(opt) = build.optimization {
+            backend.optimization = Some(opt);
         }
     }
 
@@ -409,11 +420,60 @@ fn setup_compiler(config: &Config) -> (ClangBackend, String) {
 
     backend.target = Some(target.clone());
 
+    // Add feature flags as compiler defines
+    for feature in activated_features {
+        let flag = format!(
+            "-DCMOD_FEATURE_{}=1",
+            feature.to_uppercase().replace('-', "_")
+        );
+        backend.extra_flags.push(flag);
+    }
+
     (backend, target)
 }
 
+/// Resolve which features are activated for the build.
+///
+/// Returns a list of feature names that should be passed as `-DCMOD_FEATURE_*` flags.
+fn resolve_build_features(manifest: &cmod_core::manifest::Manifest, features: &[String], no_default_features: bool) -> Vec<String> {
+    let mut activated = Vec::new();
+
+    // Add default features unless disabled
+    if !no_default_features {
+        if let Some(defaults) = manifest.features.get("default") {
+            for f in defaults {
+                // Skip dep: prefixed entries (they activate deps, not flags)
+                if !f.starts_with("dep:") && !activated.contains(f) {
+                    activated.push(f.clone());
+                }
+            }
+        }
+    }
+
+    // Add explicitly requested features
+    for f in features {
+        if !f.starts_with("dep:") && !activated.contains(f) {
+            activated.push(f.clone());
+        }
+    }
+
+    activated
+}
+
 /// Ensure dependencies are resolved; if lockfile exists, load it.
+///
+/// If a `vendor/` directory exists and the build is in offline mode (or
+/// `vendor/config.toml` is present), the resolver uses vendored sources.
 fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
+    // Check for vendored dependencies
+    let vendor_dir = config.root.join("vendor");
+    let vendor_config = vendor_dir.join("config.toml");
+    let is_vendored = vendor_dir.exists() && vendor_config.exists();
+
+    if is_vendored && config.offline {
+        eprintln!("  Using vendored dependencies (offline mode)");
+    }
+
     if config.lockfile_path.exists() {
         Lockfile::load(&config.lockfile_path)
     } else if config.manifest.dependencies.is_empty() && config.manifest.target.is_empty() {
@@ -423,7 +483,13 @@ fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
     } else {
         // Auto-resolve with target-specific dependency filtering
         eprintln!("  No lockfile found, resolving dependencies...");
-        let mut resolver = Resolver::new(config.deps_dir());
+        // Use vendor dir as deps dir if vendored deps exist
+        let deps_dir = if is_vendored {
+            vendor_dir
+        } else {
+            config.deps_dir()
+        };
+        let mut resolver = Resolver::new(deps_dir);
         let lockfile = resolver.resolve_with_target(
             &config.manifest,
             None,
@@ -555,6 +621,56 @@ pub fn run_hook(config: &Config, hook_name: &str, command: Option<&str>) -> Resu
         });
     }
 
+    Ok(())
+}
+
+/// Enforce the `[security] signature_policy` from the manifest.
+///
+/// - `"require"`: fail if any git dependency lacks a content hash (proxy for signature)
+/// - `"warn"`: emit warnings for unsigned/unhashed deps
+/// - `"none"` / absent: no enforcement
+fn enforce_signature_policy(config: &Config, lockfile: &Lockfile, verbose: bool) -> Result<(), CmodError> {
+    let policy = config
+        .manifest
+        .security
+        .as_ref()
+        .and_then(|s| s.signature_policy.as_deref())
+        .unwrap_or("none");
+
+    match policy {
+        "require" => {
+            let mut unsigned = Vec::new();
+            for pkg in &lockfile.packages {
+                if pkg.source.as_deref() == Some("git") && pkg.hash.is_none() {
+                    unsigned.push(pkg.name.clone());
+                }
+            }
+            if !unsigned.is_empty() {
+                return Err(CmodError::SecurityViolation {
+                    reason: format!(
+                        "signature_policy = \"require\" but {} package(s) have no content hash: {}. \
+                         Re-run `cmod resolve` to compute hashes.",
+                        unsigned.len(),
+                        unsigned.join(", ")
+                    ),
+                });
+            }
+            if verbose {
+                eprintln!("  Security policy: all {} packages have content hashes", lockfile.packages.len());
+            }
+        }
+        "warn" => {
+            for pkg in &lockfile.packages {
+                if pkg.source.as_deref() == Some("git") && pkg.hash.is_none() {
+                    eprintln!(
+                        "  Warning: package '{}' has no content hash (signature_policy = \"warn\")",
+                        pkg.name
+                    );
+                }
+            }
+        }
+        _ => {} // "none" or unset — no enforcement
+    }
     Ok(())
 }
 

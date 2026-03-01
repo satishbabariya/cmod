@@ -134,7 +134,28 @@ pub fn run_plugin(name: &str, verbose: bool) -> Result<(), CmodError> {
 
 /// Discover plugins from the manifest and local plugin directory.
 fn discover_plugins(config: &Config) -> Vec<PluginDef> {
-    discover_plugins_in(&config.root)
+    let mut plugins = discover_plugins_in(&config.root);
+
+    // Also discover plugins declared in [plugins] section of cmod.toml
+    if let Some(ref manifest_plugins) = config.manifest.plugins {
+        for (name, entry) in manifest_plugins {
+            // Skip if already discovered from .cmod/plugins/
+            if plugins.iter().any(|p| p.name == *name) {
+                continue;
+            }
+            let path = entry
+                .path
+                .clone()
+                .unwrap_or_else(|| config.root.join(".cmod").join("plugins").join(name));
+            plugins.push(PluginDef {
+                name: name.clone(),
+                path,
+                capabilities: entry.capabilities.clone(),
+            });
+        }
+    }
+
+    plugins
 }
 
 /// Discover plugins from a given root directory.

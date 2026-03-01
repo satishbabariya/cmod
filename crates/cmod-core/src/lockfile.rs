@@ -141,11 +141,11 @@ impl Lockfile {
         self.packages.is_empty()
     }
 
-    /// Compute and set the integrity hash from the package data.
+    /// Compute the integrity hash string from the package data.
     ///
-    /// The hash covers all package names, versions, commits, and content hashes
-    /// in a deterministic order.
-    pub fn compute_integrity(&mut self) {
+    /// The hash covers all package names, versions, commits, content hashes,
+    /// deps, and toolchain info in a deterministic order.
+    fn integrity_hash(&self) -> String {
         let mut hasher = Sha256::new();
         for pkg in &self.packages {
             hasher.update(pkg.name.as_bytes());
@@ -159,10 +159,39 @@ impl Lockfile {
             if let Some(ref hash) = pkg.hash {
                 hasher.update(hash.as_bytes());
             }
+            hasher.update(b":");
+            // Include deps in the hash for completeness
+            for dep in &pkg.deps {
+                hasher.update(dep.as_bytes());
+                hasher.update(b",");
+            }
+            hasher.update(b":");
+            // Include toolchain info
+            if let Some(ref tc) = pkg.toolchain {
+                if let Some(ref c) = tc.compiler {
+                    hasher.update(c.as_bytes());
+                }
+                hasher.update(b"/");
+                if let Some(ref v) = tc.version {
+                    hasher.update(v.as_bytes());
+                }
+                hasher.update(b"/");
+                if let Some(ref t) = tc.target {
+                    hasher.update(t.as_bytes());
+                }
+            }
             hasher.update(b"\n");
         }
         let result = hasher.finalize();
-        self.integrity = Some(format!("sha256:{}", hex::encode(result)));
+        format!("sha256:{}", hex::encode(result))
+    }
+
+    /// Compute and set the integrity hash from the package data.
+    ///
+    /// The hash covers all package names, versions, commits, content hashes,
+    /// deps, and toolchain info in a deterministic order.
+    pub fn compute_integrity(&mut self) {
+        self.integrity = Some(self.integrity_hash());
     }
 
     /// Verify the lockfile integrity hash matches the package data.
@@ -174,24 +203,7 @@ impl Lockfile {
             None => return Ok(()), // No integrity hash = don't verify
         };
 
-        // Recompute from package data
-        let mut hasher = Sha256::new();
-        for pkg in &self.packages {
-            hasher.update(pkg.name.as_bytes());
-            hasher.update(b":");
-            hasher.update(pkg.version.as_bytes());
-            hasher.update(b":");
-            if let Some(ref commit) = pkg.commit {
-                hasher.update(commit.as_bytes());
-            }
-            hasher.update(b":");
-            if let Some(ref hash) = pkg.hash {
-                hasher.update(hash.as_bytes());
-            }
-            hasher.update(b"\n");
-        }
-        let result = hasher.finalize();
-        let computed = format!("sha256:{}", hex::encode(result));
+        let computed = self.integrity_hash();
 
         if computed != *expected {
             return Err(CmodError::LockfileIntegrity {

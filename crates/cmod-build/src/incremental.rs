@@ -18,6 +18,9 @@ use crate::plan::BuildNode;
 pub struct BuildState {
     /// Per-node state, keyed by node ID.
     pub nodes: BTreeMap<String, NodeState>,
+    /// Per-node compilation time in milliseconds from the last build.
+    #[serde(default)]
+    pub node_timings: BTreeMap<String, u64>,
 }
 
 /// State tracked for a single build node.

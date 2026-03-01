@@ -382,7 +382,7 @@ fn main() {
             cli.untrusted,
         ),
         Commands::Build { release, jobs, force, remote_cache, no_hooks, verify, timings } => {
-            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache, no_hooks, verify, timings)
+            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache, no_hooks, verify, timings, &cli.features, cli.no_default_features)
         }
         Commands::Test { release } => {
             commands::test::run(release, cli.locked, cli.offline, cli.verbose, cli.target)

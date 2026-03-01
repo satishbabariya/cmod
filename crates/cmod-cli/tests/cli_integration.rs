@@ -1153,3 +1153,153 @@ fn test_plugins_config_in_manifest() {
     let output = run_cmod(tmp.path(), &["plugin", "list"]);
     assert!(output.status.success(), "plugin list with [plugins] config failed: {:?}", String::from_utf8_lossy(&output.stderr));
 }
+
+// =================== Phase 7 integration tests ===================
+
+#[test]
+fn test_lockfile_integrity_hash_computed_on_resolve() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "integ_test"]);
+
+    // Add a path dep and resolve
+    let dep_dir = tmp.path().join("libs/dep_a");
+    fs::create_dir_all(&dep_dir).unwrap();
+    fs::write(
+        dep_dir.join("cmod.toml"),
+        "[package]\nname = \"dep_a\"\nversion = \"1.0.0\"\n",
+    ).unwrap();
+
+    run_cmod(tmp.path(), &["add", "dep_a", "--path", "./libs/dep_a"]);
+    let output = run_cmod(tmp.path(), &["resolve"]);
+    assert!(output.status.success(), "resolve failed: {:?}", String::from_utf8_lossy(&output.stderr));
+
+    // Verify integrity hash is present in lockfile
+    let lockfile_content = fs::read_to_string(tmp.path().join("cmod.lock")).unwrap();
+    assert!(
+        lockfile_content.contains("integrity = \"sha256:"),
+        "lockfile should contain integrity hash, got:\n{}",
+        lockfile_content
+    );
+}
+
+#[test]
+fn test_optimization_level_in_manifest() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "opttest"]);
+
+    // Add [build] with optimization = "size"
+    let manifest_path = tmp.path().join("cmod.toml");
+    let mut content = fs::read_to_string(&manifest_path).unwrap();
+    content.push_str("\n[build]\noptimization = \"size\"\n");
+    fs::write(&manifest_path, &content).unwrap();
+
+    // Build should accept this without error (compilation may fail without clang, but parse should work)
+    let output = run_cmod(tmp.path(), &["build"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Either builds successfully or fails due to clang not found (which is fine for this test)
+    assert!(!stderr.contains("unknown variant"), "optimization level 'size' should parse: {}", stderr);
+}
+
+#[test]
+fn test_security_policy_in_manifest() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "sectest"]);
+
+    // Add [security] with signature_policy = "warn"
+    let manifest_path = tmp.path().join("cmod.toml");
+    let mut content = fs::read_to_string(&manifest_path).unwrap();
+    content.push_str("\n[security]\nsignature_policy = \"warn\"\n");
+    fs::write(&manifest_path, &content).unwrap();
+
+    // Build should succeed (no deps to warn about)
+    let output = run_cmod(tmp.path(), &["build"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("SecurityViolation"), "warn policy should not fail build: {}", stderr);
+}
+
+#[test]
+fn test_hooks_in_manifest() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "hooktest"]);
+
+    // Add [hooks] with pre-resolve and pre-test
+    let manifest_path = tmp.path().join("cmod.toml");
+    let mut content = fs::read_to_string(&manifest_path).unwrap();
+    content.push_str("\n[hooks]\npre-resolve = \"echo PRE_RESOLVE\"\npre-test = \"echo PRE_TEST\"\npost-test = \"echo POST_TEST\"\n");
+    fs::write(&manifest_path, &content).unwrap();
+
+    // Resolve should invoke pre-resolve hook
+    let output = run_cmod(tmp.path(), &["resolve"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("pre-resolve hook"), "pre-resolve hook should run: {}", stderr);
+}
+
+#[test]
+fn test_compat_in_manifest_accepted() {
+    let tmp = TempDir::new().unwrap();
+
+    // Write a minimal manifest with [compat] section directly
+    fs::create_dir_all(tmp.path().join("src")).unwrap();
+    fs::write(
+        tmp.path().join("cmod.toml"),
+        "[package]\nname = \"compattest\"\nversion = \"0.1.0\"\n\n[compat]\ncpp = \">=20\"\nplatforms = [\"x86_64-linux-gnu\", \"aarch64-apple-darwin\"]\n",
+    ).unwrap();
+    fs::write(tmp.path().join("src/lib.cppm"), "export module compattest;\n").unwrap();
+
+    // Resolve should work fine (no deps with conflicting compat)
+    let output = run_cmod(tmp.path(), &["resolve"]);
+    assert!(output.status.success(), "resolve with [compat] should succeed: {:?}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_features_flag_accepted_by_build() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "feattest"]);
+
+    // Add features section
+    let manifest_path = tmp.path().join("cmod.toml");
+    let mut content = fs::read_to_string(&manifest_path).unwrap();
+    content.push_str("\n[features]\ndefault = [\"simd\"]\nsimd = []\navx = []\n");
+    fs::write(&manifest_path, &content).unwrap();
+
+    // Build with --features should be accepted
+    let output = run_cmod(tmp.path(), &["build", "--features", "avx"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Should not error on parsing features; compilation may fail without clang
+    assert!(!stderr.contains("Unknown feature"), "features should be accepted: {}", stderr);
+}
+
+#[test]
+fn test_test_patterns_in_manifest() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "tptest"]);
+
+    // Add [test] section with patterns
+    let manifest_path = tmp.path().join("cmod.toml");
+    let mut content = fs::read_to_string(&manifest_path).unwrap();
+    content.push_str("\n[test]\ntest_patterns = [\"unit_\"]\nexclude_patterns = [\"benchmark\"]\n");
+    fs::write(&manifest_path, &content).unwrap();
+
+    // Test should parse the patterns without error
+    let output = run_cmod(tmp.path(), &["test"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // May fail to compile, but should parse the test config
+    assert!(!stderr.contains("unknown field"), "test_patterns should parse: {}", stderr);
+}
+
+#[test]
+fn test_plugin_manifest_discovery() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "plugtest"]);
+
+    // Add [plugins] to manifest — should be discovered even without .cmod/plugins dir
+    let manifest_path = tmp.path().join("cmod.toml");
+    let mut content = fs::read_to_string(&manifest_path).unwrap();
+    content.push_str("\n[plugins.formatter]\npath = \"tools/fmt\"\ncapabilities = [\"format\"]\n");
+    fs::write(&manifest_path, &content).unwrap();
+
+    let output = run_cmod(tmp.path(), &["plugin", "list"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success());
+    assert!(stderr.contains("formatter") || stderr.contains("1 plugin"), "manifest plugins should be discovered: {}", stderr);
+}

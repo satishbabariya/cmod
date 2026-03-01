@@ -107,18 +107,24 @@ pub fn run(format: Option<String>, filter: Option<String>, status: bool, critica
 
     // Show critical path if requested
     if critical_path {
-        // Use timings from build state if available, otherwise use empty timings
+        // Use persisted node timings from build state if available
         let build_state = BuildState::load(&config.build_dir());
-        let timings: BTreeMap<String, u64> = build_state.nodes.iter().map(|(k, _)| {
-            // Use a default time of 1 for each node if no real timings available
-            (k.clone(), 1)
-        }).collect();
+        let timings: BTreeMap<String, u64> = if build_state.node_timings.is_empty() {
+            // Fallback to 1ms per node if no real timings persisted
+            build_state.nodes.keys().map(|k| (k.clone(), 1)).collect()
+        } else {
+            build_state.node_timings.clone()
+        };
         let path = graph.critical_path(&timings);
         if path.is_empty() {
             eprintln!("  No critical path (empty graph or no timings).");
         } else {
-            eprintln!("  Critical path ({} nodes):", path.len());
-            eprintln!("    {}", path.join(" → "));
+            let total_ms: u64 = path.iter().filter_map(|n| timings.get(n)).sum();
+            eprintln!("  Critical path ({} nodes, {}ms):", path.len(), total_ms);
+            for node_id in &path {
+                let ms = timings.get(node_id).copied().unwrap_or(0);
+                eprintln!("    {} ({}ms)", node_id, ms);
+            }
         }
     }
 

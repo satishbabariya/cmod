@@ -18,6 +18,13 @@ pub fn run(
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
+    // Run pre-resolve hook
+    super::build::run_hook(
+        &config,
+        "pre-resolve",
+        config.manifest.hooks.as_ref().and_then(|h| h.pre_resolve.as_deref()),
+    )?;
+
     eprintln!("  Resolving dependencies...");
 
     // Check if this is a workspace
@@ -46,6 +53,9 @@ pub fn run(
     // Save trust database after successful resolution
     resolver.save_trust_db()?;
 
+    // Compute integrity hash before saving
+    let mut lockfile = lockfile;
+    lockfile.compute_integrity();
     lockfile.save(&config.lockfile_path)?;
 
     eprintln!(
@@ -103,6 +113,10 @@ fn resolve_workspace(
     )?;
 
     resolver.save_trust_db()?;
+
+    // Compute integrity hash before saving
+    let mut lockfile = lockfile;
+    lockfile.compute_integrity();
     lockfile.save(&ws.lockfile_path())?;
 
     eprintln!(
