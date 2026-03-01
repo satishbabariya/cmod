@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn test_audit_empty() {
         let manifest = minimal_manifest(BTreeMap::new());
-        let lockfile = Lockfile { version: 1, packages: vec![] };
+        let lockfile = Lockfile { version: 1, integrity: None, packages: vec![] };
 
         let report = audit_dependencies(&manifest, &lockfile).unwrap();
         assert!(report.findings.is_empty());
@@ -190,7 +190,7 @@ mod tests {
         deps.insert("fmt".to_string(), Dependency::Simple("^10".to_string()));
 
         let manifest = minimal_manifest(deps);
-        let lockfile = Lockfile { version: 1, packages: vec![] };
+        let lockfile = Lockfile { version: 1, integrity: None, packages: vec![] };
 
         let report = audit_dependencies(&manifest, &lockfile).unwrap();
         assert!(report.has_errors());
@@ -209,6 +209,7 @@ mod tests {
         pkg.repo = Some("https://github.com/fmtlib/fmt".to_string());
         let lockfile = Lockfile {
             version: 1,
+            integrity: None,
             packages: vec![pkg],
         };
 
@@ -239,6 +240,7 @@ mod tests {
         pkg.repo = Some("https://github.com/user/mylib".to_string());
         let lockfile = Lockfile {
             version: 1,
+            integrity: None,
             packages: vec![pkg],
         };
 
@@ -257,6 +259,7 @@ mod tests {
         pkg.repo = Some("https://github.com/fmtlib/fmt".to_string());
         let lockfile = Lockfile {
             version: 1,
+            integrity: None,
             packages: vec![pkg],
         };
 

@@ -20,6 +20,7 @@ pub fn run(
     force: bool,
     remote_cache_url: Option<String>,
     no_hooks: bool,
+    verify: bool,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
@@ -61,7 +62,29 @@ pub fn run(
     );
 
     // Step 1: Ensure dependencies are resolved (with target-specific filtering)
-    let _lockfile = ensure_resolved(&config)?;
+    let lockfile = ensure_resolved(&config)?;
+
+    // Step 1.5: Verify lockfile integrity if --verify is set
+    if verify {
+        eprintln!("  Verifying lockfile integrity...");
+        lockfile.verify_integrity()?;
+
+        // Verify all package hashes are present
+        for pkg in &lockfile.packages {
+            if pkg.source.as_deref() == Some("git") && pkg.hash.is_none() {
+                return Err(CmodError::SecurityViolation {
+                    reason: format!(
+                        "package '{}' has no content hash in lockfile; re-run `cmod resolve` to compute hashes",
+                        pkg.name
+                    ),
+                });
+            }
+        }
+
+        if verbose {
+            eprintln!("  Lockfile integrity verified ({} packages)", lockfile.packages.len());
+        }
+    }
 
     // Step 2: Run pre-build hook
     if !no_hooks {

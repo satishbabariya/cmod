@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -12,6 +13,10 @@ use crate::error::CmodError;
 pub struct Lockfile {
     /// Lockfile format version.
     pub version: u32,
+
+    /// Integrity hash of the package data (SHA-256), for `--verify` mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<String>,
 
     /// Locked packages.
     #[serde(default, rename = "package")]
@@ -78,6 +83,7 @@ impl Lockfile {
     pub fn new() -> Self {
         Lockfile {
             version: 1,
+            integrity: None,
             packages: Vec::new(),
         }
     }
@@ -133,6 +139,70 @@ impl Lockfile {
     /// Check whether the lockfile contains any packages.
     pub fn is_empty(&self) -> bool {
         self.packages.is_empty()
+    }
+
+    /// Compute and set the integrity hash from the package data.
+    ///
+    /// The hash covers all package names, versions, commits, and content hashes
+    /// in a deterministic order.
+    pub fn compute_integrity(&mut self) {
+        let mut hasher = Sha256::new();
+        for pkg in &self.packages {
+            hasher.update(pkg.name.as_bytes());
+            hasher.update(b":");
+            hasher.update(pkg.version.as_bytes());
+            hasher.update(b":");
+            if let Some(ref commit) = pkg.commit {
+                hasher.update(commit.as_bytes());
+            }
+            hasher.update(b":");
+            if let Some(ref hash) = pkg.hash {
+                hasher.update(hash.as_bytes());
+            }
+            hasher.update(b"\n");
+        }
+        let result = hasher.finalize();
+        self.integrity = Some(format!("sha256:{}", hex::encode(result)));
+    }
+
+    /// Verify the lockfile integrity hash matches the package data.
+    ///
+    /// Returns Ok(()) if no integrity hash is set (backwards compatible).
+    pub fn verify_integrity(&self) -> Result<(), CmodError> {
+        let expected = match self.integrity.as_ref() {
+            Some(h) => h,
+            None => return Ok(()), // No integrity hash = don't verify
+        };
+
+        // Recompute from package data
+        let mut hasher = Sha256::new();
+        for pkg in &self.packages {
+            hasher.update(pkg.name.as_bytes());
+            hasher.update(b":");
+            hasher.update(pkg.version.as_bytes());
+            hasher.update(b":");
+            if let Some(ref commit) = pkg.commit {
+                hasher.update(commit.as_bytes());
+            }
+            hasher.update(b":");
+            if let Some(ref hash) = pkg.hash {
+                hasher.update(hash.as_bytes());
+            }
+            hasher.update(b"\n");
+        }
+        let result = hasher.finalize();
+        let computed = format!("sha256:{}", hex::encode(result));
+
+        if computed != *expected {
+            return Err(CmodError::LockfileIntegrity {
+                reason: format!(
+                    "integrity hash mismatch: expected {}, computed {}",
+                    expected, computed
+                ),
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -234,5 +304,81 @@ mod tests {
         lock.remove_package("pkg_b");
         assert_eq!(lock.packages.len(), 1);
         assert!(lock.find_package("pkg_b").is_none());
+    }
+
+    #[test]
+    fn test_integrity_hash_roundtrip() {
+        let mut lock = Lockfile::new();
+        lock.upsert_package(LockedPackage {
+            name: "dep_a".to_string(),
+            version: "1.0.0".to_string(),
+            source: Some("git".to_string()),
+            repo: None,
+            commit: Some("abc123".to_string()),
+            hash: Some("sha256:deadbeef".to_string()),
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec![],
+            features: vec![],
+        });
+        lock.compute_integrity();
+
+        assert!(lock.integrity.is_some());
+        assert!(lock.integrity.as_ref().unwrap().starts_with("sha256:"));
+        assert!(lock.verify_integrity().is_ok());
+    }
+
+    #[test]
+    fn test_integrity_hash_detects_tampering() {
+        let mut lock = Lockfile::new();
+        lock.upsert_package(LockedPackage {
+            name: "dep_a".to_string(),
+            version: "1.0.0".to_string(),
+            source: Some("git".to_string()),
+            repo: None,
+            commit: Some("abc123".to_string()),
+            hash: Some("sha256:deadbeef".to_string()),
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec![],
+            features: vec![],
+        });
+        lock.compute_integrity();
+
+        // Tamper with a package version
+        lock.packages[0].version = "2.0.0".to_string();
+
+        let result = lock.verify_integrity();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_integrity_hash_deterministic() {
+        let mut lock1 = Lockfile::new();
+        lock1.upsert_package(LockedPackage {
+            name: "dep".to_string(),
+            version: "1.0.0".to_string(),
+            source: None,
+            repo: None,
+            commit: Some("abc".to_string()),
+            hash: None,
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec![],
+            features: vec![],
+        });
+        lock1.compute_integrity();
+
+        let mut lock2 = lock1.clone();
+        lock2.integrity = None;
+        lock2.compute_integrity();
+
+        assert_eq!(lock1.integrity, lock2.integrity);
+    }
+
+    #[test]
+    fn test_verify_integrity_no_hash_passes() {
+        let lock = Lockfile::new();
+        assert!(lock.verify_integrity().is_ok());
     }
 }

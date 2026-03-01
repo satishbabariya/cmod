@@ -115,6 +115,10 @@ enum Commands {
         /// Skip pre-build and post-build hooks
         #[arg(long)]
         no_hooks: bool,
+
+        /// Verify lockfile integrity and package hashes before building
+        #[arg(long)]
+        verify: bool,
     },
 
     /// Run module tests
@@ -163,6 +167,10 @@ enum Commands {
         /// Filter modules matching this pattern
         #[arg(long)]
         filter: Option<String>,
+
+        /// Show build status annotations (up-to-date, needs-rebuild, never-built)
+        #[arg(long)]
+        status: bool,
     },
 
     /// Audit dependencies for security and quality issues
@@ -307,8 +315,8 @@ fn main() {
             cli.target.clone(),
             cli.untrusted,
         ),
-        Commands::Build { release, jobs, force, remote_cache, no_hooks } => {
-            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache, no_hooks)
+        Commands::Build { release, jobs, force, remote_cache, no_hooks, verify } => {
+            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache, no_hooks, verify)
         }
         Commands::Test { release } => {
             commands::test::run(release, cli.locked, cli.offline, cli.verbose, cli.target)
@@ -322,7 +330,7 @@ fn main() {
             CacheAction::Pull => commands::cache::pull(cli.verbose),
         },
         Commands::Verify { signatures } => commands::verify::run(cli.verbose, signatures),
-        Commands::Graph { format, filter } => commands::graph::run(format, filter),
+        Commands::Graph { format, filter, status } => commands::graph::run(format, filter, status),
         Commands::Audit => commands::audit::run(cli.verbose),
         Commands::Status => commands::status::run(cli.verbose),
         Commands::Explain { module } => commands::explain::run(module, cli.verbose),

@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn test_generate_sbom_empty() {
         let manifest = cmod_core::manifest::default_manifest("myapp");
-        let lockfile = Lockfile { version: 1, packages: vec![] };
+        let lockfile = Lockfile { version: 1, integrity: None, packages: vec![] };
 
         let sbom = generate_sbom(&manifest, &lockfile).unwrap();
         assert_eq!(sbom.bom_format, "CycloneDX");
@@ -272,6 +272,7 @@ mod tests {
         let manifest = cmod_core::manifest::default_manifest("myapp");
         let lockfile = Lockfile {
             version: 1,
+            integrity: None,
             packages: vec![
                 make_pkg("fmt", "10.2.0", Some("https://github.com/fmtlib/fmt")),
                 make_pkg("spdlog", "1.14.0", Some("https://github.com/gabime/spdlog")),
@@ -294,7 +295,7 @@ mod tests {
     #[test]
     fn test_sbom_to_json() {
         let manifest = cmod_core::manifest::default_manifest("myapp");
-        let lockfile = Lockfile { version: 1, packages: vec![] };
+        let lockfile = Lockfile { version: 1, integrity: None, packages: vec![] };
         let sbom = generate_sbom(&manifest, &lockfile).unwrap();
         let json = sbom_to_json(&sbom).unwrap();
 
@@ -321,6 +322,7 @@ mod tests {
 
         let lockfile = Lockfile {
             version: 1,
+            integrity: None,
             packages: vec![pkg, make_pkg("base", "1.0.0", None)],
         };
 

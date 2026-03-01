@@ -231,6 +231,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let lockfile = Lockfile {
             version: 1,
+            integrity: None,
             packages: vec![cmod_core::lockfile::LockedPackage {
                 name: "fmt".to_string(),
                 version: "10.2.0".to_string(),
@@ -260,6 +261,7 @@ mod tests {
 
         let lockfile = Lockfile {
             version: 1,
+            integrity: None,
             packages: vec![],
         };
 

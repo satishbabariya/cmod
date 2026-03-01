@@ -11,7 +11,7 @@ pub fn run(
     let config = Config::load(&cwd)?;
 
     // Build first
-    super::build::run(release, false, false, verbose, None, 0, false, None, false)?;
+    super::build::run(release, false, false, verbose, None, 0, false, None, false, false)?;
 
     // Find the built binary
     let build_dir = config.build_dir();

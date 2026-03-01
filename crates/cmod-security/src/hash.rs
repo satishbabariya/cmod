@@ -134,6 +134,7 @@ mod tests {
 
         let lockfile = Lockfile {
             version: 1,
+            integrity: None,
             packages: vec![pkg],
         };
 
@@ -147,11 +148,13 @@ mod tests {
     fn test_lockfile_integrity_hash_changes_on_diff() {
         let l1 = Lockfile {
             version: 1,
+            integrity: None,
             packages: vec![make_pkg("a", Some("aaa"))],
         };
 
         let l2 = Lockfile {
             version: 1,
+            integrity: None,
             packages: vec![make_pkg("a", Some("bbb"))],
         };
 
@@ -191,6 +194,7 @@ mod tests {
     fn test_lockfile_integrity_hash_empty() {
         let lockfile = Lockfile {
             version: 1,
+            integrity: None,
             packages: vec![],
         };
         let h = lockfile_integrity_hash(&lockfile);
