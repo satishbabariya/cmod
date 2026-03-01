@@ -505,19 +505,72 @@ fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
 }
 
 /// Simple import extraction by scanning source content for `import` statements.
+///
+/// Handles:
+/// - `import module_name;`
+/// - `export import module_name;` (re-exports)
+/// - `import :partition;` (partition imports, qualified with parent module)
 fn extract_imports_from_source(path: &std::path::Path) -> Result<Vec<String>, CmodError> {
     let content = std::fs::read_to_string(path)?;
     let mut imports = Vec::new();
 
-    for line in content.lines() {
+    // Determine the parent module name for qualifying partition imports.
+    // If this file declares `export module foo.bar;` or `export module foo.bar:part;`,
+    // the parent module is `foo.bar`.
+    let parent_module = content.lines().find_map(|line| {
         let trimmed = line.trim();
-        if trimmed.starts_with("import ") && trimmed.ends_with(';') {
-            let module_name = trimmed
-                .trim_start_matches("import ")
+        if trimmed.starts_with("export module") || trimmed.starts_with("module") {
+            let decl = trimmed
+                .trim_start_matches("export")
+                .trim()
+                .trim_start_matches("module")
+                .trim()
                 .trim_end_matches(';')
                 .trim();
+            // For `foo.bar:partition`, parent is `foo.bar`
+            // For `foo.bar`, parent is `foo.bar`
+            Some(decl.split(':').next().unwrap_or(decl).to_string())
+        } else {
+            None
+        }
+    });
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Match both `import X;` and `export import X;`
+        let import_part = if trimmed.starts_with("export import ") && trimmed.ends_with(';') {
+            Some(
+                trimmed
+                    .trim_start_matches("export import ")
+                    .trim_end_matches(';')
+                    .trim(),
+            )
+        } else if trimmed.starts_with("import ") && trimmed.ends_with(';') {
+            Some(
+                trimmed
+                    .trim_start_matches("import ")
+                    .trim_end_matches(';')
+                    .trim(),
+            )
+        } else {
+            None
+        };
+
+        if let Some(module_name) = import_part {
             // Skip header unit imports (e.g., import <iostream>;)
-            if !module_name.starts_with('<') && !module_name.starts_with('"') {
+            if module_name.starts_with('<') || module_name.starts_with('"') {
+                continue;
+            }
+
+            // Qualify partition imports: `:vec3` → `parent_module:vec3`
+            if module_name.starts_with(':') {
+                if let Some(ref parent) = parent_module {
+                    imports.push(format!("{}{}", parent, module_name));
+                } else {
+                    imports.push(module_name.to_string());
+                }
+            } else {
                 imports.push(module_name.to_string());
             }
         }
@@ -836,6 +889,35 @@ mod tests {
 
         let imports = extract_imports_from_source(&file).unwrap();
         assert_eq!(imports, vec!["base", "utils"]);
+    }
+
+    #[test]
+    fn test_extract_imports_partition() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("mat4.cppm");
+        std::fs::write(
+            &file,
+            "export module mylib:mat4;\nimport :vec3;\nimport :utils;\n",
+        )
+        .unwrap();
+
+        let imports = extract_imports_from_source(&file).unwrap();
+        // Partition imports should be qualified with the parent module
+        assert_eq!(imports, vec!["mylib:vec3", "mylib:utils"]);
+    }
+
+    #[test]
+    fn test_extract_imports_export_import() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("lib.cppm");
+        std::fs::write(
+            &file,
+            "export module mylib;\nexport import :vec3;\nexport import :mat4;\nimport base;\n",
+        )
+        .unwrap();
+
+        let imports = extract_imports_from_source(&file).unwrap();
+        assert_eq!(imports, vec!["mylib:vec3", "mylib:mat4", "base"]);
     }
 
     #[test]

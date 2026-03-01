@@ -93,37 +93,36 @@ pub fn run(
             }
         });
 
-    // Collect PCM and object files from the build for linking with tests
+    // Collect PCM and object files from the build for linking with tests.
+    //
+    // Build a module-name → PCM-path map by discovering source files and
+    // extracting their declared module names (same as the build does).
     let mut pcm_flags: Vec<String> = Vec::new();
     let mut obj_files: Vec<String> = Vec::new();
 
-    // Get the module name from the manifest for accurate PCM mapping
-    let module_name_from_manifest = config
-        .manifest
-        .module
-        .as_ref()
-        .map(|m| m.name.clone());
-
     if pcm_dir.exists() {
+        // Build a sanitized-stem → module-name map from source files
+        let src_dir = config.src_dir();
+        let mut name_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Ok(sources) = cmod_build::runner::discover_sources(&src_dir) {
+            for source in &sources {
+                if let Ok(Some(mod_name)) = cmod_build::runner::extract_module_name(source) {
+                    let sanitized = mod_name.replace('.', "_").replace(':', "_").replace('/', "_");
+                    name_map.insert(sanitized, mod_name);
+                }
+            }
+        }
+
         if let Ok(entries) = std::fs::read_dir(&pcm_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("pcm") {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        // Try to match the manifest module name to this PCM file.
-                        // PCM filenames are sanitized (dots/colons → underscores),
-                        // so we reverse the sanitization to find the module name.
-                        let module_name = if let Some(ref manifest_name) = module_name_from_manifest {
-                            let sanitized = manifest_name.replace('.', "_").replace(':', "_");
-                            if sanitized == stem {
-                                manifest_name.clone()
-                            } else {
-                                // Fallback: use the stem as-is (for non-manifest modules)
-                                stem.to_string()
-                            }
-                        } else {
-                            stem.to_string()
-                        };
+                        // Look up the real module name from the sanitized filename
+                        let module_name = name_map
+                            .get(stem)
+                            .cloned()
+                            .unwrap_or_else(|| stem.to_string());
                         pcm_flags.push(format!("-fmodule-file={}={}", module_name, path.display()));
                     }
                 }

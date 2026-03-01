@@ -416,13 +416,11 @@ impl BuildRunner {
                     }
                 }
 
-                let dep_pcms: Vec<(&str, &Path)> = node
-                    .dependencies
+                // Pass all available PCMs — clang needs transitive module visibility
+                // (e.g., when a module re-exports partitions via `export import :part;`)
+                let all_pcms: Vec<(&str, &Path)> = pcm_map
                     .iter()
-                    .filter_map(|dep_id| {
-                        let name = dep_id.strip_prefix("interface:")?;
-                        pcm_map.get(name).map(|p| (name, p.as_path()))
-                    })
+                    .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
                 if let Some(parent) = pcm_output.parent() {
@@ -433,7 +431,7 @@ impl BuildRunner {
                 }
 
                 self.backend
-                    .compile_interface(source, pcm_output, obj_output, &dep_pcms)?;
+                    .compile_interface(source, pcm_output, obj_output, &all_pcms)?;
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     self.cache_store(&module_id, &key, node);
@@ -463,13 +461,10 @@ impl BuildRunner {
                     }
                 }
 
-                let dep_pcms: Vec<(&str, &Path)> = node
-                    .dependencies
+                // Pass all available PCMs for transitive visibility
+                let all_pcms: Vec<(&str, &Path)> = pcm_map
                     .iter()
-                    .filter_map(|dep_id| {
-                        let name = dep_id.strip_prefix("interface:")?;
-                        pcm_map.get(name).map(|p| (name, p.as_path()))
-                    })
+                    .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
                 if let Some(parent) = obj_output.parent() {
@@ -477,7 +472,7 @@ impl BuildRunner {
                 }
 
                 self.backend
-                    .compile_implementation(source, obj_output, &dep_pcms)?;
+                    .compile_implementation(source, obj_output, &all_pcms)?;
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     self.cache_store(&module_id, &key, node);
@@ -511,18 +506,14 @@ impl BuildRunner {
                     fs::create_dir_all(parent)?;
                 }
 
-                // Pass dependency PCMs so that legacy TUs can import modules
-                let dep_pcms: Vec<(&str, &Path)> = node
-                    .dependencies
+                // Pass all available PCMs for transitive module visibility
+                let all_pcms: Vec<(&str, &Path)> = pcm_map
                     .iter()
-                    .filter_map(|dep_id| {
-                        let name = dep_id.strip_prefix("interface:")?;
-                        pcm_map.get(name).map(|p| (name, p.as_path()))
-                    })
+                    .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
                 self.backend
-                    .compile_implementation(source, obj_output, &dep_pcms)?;
+                    .compile_implementation(source, obj_output, &all_pcms)?;
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     self.cache_store(&module_id, &key, node);

@@ -204,8 +204,12 @@ impl CompilerBackend for ClangBackend {
         }
 
         // Second pass: PCM to object file
+        // Dependency PCMs are still needed for modules that import other modules
         let obj_status = Command::new(&self.clang_path)
             .args(&self.common_flags())
+            .args(dep_pcms.iter().map(|(name, path)| {
+                format!("-fmodule-file={}={}", name, path.display())
+            }))
             .arg("-c")
             .arg("-o")
             .arg(obj_output)
