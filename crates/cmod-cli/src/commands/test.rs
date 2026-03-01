@@ -9,7 +9,7 @@ pub fn run(
     target: Option<String>,
 ) -> Result<(), CmodError> {
     // First, build the project
-    super::build::run(release, locked, offline, verbose, target, 0)?;
+    super::build::run(release, locked, offline, verbose, target, 0, false, None)?;
 
     eprintln!("  Running tests...");
 

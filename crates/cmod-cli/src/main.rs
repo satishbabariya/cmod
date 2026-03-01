@@ -99,6 +99,14 @@ enum Commands {
         /// Maximum parallel compilation jobs (0 = auto)
         #[arg(long, short, default_value = "0")]
         jobs: usize,
+
+        /// Force rebuild, ignoring incremental state
+        #[arg(long)]
+        force: bool,
+
+        /// Remote cache URL (overrides manifest [cache].shared_url)
+        #[arg(long)]
+        remote_cache: Option<String>,
     },
 
     /// Run module tests
@@ -172,6 +180,33 @@ enum Commands {
         /// Re-synchronize vendored deps with lockfile
         #[arg(long)]
         sync: bool,
+    },
+
+    /// Lint C++ source files for common issues
+    Lint,
+
+    /// Format C++ source files using clang-format
+    Fmt {
+        /// Check formatting without modifying files
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Search for modules by name
+    Search {
+        /// Search query (substring match)
+        query: String,
+    },
+
+    /// Build and run the project binary
+    Run {
+        /// Build in release mode
+        #[arg(long)]
+        release: bool,
+
+        /// Arguments to pass to the binary
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 
     /// Remove build artifacts
@@ -258,9 +293,10 @@ fn main() {
             cli.verbose,
             &cli.features,
             cli.no_default_features,
+            cli.target.clone(),
         ),
-        Commands::Build { release, jobs } => {
-            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs)
+        Commands::Build { release, jobs, force, remote_cache } => {
+            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache)
         }
         Commands::Test { release } => {
             commands::test::run(release, cli.locked, cli.offline, cli.verbose, cli.target)
@@ -283,6 +319,10 @@ fn main() {
             ToolchainAction::Check => commands::toolchain::check(),
         },
         Commands::Vendor { sync } => commands::vendor::run(sync, cli.verbose),
+        Commands::Lint => commands::lint::run(cli.verbose),
+        Commands::Fmt { check } => commands::fmt::run(check, cli.verbose),
+        Commands::Search { query } => commands::search::run(&query, cli.verbose),
+        Commands::Run { release, args } => commands::run::run(release, args, cli.verbose),
         Commands::Clean => commands::clean::run(cli.verbose),
         Commands::Workspace { action } => match action {
             WorkspaceAction::List => commands::workspace::list(cli.verbose),

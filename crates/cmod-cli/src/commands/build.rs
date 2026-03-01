@@ -1,7 +1,7 @@
 use cmod_build::compiler::ClangBackend;
 use cmod_build::graph::{ModuleGraph, ModuleNode};
 use cmod_build::runner::{self, BuildRunner, BuildStats};
-use cmod_cache::ArtifactCache;
+use cmod_cache::{ArtifactCache, HttpRemoteCache, RemoteCacheMode};
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
@@ -17,6 +17,8 @@ pub fn run(
     verbose: bool,
     target_override: Option<String>,
     jobs: usize,
+    force: bool,
+    remote_cache_url: Option<String>,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
@@ -33,6 +35,15 @@ pub fn run(
         config.target = Some(t);
     }
 
+    // Resolve remote cache URL: CLI flag > manifest [cache].shared_url
+    let effective_remote_url = remote_cache_url.or_else(|| {
+        config
+            .manifest
+            .cache
+            .as_ref()
+            .and_then(|c| c.shared_url.clone())
+    });
+
     let profile_name = match config.profile {
         Profile::Debug => "debug",
         Profile::Release => "release",
@@ -40,7 +51,7 @@ pub fn run(
 
     // Check if this is a workspace build
     if config.manifest.is_workspace() {
-        return build_workspace(&config, verbose, jobs);
+        return build_workspace(&config, verbose, jobs, force, &effective_remote_url);
     }
 
     eprintln!(
@@ -48,15 +59,24 @@ pub fn run(
         config.manifest.package.name, profile_name
     );
 
-    // Step 1: Ensure dependencies are resolved
+    // Step 1: Ensure dependencies are resolved (with target-specific filtering)
     let _lockfile = ensure_resolved(&config)?;
 
     // Step 2: Build the single module
-    build_module(&config, verbose, jobs)
+    build_module(&config, verbose, jobs, force, &effective_remote_url)
+}
+
+/// Create a remote cache instance from a URL, if provided.
+fn make_remote_cache(url: &Option<String>, verbose: bool) -> Option<Box<dyn cmod_cache::RemoteCache>> {
+    let url = url.as_ref()?;
+    if verbose {
+        eprintln!("  Remote cache: {}", url);
+    }
+    Some(Box::new(HttpRemoteCache::new(url, RemoteCacheMode::ReadWrite)))
 }
 
 /// Build a single module project.
-fn build_module(config: &Config, verbose: bool, jobs: usize) -> Result<(), CmodError> {
+fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>) -> Result<(), CmodError> {
     // Discover source files
     let src_dir = config.src_dir();
     let sources = runner::discover_sources(&src_dir)?;
@@ -76,6 +96,9 @@ fn build_module(config: &Config, verbose: bool, jobs: usize) -> Result<(), CmodE
 
     // Build the module graph
     let graph = build_module_graph(&sources, &config.manifest.package.name)?;
+
+    // Validate the module graph (imports, cycles, duplicates)
+    graph.validate()?;
 
     if verbose {
         let order = graph.topological_order()?;
@@ -97,7 +120,13 @@ fn build_module(config: &Config, verbose: bool, jobs: usize) -> Result<(), CmodE
         .and_then(|b| b.build_type)
         .unwrap_or_default();
 
-    let runner = BuildRunner::new(backend, Some(cache)).with_jobs(jobs);
+    let mut runner = BuildRunner::new(backend, Some(cache))
+        .with_jobs(jobs)
+        .with_force(force);
+
+    if let Some(remote) = make_remote_cache(remote_url, verbose) {
+        runner = runner.with_remote_cache(remote);
+    }
 
     if verbose && jobs != 1 {
         eprintln!("  Parallelism: {} jobs", runner.effective_jobs());
@@ -111,7 +140,7 @@ fn build_module(config: &Config, verbose: bool, jobs: usize) -> Result<(), CmodE
 }
 
 /// Build all members of a workspace.
-fn build_workspace(config: &Config, verbose: bool, jobs: usize) -> Result<(), CmodError> {
+fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>) -> Result<(), CmodError> {
     let ws = WorkspaceManager::load(&config.root)?;
 
     eprintln!(
@@ -142,6 +171,7 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize) -> Result<(), Cm
         }
 
         let graph = build_module_graph(&sources, &member.name)?;
+        graph.validate()?;
         let (backend, target) = setup_compiler(config);
         let cache = ArtifactCache::new(config.cache_dir());
 
@@ -156,7 +186,12 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize) -> Result<(), Cm
             .and_then(|b| b.build_type)
             .unwrap_or_default();
 
-        let runner = BuildRunner::new(backend, Some(cache)).with_jobs(jobs);
+        let mut runner = BuildRunner::new(backend, Some(cache))
+            .with_jobs(jobs)
+            .with_force(force);
+        if let Some(remote) = make_remote_cache(remote_url, verbose) {
+            runner = runner.with_remote_cache(remote);
+        }
         match runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type) {
             Ok((output, stats)) => {
                 print_build_stats(&stats, verbose);
@@ -337,16 +372,23 @@ fn setup_compiler(config: &Config) -> (ClangBackend, String) {
 fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
     if config.lockfile_path.exists() {
         Lockfile::load(&config.lockfile_path)
-    } else if config.manifest.dependencies.is_empty() {
+    } else if config.manifest.dependencies.is_empty() && config.manifest.target.is_empty() {
         Ok(Lockfile::new())
     } else if config.locked {
         Err(CmodError::LockfileNotFound)
     } else {
-        // Auto-resolve
+        // Auto-resolve with target-specific dependency filtering
         eprintln!("  No lockfile found, resolving dependencies...");
         let resolver = Resolver::new(config.deps_dir());
-        let lockfile =
-            resolver.resolve(&config.manifest, None, false, config.offline)?;
+        let lockfile = resolver.resolve_with_target(
+            &config.manifest,
+            None,
+            false,
+            config.offline,
+            &[],
+            false,
+            config.target.as_deref(),
+        )?;
         lockfile.save(&config.lockfile_path)?;
         Ok(lockfile)
     }

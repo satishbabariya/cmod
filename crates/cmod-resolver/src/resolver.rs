@@ -62,6 +62,7 @@ impl Resolver {
     ///
     /// `requested_features` are explicitly enabled features (from --features).
     /// `no_default_features` disables the `[features] default = [...]` set.
+    /// `target_triple` filters target-specific dependencies (e.g., `x86_64-unknown-linux-gnu`).
     pub fn resolve_with_features(
         &self,
         manifest: &Manifest,
@@ -70,6 +71,20 @@ impl Resolver {
         offline: bool,
         requested_features: &[String],
         no_default_features: bool,
+    ) -> Result<Lockfile, CmodError> {
+        self.resolve_with_target(manifest, existing_lock, locked, offline, requested_features, no_default_features, None)
+    }
+
+    /// Resolve all dependencies with feature flags and target-specific filtering.
+    pub fn resolve_with_target(
+        &self,
+        manifest: &Manifest,
+        existing_lock: Option<&Lockfile>,
+        locked: bool,
+        offline: bool,
+        requested_features: &[String],
+        no_default_features: bool,
+        target_triple: Option<&str>,
     ) -> Result<Lockfile, CmodError> {
         if locked {
             if let Some(lock) = existing_lock {
@@ -87,8 +102,14 @@ impl Resolver {
         let mut lockfile = Lockfile::new();
         let mut resolved = BTreeMap::new();
 
+        // Merge target-specific dependencies when a target triple is given
+        let effective_deps = match target_triple {
+            Some(triple) => manifest.effective_dependencies(triple),
+            None => manifest.dependencies.clone(),
+        };
+
         // Resolve each dependency, filtering optional deps that are not activated
-        for (name, dep) in &manifest.dependencies {
+        for (name, dep) in &effective_deps {
             if !should_include_dep(name, dep, &resolved_features) {
                 continue;
             }
@@ -333,6 +354,8 @@ impl Resolver {
         manifest: &Manifest,
         lockfile: &Lockfile,
     ) -> Result<(), CmodError> {
+        // Note: we validate base dependencies only; target-specific deps
+        // are validated at build time when the target is known.
         for (name, dep) in &manifest.dependencies {
             let locked = lockfile.find_package(name).ok_or_else(|| {
                 CmodError::LockfileOutdated
@@ -731,6 +754,72 @@ mod tests {
             .unwrap();
         assert_eq!(lock.packages.len(), 1);
         assert_eq!(lock.packages[0].name, "optional_dep");
+    }
+
+    #[test]
+    fn test_resolve_with_target_includes_target_deps() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+
+        // Base dependency
+        manifest.dependencies.insert(
+            "base_lib".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: Some("0.1.0".to_string()),
+                git: None,
+                branch: None,
+                rev: None,
+                tag: None,
+                path: Some(PathBuf::from("./base")),
+                features: vec![],
+                optional: false,
+                default_features: true,
+                workspace: false,
+            }),
+        );
+
+        // Linux-only dependency via target section
+        let mut linux_deps = BTreeMap::new();
+        linux_deps.insert(
+            "linux_only".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: Some("0.1.0".to_string()),
+                git: None,
+                branch: None,
+                rev: None,
+                tag: None,
+                path: Some(PathBuf::from("./linux_only")),
+                features: vec![],
+                optional: false,
+                default_features: true,
+                workspace: false,
+            }),
+        );
+        manifest.target.insert(
+            "cfg(target_os = \"linux\")".to_string(),
+            cmod_core::manifest::TargetSpec { dependencies: linux_deps },
+        );
+
+        // Resolve for linux — should include both deps
+        let lock = resolver
+            .resolve_with_target(&manifest, None, false, false, &[], false, Some("x86_64-unknown-linux-gnu"))
+            .unwrap();
+        assert_eq!(lock.packages.len(), 2);
+
+        // Resolve for macOS — should only include base
+        let lock_mac = resolver
+            .resolve_with_target(&manifest, None, false, false, &[], false, Some("aarch64-apple-darwin"))
+            .unwrap();
+        assert_eq!(lock_mac.packages.len(), 1);
+        assert_eq!(lock_mac.packages[0].name, "base_lib");
+
+        // Resolve without target — should only include base (no target filtering)
+        let lock_none = resolver
+            .resolve_with_target(&manifest, None, false, false, &[], false, None)
+            .unwrap();
+        assert_eq!(lock_none.packages.len(), 1);
+        assert_eq!(lock_none.packages[0].name, "base_lib");
     }
 
     #[test]
