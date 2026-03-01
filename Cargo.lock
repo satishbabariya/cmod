@@ -173,6 +173,7 @@ dependencies = [
  "anyhow",
  "cmod-cache",
  "cmod-core",
+ "crossbeam-channel",
  "hex",
  "serde",
  "serde_json",
@@ -208,12 +209,15 @@ dependencies = [
  "cmod-cache",
  "cmod-core",
  "cmod-resolver",
+ "cmod-security",
  "cmod-workspace",
+ "git2",
  "semver",
  "serde",
  "serde_json",
  "tempfile",
  "toml",
+ "walkdir",
 ]
 
 [[package]]
@@ -240,6 +244,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "cmod-core",
+ "cmod-security",
  "git2",
  "hex",
  "semver",
@@ -252,12 +257,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmod-security"
+version = "0.1.0"
+dependencies = [
+ "cmod-cache",
+ "cmod-core",
+ "dirs",
+ "git2",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
 name = "cmod-workspace"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "cmod-core",
  "cmod-resolver",
+ "glob",
  "serde",
  "tempfile",
  "thiserror",
@@ -285,6 +309,21 @@ checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-utils"
+version = "0.8.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "crypto-common"
@@ -441,6 +480,12 @@ dependencies = [
  "openssl-sys",
  "url",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "hashbrown"

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use cmod_core::error::CmodError;
@@ -30,6 +30,9 @@ pub struct WorkspaceManager {
 
 impl WorkspaceManager {
     /// Load a workspace from a root manifest.
+    ///
+    /// Member patterns support glob syntax (e.g., `"crates/*"`, `"libs/**"`).
+    /// Exclude patterns filter out matching directories.
     pub fn load(root: &Path) -> Result<Self, CmodError> {
         let manifest_path = root.join("cmod.toml");
         let root_manifest = Manifest::load(&manifest_path)?;
@@ -41,24 +44,33 @@ impl WorkspaceManager {
         }
 
         let workspace = root_manifest.workspace.as_ref().unwrap();
+
+        // Expand glob patterns and collect all candidate directories
+        let expanded = expand_member_patterns(root, &workspace.members)?;
+
+        // Build set of excluded paths
+        let excluded = expand_exclude_patterns(root, &workspace.exclude);
+
         let mut members = Vec::new();
 
-        for member_pattern in &workspace.members {
-            let member_dir = root.join(member_pattern);
-            if member_dir.is_dir() {
-                let member_manifest_path = member_dir.join("cmod.toml");
-                if member_manifest_path.exists() {
-                    let mut member_manifest = Manifest::load(&member_manifest_path)?;
+        for (name, member_dir) in expanded {
+            // Skip excluded directories
+            if excluded.contains(&member_dir) {
+                continue;
+            }
 
-                    // Resolve workspace dependency references
-                    resolve_workspace_deps(&mut member_manifest, &workspace.dependencies);
+            let member_manifest_path = member_dir.join("cmod.toml");
+            if member_manifest_path.exists() {
+                let mut member_manifest = Manifest::load(&member_manifest_path)?;
 
-                    members.push(WorkspaceMember {
-                        name: member_pattern.clone(),
-                        path: member_dir,
-                        manifest: member_manifest,
-                    });
-                }
+                // Resolve workspace dependency references
+                resolve_workspace_deps(&mut member_manifest, &workspace.dependencies);
+
+                members.push(WorkspaceMember {
+                    name,
+                    path: member_dir,
+                    manifest: member_manifest,
+                });
             }
         }
 
@@ -146,6 +158,65 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// Compute the build order for workspace members.
+    ///
+    /// Members that depend on other members (via path deps) must build
+    /// after their dependencies. Returns members in topological order.
+    pub fn build_order(&self) -> Result<Vec<&WorkspaceMember>, CmodError> {
+        let member_names: HashSet<&str> = self.members.iter().map(|m| m.name.as_str()).collect();
+        let name_to_idx: BTreeMap<&str, usize> = self
+            .members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.name.as_str(), i))
+            .collect();
+
+        let n = self.members.len();
+        let mut in_degree = vec![0usize; n];
+        let mut dependents = vec![Vec::new(); n];
+
+        for (idx, member) in self.members.iter().enumerate() {
+            for (dep_name, dep) in &member.manifest.dependencies {
+                if dep.is_path() && member_names.contains(dep_name.as_str()) {
+                    if let Some(&dep_idx) = name_to_idx.get(dep_name.as_str()) {
+                        in_degree[idx] += 1;
+                        dependents[dep_idx].push(idx);
+                    }
+                }
+            }
+        }
+
+        // Kahn's algorithm for topological sort
+        let mut queue: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+        let mut order = Vec::with_capacity(n);
+
+        while let Some(idx) = queue.pop() {
+            order.push(idx);
+            for &dep_idx in &dependents[idx] {
+                in_degree[dep_idx] -= 1;
+                if in_degree[dep_idx] == 0 {
+                    queue.push(dep_idx);
+                }
+            }
+        }
+
+        if order.len() != n {
+            return Err(CmodError::CircularDependency {
+                cycle: "workspace members have circular path dependencies".to_string(),
+            });
+        }
+
+        Ok(order.iter().map(|&i| &self.members[i]).collect())
+    }
+
+    /// Get the workspace-level version, if set.
+    pub fn workspace_version(&self) -> Option<&str> {
+        self.root_manifest
+            .workspace
+            .as_ref()
+            .and_then(|ws| ws.version.as_deref())
+    }
+
     /// Add a new member to the workspace.
     pub fn add_member(&mut self, name: &str) -> Result<(), CmodError> {
         let member_dir = self.root.join(name);
@@ -183,6 +254,76 @@ impl WorkspaceManager {
 
         Ok(())
     }
+}
+
+/// Expand member patterns, supporting glob syntax.
+///
+/// Returns a list of (name, absolute_path) pairs for each matching directory.
+fn expand_member_patterns(
+    root: &Path,
+    patterns: &[String],
+) -> Result<Vec<(String, PathBuf)>, CmodError> {
+    let mut results = Vec::new();
+
+    for pattern in patterns {
+        // Check if the pattern contains glob characters
+        if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+            let glob_pattern = root.join(pattern).display().to_string();
+            match glob::glob(&glob_pattern) {
+                Ok(paths) => {
+                    for entry in paths.flatten() {
+                        if entry.is_dir() {
+                            let name = entry
+                                .strip_prefix(root)
+                                .unwrap_or(&entry)
+                                .display()
+                                .to_string();
+                            results.push((name, entry));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(CmodError::InvalidManifest {
+                        reason: format!("invalid glob pattern '{}': {}", pattern, e),
+                    });
+                }
+            }
+        } else {
+            // Literal directory name
+            let member_dir = root.join(pattern);
+            if member_dir.is_dir() {
+                results.push((pattern.clone(), member_dir));
+            }
+        }
+    }
+
+    // Sort by name for deterministic ordering
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Deduplicate
+    results.dedup_by(|a, b| a.1 == b.1);
+
+    Ok(results)
+}
+
+/// Expand exclude patterns and return the set of excluded paths.
+fn expand_exclude_patterns(root: &Path, patterns: &[String]) -> HashSet<PathBuf> {
+    let mut excluded = HashSet::new();
+
+    for pattern in patterns {
+        if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+            let glob_pattern = root.join(pattern).display().to_string();
+            if let Ok(paths) = glob::glob(&glob_pattern) {
+                for entry in paths.flatten() {
+                    excluded.insert(entry);
+                }
+            }
+        } else {
+            excluded.insert(root.join(pattern));
+        }
+    }
+
+    excluded
 }
 
 /// Resolve workspace dependency references in a member manifest.
@@ -274,7 +415,9 @@ root = "src/lib.cppm"
         let tmp = setup_workspace();
         let ws = WorkspaceManager::load(tmp.path()).unwrap();
         assert_eq!(ws.members.len(), 2);
-        assert_eq!(ws.member_names(), vec!["core", "app"]);
+        let names = ws.member_names();
+        assert!(names.contains(&"core"));
+        assert!(names.contains(&"app"));
     }
 
     #[test]
@@ -310,5 +453,162 @@ version = "0.1.0"
 
         let result = WorkspaceManager::load(tmp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_glob_member_patterns() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Root manifest with glob pattern
+        let root_toml = r#"
+[package]
+name = "glob-workspace"
+version = "0.1.0"
+
+[workspace]
+members = ["crates/*"]
+"#;
+        std::fs::write(root.join("cmod.toml"), root_toml).unwrap();
+
+        // Create member dirs matching the glob
+        for name in &["alpha", "beta", "gamma"] {
+            let dir = root.join("crates").join(name);
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            let member_toml = format!(
+                "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n",
+                name
+            );
+            std::fs::write(dir.join("cmod.toml"), member_toml).unwrap();
+        }
+
+        let ws = WorkspaceManager::load(root).unwrap();
+        assert_eq!(ws.members.len(), 3);
+        let names = ws.member_names();
+        assert!(names.contains(&"crates/alpha"));
+        assert!(names.contains(&"crates/beta"));
+        assert!(names.contains(&"crates/gamma"));
+    }
+
+    #[test]
+    fn test_exclude_patterns() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let root_toml = r#"
+[package]
+name = "exclude-workspace"
+version = "0.1.0"
+
+[workspace]
+members = ["crates/*"]
+exclude = ["crates/experimental"]
+"#;
+        std::fs::write(root.join("cmod.toml"), root_toml).unwrap();
+
+        for name in &["stable", "experimental"] {
+            let dir = root.join("crates").join(name);
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            let member_toml = format!(
+                "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n",
+                name
+            );
+            std::fs::write(dir.join("cmod.toml"), member_toml).unwrap();
+        }
+
+        let ws = WorkspaceManager::load(root).unwrap();
+        assert_eq!(ws.members.len(), 1);
+        assert_eq!(ws.members[0].name, "crates/stable");
+    }
+
+    #[test]
+    fn test_build_order_no_deps() {
+        let tmp = setup_workspace();
+        let ws = WorkspaceManager::load(tmp.path()).unwrap();
+        let order = ws.build_order().unwrap();
+        assert_eq!(order.len(), 2);
+    }
+
+    #[test]
+    fn test_build_order_with_deps() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let root_toml = r#"
+[package]
+name = "ordered-workspace"
+version = "0.1.0"
+
+[workspace]
+members = ["app", "core"]
+"#;
+        std::fs::write(root.join("cmod.toml"), root_toml).unwrap();
+
+        // core has no deps
+        let core_dir = root.join("core");
+        std::fs::create_dir_all(core_dir.join("src")).unwrap();
+        std::fs::write(
+            core_dir.join("cmod.toml"),
+            "[package]\nname = \"core\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // app depends on core via path
+        let app_dir = root.join("app");
+        std::fs::create_dir_all(app_dir.join("src")).unwrap();
+        let app_toml = r#"
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+core = { path = "./core" }
+"#;
+        std::fs::write(app_dir.join("cmod.toml"), app_toml).unwrap();
+
+        let ws = WorkspaceManager::load(root).unwrap();
+        let order = ws.build_order().unwrap();
+        assert_eq!(order.len(), 2);
+        // core must come before app
+        assert_eq!(order[0].name, "core");
+        assert_eq!(order[1].name, "app");
+    }
+
+    #[test]
+    fn test_workspace_version() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let root_toml = r#"
+[package]
+name = "versioned-workspace"
+version = "0.1.0"
+
+[workspace]
+version = "2.0.0"
+members = []
+"#;
+        std::fs::write(root.join("cmod.toml"), root_toml).unwrap();
+
+        let ws = WorkspaceManager::load(root).unwrap();
+        assert_eq!(ws.workspace_version(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn test_expand_member_patterns_literal() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("mylib")).unwrap();
+
+        let result = expand_member_patterns(root, &["mylib".to_string()]).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "mylib");
+    }
+
+    #[test]
+    fn test_expand_member_patterns_nonexistent() {
+        let tmp = TempDir::new().unwrap();
+        let result = expand_member_patterns(tmp.path(), &["nonexistent".to_string()]).unwrap();
+        assert!(result.is_empty());
     }
 }

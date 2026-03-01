@@ -34,6 +34,7 @@ pub fn run(
             path: path.map(PathBuf::from),
             features,
             optional: false,
+            default_features: true,
             workspace: false,
         })
     } else if let Some(ver) = version_constraint {
@@ -46,7 +47,7 @@ pub fn run(
     let existing_lock = Lockfile::load(&config.lockfile_path).ok();
 
     // Add dependency and resolve
-    let resolver = Resolver::new(config.deps_dir());
+    let mut resolver = Resolver::new(config.deps_dir());
     let lockfile = resolver.add_dependency(
         &mut config.manifest,
         dep_key.clone(),

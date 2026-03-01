@@ -34,6 +34,15 @@ pub struct Config {
 
     /// Verbose logging.
     pub verbose: bool,
+
+    /// Explicitly enabled features (from --features CLI flag).
+    pub enabled_features: Vec<String>,
+
+    /// Whether default features are disabled (from --no-default-features).
+    pub no_default_features: bool,
+
+    /// Skip build cache lookups.
+    pub no_cache: bool,
 }
 
 impl Config {
@@ -62,6 +71,9 @@ impl Config {
             locked: false,
             offline: false,
             verbose: false,
+            enabled_features: Vec::new(),
+            no_default_features: false,
+            no_cache: false,
         })
     }
 

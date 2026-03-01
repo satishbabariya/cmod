@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use cmod_core::error::CmodError;
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,14 @@ pub struct CachedArtifactEntry {
     pub name: String,
     pub hash: String,
     pub size: u64,
+}
+
+/// Summary of cache state.
+#[derive(Debug, Clone)]
+pub struct CacheStatus {
+    pub module_count: usize,
+    pub entry_count: u64,
+    pub total_size: u64,
 }
 
 /// Local artifact cache.
@@ -88,6 +97,21 @@ impl ArtifactCache {
             fs::copy(src, &dest)?;
         }
 
+        Ok(())
+    }
+
+    /// Store a single artifact file into the cache (used when downloading from remote).
+    pub fn store_single_artifact(
+        &self,
+        module_id: &str,
+        key: &CacheKey,
+        artifact_name: &str,
+        source: &Path,
+    ) -> Result<(), CmodError> {
+        let dir = self.entry_dir(module_id, key);
+        fs::create_dir_all(&dir)?;
+        let dest = dir.join(artifact_name);
+        fs::copy(source, &dest)?;
         Ok(())
     }
 
@@ -183,6 +207,31 @@ impl ArtifactCache {
         Ok(modules)
     }
 
+    /// Get a cache status summary.
+    pub fn status(&self) -> Result<CacheStatus, CmodError> {
+        let modules = self.list_modules()?;
+        let total_size = self.total_size()?;
+
+        let mut entry_count = 0u64;
+        for module in &modules {
+            let module_dir = self.root.join(module);
+            if module_dir.exists() {
+                for entry in fs::read_dir(&module_dir)? {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() {
+                        entry_count += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(CacheStatus {
+            module_count: modules.len(),
+            entry_count,
+            total_size,
+        })
+    }
+
     /// Verify integrity of a cached artifact against its recorded hash.
     pub fn verify_artifact(
         &self,
@@ -208,6 +257,179 @@ impl ArtifactCache {
 
         Ok(false)
     }
+
+    /// Evict cache entries older than `max_age`.
+    ///
+    /// Uses the metadata.json file's modification time as a proxy for entry age.
+    pub fn evict_by_age(&self, max_age: Duration) -> Result<EvictionResult, CmodError> {
+        let mut result = EvictionResult::default();
+        let now = SystemTime::now();
+
+        if !self.root.exists() {
+            return Ok(result);
+        }
+
+        for module_entry in fs::read_dir(&self.root)? {
+            let module_entry = module_entry?;
+            if !module_entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            for key_entry in fs::read_dir(module_entry.path())? {
+                let key_entry = key_entry?;
+                if !key_entry.file_type()?.is_dir() {
+                    continue;
+                }
+
+                let meta_path = key_entry.path().join("metadata.json");
+                if !meta_path.exists() {
+                    continue;
+                }
+
+                let modified = meta_path.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+
+                if let Ok(age) = now.duration_since(modified) {
+                    if age > max_age {
+                        let entry_size = dir_size(&key_entry.path());
+                        fs::remove_dir_all(key_entry.path())?;
+                        result.entries_removed += 1;
+                        result.bytes_freed += entry_size;
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Evict oldest cache entries until total size is under `max_bytes`.
+    ///
+    /// Uses LRU ordering (oldest metadata modification time is evicted first).
+    pub fn evict_by_size(&self, max_bytes: u64) -> Result<EvictionResult, CmodError> {
+        let mut result = EvictionResult::default();
+
+        if !self.root.exists() {
+            return Ok(result);
+        }
+
+        let current_size = self.total_size()?;
+        if current_size <= max_bytes {
+            return Ok(result);
+        }
+
+        // Collect all cache entries with their ages
+        let mut entries: Vec<(PathBuf, SystemTime, u64)> = Vec::new();
+
+        for module_entry in fs::read_dir(&self.root)? {
+            let module_entry = module_entry?;
+            if !module_entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            for key_entry in fs::read_dir(module_entry.path())? {
+                let key_entry = key_entry?;
+                if !key_entry.file_type()?.is_dir() {
+                    continue;
+                }
+
+                let meta_path = key_entry.path().join("metadata.json");
+                let modified = meta_path.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                let size = dir_size(&key_entry.path());
+                entries.push((key_entry.path(), modified, size));
+            }
+        }
+
+        // Sort by modification time (oldest first)
+        entries.sort_by_key(|(_, time, _)| *time);
+
+        let mut remaining = current_size;
+        for (path, _, size) in entries {
+            if remaining <= max_bytes {
+                break;
+            }
+            fs::remove_dir_all(&path)?;
+            remaining = remaining.saturating_sub(size);
+            result.entries_removed += 1;
+            result.bytes_freed += size;
+        }
+
+        Ok(result)
+    }
+
+    /// Run automatic eviction based on a TTL and/or max size.
+    pub fn auto_evict(
+        &self,
+        max_age: Option<Duration>,
+        max_bytes: Option<u64>,
+    ) -> Result<EvictionResult, CmodError> {
+        let mut total = EvictionResult::default();
+
+        if let Some(age) = max_age {
+            let r = self.evict_by_age(age)?;
+            total.entries_removed += r.entries_removed;
+            total.bytes_freed += r.bytes_freed;
+        }
+
+        if let Some(bytes) = max_bytes {
+            let r = self.evict_by_size(bytes)?;
+            total.entries_removed += r.entries_removed;
+            total.bytes_freed += r.bytes_freed;
+        }
+
+        Ok(total)
+    }
+}
+
+/// Result of a cache eviction operation.
+#[derive(Debug, Clone, Default)]
+pub struct EvictionResult {
+    pub entries_removed: usize,
+    pub bytes_freed: u64,
+}
+
+/// Compute total size of a directory recursively.
+fn dir_size(path: &Path) -> u64 {
+    walkdir::WalkDir::new(path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+        .sum()
+}
+
+/// Parse a TTL string like "7d", "24h", "30m" into a Duration.
+pub fn parse_ttl(ttl: &str) -> Option<Duration> {
+    let ttl = ttl.trim();
+    if ttl.is_empty() {
+        return None;
+    }
+
+    let (num_str, suffix) = if ttl.ends_with('d') {
+        (&ttl[..ttl.len() - 1], "d")
+    } else if ttl.ends_with('h') {
+        (&ttl[..ttl.len() - 1], "h")
+    } else if ttl.ends_with('m') {
+        (&ttl[..ttl.len() - 1], "m")
+    } else if ttl.ends_with('s') {
+        (&ttl[..ttl.len() - 1], "s")
+    } else {
+        // Default to seconds
+        (ttl, "s")
+    };
+
+    let num: u64 = num_str.parse().ok()?;
+    let secs = match suffix {
+        "d" => num * 86400,
+        "h" => num * 3600,
+        "m" => num * 60,
+        _ => num,
+    };
+
+    Some(Duration::from_secs(secs))
 }
 
 #[cfg(test)]
@@ -478,5 +700,76 @@ mod tests {
         let key = CacheKey("abc123".to_string());
         let dir = cache.entry_dir("github.fmtlib.fmt", &key);
         assert!(dir.ends_with("github.fmtlib.fmt/abc123"));
+    }
+
+    #[test]
+    fn test_parse_ttl_days() {
+        assert_eq!(parse_ttl("7d"), Some(Duration::from_secs(7 * 86400)));
+    }
+
+    #[test]
+    fn test_parse_ttl_hours() {
+        assert_eq!(parse_ttl("24h"), Some(Duration::from_secs(24 * 3600)));
+    }
+
+    #[test]
+    fn test_parse_ttl_minutes() {
+        assert_eq!(parse_ttl("30m"), Some(Duration::from_secs(30 * 60)));
+    }
+
+    #[test]
+    fn test_parse_ttl_empty() {
+        assert_eq!(parse_ttl(""), None);
+    }
+
+    #[test]
+    fn test_evict_by_size() {
+        let (tmp, cache) = test_cache();
+        let key1 = CacheKey("k1".to_string());
+        let key2 = CacheKey("k2".to_string());
+
+        // Create two cache entries
+        let artifact = tmp.path().join("data.o");
+        fs::write(&artifact, vec![0u8; 1000]).unwrap(); // 1KB each
+
+        let meta = ArtifactMetadata {
+            module_name: "m".to_string(),
+            cache_key: "k".to_string(),
+            source_hash: "h".to_string(),
+            compiler: "c".to_string(),
+            compiler_version: "1".to_string(),
+            target: "t".to_string(),
+            created_at: "now".to_string(),
+            artifacts: vec![],
+        };
+
+        cache.store("m", &key1, &meta, &[("data.o", &artifact)]).unwrap();
+        cache.store("m", &key2, &meta, &[("data.o", &artifact)]).unwrap();
+
+        let size_before = cache.total_size().unwrap();
+        assert!(size_before > 0);
+
+        // Evict until under a very small size (should remove entries)
+        let result = cache.evict_by_size(1).unwrap();
+        assert!(result.entries_removed > 0);
+        assert!(result.bytes_freed > 0);
+
+        let size_after = cache.total_size().unwrap();
+        assert!(size_after < size_before);
+    }
+
+    #[test]
+    fn test_evict_by_size_already_under() {
+        let (_tmp, cache) = test_cache();
+        // Empty cache should not evict anything
+        let result = cache.evict_by_size(1_000_000).unwrap();
+        assert_eq!(result.entries_removed, 0);
+    }
+
+    #[test]
+    fn test_auto_evict_no_config() {
+        let (_tmp, cache) = test_cache();
+        let result = cache.auto_evict(None, None).unwrap();
+        assert_eq!(result.entries_removed, 0);
     }
 }

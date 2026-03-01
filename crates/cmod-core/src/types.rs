@@ -195,6 +195,96 @@ impl Default for Profile {
     }
 }
 
+/// Resolved toolchain specification for build orchestration.
+///
+/// Constructed from the `[toolchain]` manifest section, CLI overrides,
+/// and environment detection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolchainSpec {
+    /// Compiler backend (clang, gcc, msvc).
+    pub compiler: Compiler,
+    /// Compiler version string (e.g., "18.1.0").
+    pub compiler_version: Option<String>,
+    /// C++ standard (e.g., "20", "23").
+    pub cxx_standard: String,
+    /// Standard library (e.g., "libc++", "libstdc++").
+    pub stdlib: Option<String>,
+    /// ABI variant.
+    pub abi: Option<Abi>,
+    /// Target triple (e.g., "x86_64-unknown-linux-gnu").
+    pub target: String,
+    /// Sysroot path for cross-compilation.
+    pub sysroot: Option<PathBuf>,
+}
+
+impl ToolchainSpec {
+    /// Detect the host target triple.
+    pub fn host_target() -> String {
+        let arch = std::env::consts::ARCH;
+        let os = std::env::consts::OS;
+        match (arch, os) {
+            ("x86_64", "linux") => "x86_64-unknown-linux-gnu".to_string(),
+            ("x86_64", "macos") => "x86_64-apple-darwin".to_string(),
+            ("aarch64", "linux") => "aarch64-unknown-linux-gnu".to_string(),
+            ("aarch64", "macos") => "arm64-apple-darwin".to_string(),
+            ("x86_64", "windows") => "x86_64-pc-windows-msvc".to_string(),
+            _ => format!("{}-unknown-{}", arch, os),
+        }
+    }
+
+    /// Whether this spec targets a different platform than the host.
+    pub fn is_cross_compiling(&self) -> bool {
+        self.target != Self::host_target()
+    }
+
+    /// Validate that the toolchain is available.
+    pub fn validate(&self) -> Result<(), crate::error::CmodError> {
+        let cmd = match self.compiler {
+            Compiler::Clang => "clang++",
+            Compiler::Gcc => "g++",
+            Compiler::Msvc => "cl",
+        };
+
+        match std::process::Command::new(cmd)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Ok(status) if status.success() => Ok(()),
+            _ => Err(crate::error::CmodError::CompilerNotFound {
+                compiler: cmd.to_string(),
+            }),
+        }
+    }
+
+    /// Build a compact key string for cache isolation.
+    pub fn cache_key_tuple(&self) -> String {
+        format!(
+            "{}-{}-std{}-{}-{}",
+            self.compiler,
+            self.compiler_version.as_deref().unwrap_or("unknown"),
+            self.cxx_standard,
+            self.stdlib.as_deref().unwrap_or("default"),
+            self.target,
+        )
+    }
+}
+
+impl Default for ToolchainSpec {
+    fn default() -> Self {
+        ToolchainSpec {
+            compiler: Compiler::default(),
+            compiler_version: None,
+            cxx_standard: "20".to_string(),
+            stdlib: None,
+            abi: None,
+            target: Self::host_target(),
+            sysroot: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,5 +447,64 @@ mod tests {
 
         let parsed: NodeKind = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, NodeKind::Interface);
+    }
+
+    // ─── ToolchainSpec ─────────────────────────────────────────
+
+    #[test]
+    fn test_toolchain_spec_default() {
+        let spec = ToolchainSpec::default();
+        assert_eq!(spec.compiler, Compiler::Clang);
+        assert_eq!(spec.cxx_standard, "20");
+        assert!(spec.compiler_version.is_none());
+        assert!(spec.stdlib.is_none());
+        assert!(spec.sysroot.is_none());
+        assert!(!spec.target.is_empty());
+    }
+
+    #[test]
+    fn test_toolchain_spec_host_target() {
+        let target = ToolchainSpec::host_target();
+        assert!(!target.is_empty());
+        assert!(target.contains('-'));
+    }
+
+    #[test]
+    fn test_toolchain_spec_is_cross_compiling() {
+        let mut spec = ToolchainSpec::default();
+        assert!(!spec.is_cross_compiling());
+
+        spec.target = "aarch64-unknown-none".to_string();
+        // Only cross-compiling if target != host
+        if ToolchainSpec::host_target() != "aarch64-unknown-none" {
+            assert!(spec.is_cross_compiling());
+        }
+    }
+
+    #[test]
+    fn test_toolchain_spec_cache_key_tuple() {
+        let spec = ToolchainSpec {
+            compiler: Compiler::Clang,
+            compiler_version: Some("18.1.0".to_string()),
+            cxx_standard: "23".to_string(),
+            stdlib: Some("libc++".to_string()),
+            abi: None,
+            target: "x86_64-unknown-linux-gnu".to_string(),
+            sysroot: None,
+        };
+        let key = spec.cache_key_tuple();
+        assert!(key.contains("clang"));
+        assert!(key.contains("18.1.0"));
+        assert!(key.contains("std23"));
+        assert!(key.contains("libc++"));
+        assert!(key.contains("x86_64"));
+    }
+
+    #[test]
+    fn test_toolchain_spec_cache_key_defaults() {
+        let spec = ToolchainSpec::default();
+        let key = spec.cache_key_tuple();
+        assert!(key.contains("unknown"));
+        assert!(key.contains("default"));
     }
 }

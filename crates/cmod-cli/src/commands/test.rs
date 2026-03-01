@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use cmod_core::error::CmodError;
 
 /// Run `cmod test` — build and run tests.
@@ -9,12 +11,27 @@ pub fn run(
     target: Option<String>,
 ) -> Result<(), CmodError> {
     // First, build the project
-    super::build::run(release, locked, offline, verbose, target)?;
+    super::build::run(release, locked, offline, verbose, target, 0, false, None, false, false, false, &[], false)?;
 
     eprintln!("  Running tests...");
 
     // Look for test files
     let cwd = std::env::current_dir()?;
+    let config = cmod_core::config::Config::load(&cwd)?;
+
+    // Run pre-test hook
+    super::build::run_hook(
+        &config,
+        "pre-test",
+        config.manifest.hooks.as_ref().and_then(|h| h.pre_test.as_deref()),
+    )?;
+
+    // Get test patterns from manifest
+    let (test_patterns, exclude_patterns) = match config.manifest.test.as_ref() {
+        Some(test_cfg) => (test_cfg.test_patterns.clone(), test_cfg.exclude_patterns.clone()),
+        None => (vec![], vec![]),
+    };
+
     let test_dir = cwd.join("tests");
 
     if !test_dir.exists() {
@@ -28,8 +45,27 @@ pub fn run(
         return Ok(());
     }
 
+    // Filter test sources by patterns if configured
+    let filtered_sources: Vec<_> = test_sources
+        .into_iter()
+        .filter(|src| matches_test_patterns(src, &test_patterns, &exclude_patterns))
+        .collect();
+
+    if filtered_sources.is_empty() {
+        eprintln!("  No test sources match the configured patterns.");
+        return Ok(());
+    }
+
     // Build and run each test file
-    for test_source in &test_sources {
+    let build_dir = config.build_dir();
+    let cxx_standard = config
+        .manifest
+        .toolchain
+        .as_ref()
+        .and_then(|tc| tc.cxx_standard.clone())
+        .unwrap_or_else(|| "20".to_string());
+
+    for test_source in &filtered_sources {
         let test_name = test_source
             .file_stem()
             .and_then(|s| s.to_str())
@@ -38,16 +74,7 @@ pub fn run(
         eprintln!("  Running test: {}", test_name);
 
         // Compile the test
-        let config = cmod_core::config::Config::load(&cwd)?;
-        let build_dir = config.build_dir();
         let test_binary = build_dir.join(format!("test_{}", test_name));
-
-        let cxx_standard = config
-            .manifest
-            .toolchain
-            .as_ref()
-            .and_then(|tc| tc.cxx_standard.clone())
-            .unwrap_or_else(|| "20".to_string());
 
         let status = std::process::Command::new("clang++")
             .arg(format!("-std=c++{}", cxx_standard))
@@ -81,6 +108,40 @@ pub fn run(
         eprintln!("  Test '{}' passed.", test_name);
     }
 
+    // Run post-test hook
+    super::build::run_hook(
+        &config,
+        "post-test",
+        config.manifest.hooks.as_ref().and_then(|h| h.post_test.as_deref()),
+    )?;
+
     eprintln!("  All tests passed.");
     Ok(())
+}
+
+/// Check if a test source matches the configured patterns.
+///
+/// If `test_patterns` is empty, all sources match (no filtering).
+/// If `test_patterns` is non-empty, the filename must contain at least one pattern.
+/// If `exclude_patterns` is non-empty, the filename must not contain any exclude pattern.
+fn matches_test_patterns(source: &Path, test_patterns: &[String], exclude_patterns: &[String]) -> bool {
+    let filename = source
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    // Check exclude patterns first
+    for pattern in exclude_patterns {
+        if filename.contains(pattern.as_str()) {
+            return false;
+        }
+    }
+
+    // If no include patterns, match everything
+    if test_patterns.is_empty() {
+        return true;
+    }
+
+    // Must match at least one include pattern
+    test_patterns.iter().any(|pattern| filename.contains(pattern.as_str()))
 }

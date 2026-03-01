@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use cmod_core::error::CmodError;
 use cmod_core::types::{BuildType, NodeKind, Profile};
 
+use crate::compiler::ClangBackend;
 use crate::graph::ModuleGraph;
 
 /// A single step in the build plan.
@@ -208,6 +209,91 @@ impl BuildPlan {
         }
         objs
     }
+
+    /// Generate a compile_commands.json-compatible list from this build plan.
+    ///
+    /// Each entry corresponds to a compilation step (interface, implementation,
+    /// or object node) and includes the full clang++ invocation arguments.
+    pub fn compile_commands(
+        &self,
+        backend: &ClangBackend,
+        project_root: &Path,
+    ) -> Vec<CompileCommand> {
+        let pcm_paths = self.pcm_paths();
+        let mut commands = Vec::new();
+
+        for node in &self.nodes {
+            let source = match node.source.as_ref() {
+                Some(s) => s,
+                None => continue, // skip link nodes
+            };
+
+            if node.kind == NodeKind::Link {
+                continue;
+            }
+
+            let mut arguments = vec!["clang++".to_string()];
+            arguments.extend(backend.common_flags());
+
+            // Add dependency PCM references
+            for dep_id in &node.dependencies {
+                if let Some(name) = dep_id.strip_prefix("interface:") {
+                    if let Some(pcm_path) = pcm_paths.get(name) {
+                        arguments.push(format!(
+                            "-fmodule-file={}={}",
+                            name,
+                            pcm_path.display()
+                        ));
+                    }
+                }
+            }
+
+            match node.kind {
+                NodeKind::Interface => {
+                    // For compile_commands, represent the PCM→object step
+                    arguments.push("--precompile".to_string());
+                    arguments.push("-o".to_string());
+                    if let Some(pcm) = node.outputs.first() {
+                        arguments.push(pcm.display().to_string());
+                    }
+                    arguments.push(source.display().to_string());
+                }
+                NodeKind::Implementation | NodeKind::Object => {
+                    arguments.push("-c".to_string());
+                    arguments.push("-o".to_string());
+                    if let Some(obj) = node.outputs.first() {
+                        arguments.push(obj.display().to_string());
+                    }
+                    arguments.push(source.display().to_string());
+                }
+                NodeKind::Link => unreachable!(),
+            }
+
+            let output = node.outputs.first().cloned().unwrap_or_default();
+
+            commands.push(CompileCommand {
+                directory: project_root.display().to_string(),
+                file: source.display().to_string(),
+                arguments,
+                output: output.display().to_string(),
+            });
+        }
+
+        commands
+    }
+}
+
+/// A single entry in a compile_commands.json compilation database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompileCommand {
+    /// The working directory for the compilation.
+    pub directory: String,
+    /// The source file being compiled.
+    pub file: String,
+    /// The full compiler invocation as an argument list.
+    pub arguments: Vec<String>,
+    /// The output file path.
+    pub output: String,
 }
 
 /// Sanitize a module name for use as a filename.
@@ -512,5 +598,143 @@ mod tests {
         let top_node = plan.nodes.iter().find(|n| n.module_name.as_deref() == Some("top")).unwrap();
         assert!(top_node.dependencies.contains(&"interface:left".to_string()));
         assert!(top_node.dependencies.contains(&"interface:right".to_string()));
+    }
+
+    #[test]
+    fn test_compile_commands_generation() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            name: "base".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/base.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+        });
+        graph.add_node(ModuleNode {
+            name: "app".to_string(),
+            kind: ModuleUnitKind::ImplementationUnit,
+            source: PathBuf::from("src/app.cpp"),
+            package: "test".to_string(),
+            imports: vec!["base".to_string()],
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::Binary,
+        )
+        .unwrap();
+
+        let backend = ClangBackend::new("20", Profile::Debug);
+        let commands = plan.compile_commands(&backend, Path::new("/project"));
+
+        // Should have 2 entries (interface + implementation), not the link node
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].directory, "/project");
+        assert_eq!(commands[0].file, "src/base.cppm");
+        assert!(commands[0].arguments.contains(&"--precompile".to_string()));
+        assert_eq!(commands[1].file, "src/app.cpp");
+        assert!(commands[1].arguments.contains(&"-c".to_string()));
+    }
+
+    #[test]
+    fn test_compile_commands_json_roundtrip() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/lib.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::Binary,
+        )
+        .unwrap();
+
+        let backend = ClangBackend::new("20", Profile::Debug);
+        let commands = plan.compile_commands(&backend, Path::new("/project"));
+
+        let json = serde_json::to_string_pretty(&commands).unwrap();
+        let parsed: Vec<CompileCommand> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].file, "src/lib.cppm");
+    }
+
+    #[test]
+    fn test_compile_commands_skips_link_node() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            name: "main".to_string(),
+            kind: ModuleUnitKind::LegacyUnit,
+            source: PathBuf::from("src/main.cpp"),
+            package: "test".to_string(),
+            imports: vec![],
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::Binary,
+        )
+        .unwrap();
+
+        // plan has 2 nodes: object + link
+        assert_eq!(plan.nodes.len(), 2);
+
+        let backend = ClangBackend::new("20", Profile::Debug);
+        let commands = plan.compile_commands(&backend, Path::new("/project"));
+
+        // Should only have 1 entry (the object node, not the link)
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].file, "src/main.cpp");
+    }
+
+    #[test]
+    fn test_compile_commands_includes_dep_pcm_refs() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            name: "base".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/base.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+        });
+        graph.add_node(ModuleNode {
+            name: "derived".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/derived.cppm"),
+            package: "test".to_string(),
+            imports: vec!["base".to_string()],
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::Binary,
+        )
+        .unwrap();
+
+        let backend = ClangBackend::new("20", Profile::Debug);
+        let commands = plan.compile_commands(&backend, Path::new("/project"));
+
+        assert_eq!(commands.len(), 2);
+        // The derived module command should have a -fmodule-file reference to base
+        let derived_cmd = &commands[1];
+        assert!(
+            derived_cmd.arguments.iter().any(|a| a.starts_with("-fmodule-file=base=")),
+            "derived command should reference base PCM"
+        );
     }
 }

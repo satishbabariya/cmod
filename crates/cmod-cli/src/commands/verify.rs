@@ -2,9 +2,10 @@ use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
 use cmod_core::types::ModuleId;
+use cmod_security::verify::{verify_all_packages, SignatureStatus};
 
 /// Run `cmod verify` — verify integrity and correctness.
-pub fn run(verbose: bool) -> Result<(), CmodError> {
+pub fn run(verbose: bool, check_signatures: bool) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -26,6 +27,11 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
 
     // 5. Validate module name matches source declaration
     validate_module_declaration(&config, &mut errors, &mut warnings, verbose);
+
+    // 6. Validate signatures if requested
+    if check_signatures {
+        validate_signatures(&config, &mut errors, &mut warnings, verbose);
+    }
 
     // Print warnings
     if !warnings.is_empty() {
@@ -273,6 +279,59 @@ fn validate_module_declaration(
                     "failed to read module root '{}': {}",
                     module.root.display(),
                     e
+                ));
+            }
+        }
+    }
+}
+
+/// Verify commit signatures of locked dependencies.
+fn validate_signatures(
+    config: &Config,
+    errors: &mut Vec<String>,
+    _warnings: &mut Vec<String>,
+    verbose: bool,
+) {
+    if verbose {
+        eprintln!("  Checking commit signatures...");
+    }
+
+    let lockfile = match Lockfile::load(&config.lockfile_path) {
+        Ok(l) => l,
+        Err(_) => return, // Lockfile issues already reported
+    };
+
+    if lockfile.packages.is_empty() {
+        return;
+    }
+
+    let deps_dir = config.deps_dir();
+    let results = verify_all_packages(&lockfile.packages, &deps_dir, true);
+
+    for result in &results {
+        match &result.signature_status {
+            SignatureStatus::Valid { signer } => {
+                if verbose {
+                    eprintln!("    {} — signed by {}", result.package_name, signer);
+                }
+            }
+            SignatureStatus::Untrusted { signer } => {
+                if verbose {
+                    eprintln!(
+                        "    {} — signed by {} (untrusted key)",
+                        result.package_name, signer
+                    );
+                }
+            }
+            SignatureStatus::Unsigned => {
+                if verbose {
+                    eprintln!("    {} — unsigned commit", result.package_name);
+                }
+            }
+            SignatureStatus::Invalid { reason } => {
+                errors.push(format!(
+                    "package '{}' has invalid signature: {}",
+                    result.package_name, reason
                 ));
             }
         }

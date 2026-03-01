@@ -78,6 +78,10 @@ pub enum CmodError {
     #[error("cache error: {reason}")]
     CacheError { reason: String },
 
+    // Security errors
+    #[error("security violation: {reason}")]
+    SecurityViolation { reason: String },
+
     // IO / generic
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -102,6 +106,8 @@ impl CmodError {
             | CmodError::LockfileNotFound
             | CmodError::LockfileOutdated
             | CmodError::LockfileIntegrity { .. } => EXIT_RESOLUTION_ERROR,
+
+            CmodError::SecurityViolation { .. } => EXIT_SECURITY_VIOLATION,
 
             _ => EXIT_BUILD_FAILURE,
         }

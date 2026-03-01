@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cmod_core::error::CmodError;
-use cmod_core::types::{Artifact, Profile};
+use cmod_core::types::{Artifact, OptimizationLevel, Profile};
 
 /// Abstraction over a C++ compiler backend.
 ///
@@ -57,6 +57,12 @@ pub struct ClangBackend {
     pub profile: Profile,
     /// Additional flags.
     pub extra_flags: Vec<String>,
+    /// Sysroot path for cross-compilation.
+    pub sysroot: Option<PathBuf>,
+    /// Enable LTO (link-time optimization).
+    pub lto: bool,
+    /// Explicit optimization level (overrides profile-based defaults).
+    pub optimization: Option<OptimizationLevel>,
 }
 
 impl ClangBackend {
@@ -70,11 +76,14 @@ impl ClangBackend {
             target: None,
             profile,
             extra_flags: Vec::new(),
+            sysroot: None,
+            lto: false,
+            optimization: None,
         }
     }
 
     /// Common flags used for all compilations.
-    fn common_flags(&self) -> Vec<String> {
+    pub fn common_flags(&self) -> Vec<String> {
         let mut flags = vec![format!("-std=c++{}", self.cxx_standard)];
 
         if let Some(ref stdlib) = self.stdlib {
@@ -85,15 +94,42 @@ impl ClangBackend {
             flags.push(format!("--target={}", target));
         }
 
-        match self.profile {
-            Profile::Debug => {
+        if let Some(ref sysroot) = self.sysroot {
+            flags.push(format!("--sysroot={}", sysroot.display()));
+        }
+
+        // Use explicit optimization level if set, otherwise derive from profile
+        match self.optimization {
+            Some(OptimizationLevel::Debug) => {
                 flags.push("-g".to_string());
                 flags.push("-O0".to_string());
             }
-            Profile::Release => {
+            Some(OptimizationLevel::Release) => {
                 flags.push("-O2".to_string());
                 flags.push("-DNDEBUG".to_string());
             }
+            Some(OptimizationLevel::Size) => {
+                flags.push("-Os".to_string());
+                flags.push("-DNDEBUG".to_string());
+            }
+            Some(OptimizationLevel::Speed) => {
+                flags.push("-O3".to_string());
+                flags.push("-DNDEBUG".to_string());
+            }
+            None => match self.profile {
+                Profile::Debug => {
+                    flags.push("-g".to_string());
+                    flags.push("-O0".to_string());
+                }
+                Profile::Release => {
+                    flags.push("-O2".to_string());
+                    flags.push("-DNDEBUG".to_string());
+                }
+            },
+        }
+
+        if self.lto {
+            flags.push("-flto=thin".to_string());
         }
 
         flags.extend(self.extra_flags.clone());
@@ -465,5 +501,37 @@ mod tests {
         assert!(backend.target.is_none());
         assert!(backend.extra_flags.is_empty());
         assert!(matches!(backend.profile, Profile::Debug));
+        assert!(backend.optimization.is_none());
+    }
+
+    #[test]
+    fn test_common_flags_optimization_size() {
+        let mut backend = ClangBackend::new("20", Profile::Release);
+        backend.optimization = Some(OptimizationLevel::Size);
+        let flags = backend.common_flags();
+        assert!(flags.contains(&"-Os".to_string()));
+        assert!(flags.contains(&"-DNDEBUG".to_string()));
+        assert!(!flags.contains(&"-O2".to_string()));
+    }
+
+    #[test]
+    fn test_common_flags_optimization_speed() {
+        let mut backend = ClangBackend::new("20", Profile::Release);
+        backend.optimization = Some(OptimizationLevel::Speed);
+        let flags = backend.common_flags();
+        assert!(flags.contains(&"-O3".to_string()));
+        assert!(flags.contains(&"-DNDEBUG".to_string()));
+        assert!(!flags.contains(&"-O2".to_string()));
+    }
+
+    #[test]
+    fn test_common_flags_optimization_overrides_profile() {
+        let mut backend = ClangBackend::new("20", Profile::Debug);
+        // Even though profile is Debug, optimization level overrides it
+        backend.optimization = Some(OptimizationLevel::Speed);
+        let flags = backend.common_flags();
+        assert!(flags.contains(&"-O3".to_string()));
+        assert!(!flags.contains(&"-g".to_string()));
+        assert!(!flags.contains(&"-O0".to_string()));
     }
 }

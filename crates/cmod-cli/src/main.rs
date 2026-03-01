@@ -28,6 +28,22 @@ struct Cli {
     /// Override the target triple
     #[arg(long, global = true)]
     target: Option<String>,
+
+    /// Enable specific features (comma-separated)
+    #[arg(long, global = true, value_delimiter = ',')]
+    features: Vec<String>,
+
+    /// Disable default features
+    #[arg(long, global = true)]
+    no_default_features: bool,
+
+    /// Skip build cache
+    #[arg(long, global = true)]
+    no_cache: bool,
+
+    /// Skip TOFU trust verification for dependencies
+    #[arg(long, global = true)]
+    untrusted: bool,
 }
 
 #[derive(Subcommand)]
@@ -83,6 +99,30 @@ enum Commands {
         /// Build in release mode
         #[arg(long)]
         release: bool,
+
+        /// Maximum parallel compilation jobs (0 = auto)
+        #[arg(long, short, default_value = "0")]
+        jobs: usize,
+
+        /// Force rebuild, ignoring incremental state
+        #[arg(long)]
+        force: bool,
+
+        /// Remote cache URL (overrides manifest [cache].shared_url)
+        #[arg(long)]
+        remote_cache: Option<String>,
+
+        /// Skip pre-build and post-build hooks
+        #[arg(long)]
+        no_hooks: bool,
+
+        /// Verify lockfile integrity and package hashes before building
+        #[arg(long)]
+        verify: bool,
+
+        /// Display per-module compile timings
+        #[arg(long)]
+        timings: bool,
     },
 
     /// Run module tests
@@ -107,6 +147,14 @@ enum Commands {
         /// Display as a tree
         #[arg(long)]
         tree: bool,
+
+        /// Explain why a specific dependency is included
+        #[arg(long)]
+        why: Option<String>,
+
+        /// Show transitive dependency conflicts
+        #[arg(long)]
+        conflicts: bool,
     },
 
     /// Manage the build cache
@@ -116,7 +164,169 @@ enum Commands {
     },
 
     /// Verify integrity and security
-    Verify,
+    Verify {
+        /// Check commit signatures
+        #[arg(long)]
+        signatures: bool,
+    },
+
+    /// Visualize the module dependency graph
+    Graph {
+        /// Output format: ascii, dot, json
+        #[arg(long, default_value = "ascii")]
+        format: Option<String>,
+
+        /// Filter modules matching this pattern
+        #[arg(long)]
+        filter: Option<String>,
+
+        /// Show build status annotations (up-to-date, needs-rebuild, never-built)
+        #[arg(long)]
+        status: bool,
+
+        /// Highlight the critical path (longest compile chain)
+        #[arg(long)]
+        critical_path: bool,
+    },
+
+    /// Audit dependencies for security and quality issues
+    Audit,
+
+    /// Show project status overview
+    Status,
+
+    /// Explain why a module would be rebuilt
+    Explain {
+        /// Module name to explain
+        module: String,
+    },
+
+    /// Manage the active toolchain
+    Toolchain {
+        #[command(subcommand)]
+        action: ToolchainAction,
+    },
+
+    /// Vendor dependencies for offline builds
+    Vendor {
+        /// Re-synchronize vendored deps with lockfile
+        #[arg(long)]
+        sync: bool,
+    },
+
+    /// Lint C++ source files for common issues
+    Lint,
+
+    /// Format C++ source files using clang-format
+    Fmt {
+        /// Check formatting without modifying files
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Search for modules by name
+    Search {
+        /// Search query (substring match)
+        query: String,
+    },
+
+    /// Build and run the project binary
+    Run {
+        /// Build in release mode
+        #[arg(long)]
+        release: bool,
+
+        /// Arguments to pass to the binary
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Remove build artifacts
+    Clean,
+
+    /// Manage workspace members
+    Workspace {
+        #[command(subcommand)]
+        action: WorkspaceAction,
+    },
+
+    /// Generate a Software Bill of Materials (SBOM)
+    Sbom {
+        /// Output file path (prints to stdout if not specified)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+
+    /// Publish a release (create a Git tag)
+    Publish {
+        /// Dry run — show what would happen without making changes
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Push the tag to origin after creation
+        #[arg(long)]
+        push: bool,
+    },
+
+    /// Generate compile_commands.json for IDE integration
+    CompileCommands,
+
+    /// Remove unused dependencies from cmod.toml
+    Tidy {
+        /// Actually remove unused deps (default: dry run)
+        #[arg(long)]
+        apply: bool,
+    },
+
+    /// Validate module naming, identity, and structure rules
+    Check,
+
+    /// Manage plugins
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+    },
+
+    /// Output the build plan as JSON without executing it
+    Plan,
+
+    /// Export a CMakeLists.txt for interop with CMake-based projects
+    EmitCmake,
+}
+
+#[derive(Subcommand)]
+enum WorkspaceAction {
+    /// List workspace members
+    List,
+    /// Add a new member to the workspace
+    Add {
+        /// Name of the new member
+        name: String,
+    },
+    /// Remove a member from the workspace
+    Remove {
+        /// Name of the member to remove
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ToolchainAction {
+    /// Show active toolchain configuration
+    Show,
+    /// Validate toolchain availability
+    Check,
+}
+
+#[derive(Subcommand)]
+enum PluginAction {
+    /// List discovered plugins
+    List,
+    /// Run a plugin by name
+    Run {
+        /// Plugin name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -125,6 +335,27 @@ enum CacheAction {
     Status,
     /// Clear the local cache
     Clean,
+    /// Push local cache entries to remote cache
+    Push,
+    /// Pull cache entries from remote cache
+    Pull,
+    /// Run garbage collection (evict old/oversized entries)
+    Gc,
+    /// Export a cached module as a BMI package
+    Export {
+        /// Module name to export
+        module: String,
+        /// Cache key of the entry to export
+        key: String,
+        /// Output directory
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Import a BMI package into the local cache
+    Import {
+        /// Path to the BMI package directory
+        path: String,
+    },
 }
 
 fn main() {
@@ -141,20 +372,63 @@ fn main() {
             features,
         } => commands::add::run(dep, git, branch, rev, path, features, cli.locked, cli.offline),
         Commands::Remove { name } => commands::remove::run(name),
-        Commands::Resolve => commands::resolve::run(cli.locked, cli.offline, cli.verbose),
-        Commands::Build { release } => {
-            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target)
+        Commands::Resolve => commands::resolve::run(
+            cli.locked,
+            cli.offline,
+            cli.verbose,
+            &cli.features,
+            cli.no_default_features,
+            cli.target.clone(),
+            cli.untrusted,
+        ),
+        Commands::Build { release, jobs, force, remote_cache, no_hooks, verify, timings } => {
+            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache, no_hooks, verify, timings, &cli.features, cli.no_default_features)
         }
         Commands::Test { release } => {
             commands::test::run(release, cli.locked, cli.offline, cli.verbose, cli.target)
         }
         Commands::Update { name, patch } => commands::update::run(name, patch, cli.verbose),
-        Commands::Deps { tree } => commands::deps::run(tree),
+        Commands::Deps { tree, why, conflicts } => commands::deps::run(tree, why, conflicts),
         Commands::Cache { action } => match action {
             CacheAction::Status => commands::cache::status(),
             CacheAction::Clean => commands::cache::clean(),
+            CacheAction::Push => commands::cache::push(cli.verbose),
+            CacheAction::Pull => commands::cache::pull(cli.verbose),
+            CacheAction::Gc => commands::cache::gc(cli.verbose),
+            CacheAction::Export { module, key, output } => commands::cache::export_bmi(&module, &key, &output, cli.verbose),
+            CacheAction::Import { path } => commands::cache::import_bmi(&path, cli.verbose),
         },
-        Commands::Verify => commands::verify::run(cli.verbose),
+        Commands::Verify { signatures } => commands::verify::run(cli.verbose, signatures),
+        Commands::Graph { format, filter, status, critical_path } => commands::graph::run(format, filter, status, critical_path),
+        Commands::Audit => commands::audit::run(cli.verbose),
+        Commands::Status => commands::status::run(cli.verbose),
+        Commands::Explain { module } => commands::explain::run(module, cli.verbose),
+        Commands::Toolchain { action } => match action {
+            ToolchainAction::Show => commands::toolchain::show(cli.verbose),
+            ToolchainAction::Check => commands::toolchain::check(),
+        },
+        Commands::Vendor { sync } => commands::vendor::run(sync, cli.verbose),
+        Commands::Lint => commands::lint::run(cli.verbose),
+        Commands::Fmt { check } => commands::fmt::run(check, cli.verbose),
+        Commands::Search { query } => commands::search::run(&query, cli.verbose),
+        Commands::Run { release, args } => commands::run::run(release, args, cli.verbose),
+        Commands::Clean => commands::clean::run(cli.verbose),
+        Commands::Workspace { action } => match action {
+            WorkspaceAction::List => commands::workspace::list(cli.verbose),
+            WorkspaceAction::Add { name } => commands::workspace::add(&name, cli.verbose),
+            WorkspaceAction::Remove { name } => commands::workspace::remove(&name, cli.verbose),
+        },
+        Commands::Sbom { output } => commands::sbom::run(output, cli.verbose),
+        Commands::Publish { dry_run, push } => commands::publish::run(dry_run, push, cli.verbose),
+        Commands::CompileCommands => commands::compile_commands::run(cli.verbose, cli.target.clone()),
+        Commands::Tidy { apply } => commands::tidy::run(apply, cli.verbose),
+        Commands::Check => commands::check::run(cli.verbose),
+        Commands::Plugin { action } => match action {
+            PluginAction::List => commands::plugin::list(cli.verbose),
+            PluginAction::Run { name } => commands::plugin::run_plugin(&name, cli.verbose),
+        },
+        Commands::Plan => commands::build::plan(cli.verbose, cli.target.clone()),
+        Commands::EmitCmake => commands::build::emit_cmake(cli.verbose),
     };
 
     if let Err(e) = result {
