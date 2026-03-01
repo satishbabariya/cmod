@@ -173,6 +173,49 @@ enum Commands {
         #[arg(long)]
         sync: bool,
     },
+
+    /// Remove build artifacts
+    Clean,
+
+    /// Manage workspace members
+    Workspace {
+        #[command(subcommand)]
+        action: WorkspaceAction,
+    },
+
+    /// Generate a Software Bill of Materials (SBOM)
+    Sbom {
+        /// Output file path (prints to stdout if not specified)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+
+    /// Publish a release (create a Git tag)
+    Publish {
+        /// Dry run — show what would happen without making changes
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Push the tag to origin after creation
+        #[arg(long)]
+        push: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkspaceAction {
+    /// List workspace members
+    List,
+    /// Add a new member to the workspace
+    Add {
+        /// Name of the new member
+        name: String,
+    },
+    /// Remove a member from the workspace
+    Remove {
+        /// Name of the member to remove
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -240,6 +283,14 @@ fn main() {
             ToolchainAction::Check => commands::toolchain::check(),
         },
         Commands::Vendor { sync } => commands::vendor::run(sync, cli.verbose),
+        Commands::Clean => commands::clean::run(cli.verbose),
+        Commands::Workspace { action } => match action {
+            WorkspaceAction::List => commands::workspace::list(cli.verbose),
+            WorkspaceAction::Add { name } => commands::workspace::add(&name, cli.verbose),
+            WorkspaceAction::Remove { name } => commands::workspace::remove(&name, cli.verbose),
+        },
+        Commands::Sbom { output } => commands::sbom::run(output, cli.verbose),
+        Commands::Publish { dry_run, push } => commands::publish::run(dry_run, push, cli.verbose),
     };
 
     if let Err(e) = result {

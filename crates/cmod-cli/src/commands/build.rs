@@ -1,6 +1,6 @@
 use cmod_build::compiler::ClangBackend;
 use cmod_build::graph::{ModuleGraph, ModuleNode};
-use cmod_build::runner::{self, BuildRunner};
+use cmod_build::runner::{self, BuildRunner, BuildStats};
 use cmod_cache::ArtifactCache;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
@@ -103,8 +103,9 @@ fn build_module(config: &Config, verbose: bool, jobs: usize) -> Result<(), CmodE
         eprintln!("  Parallelism: {} jobs", runner.effective_jobs());
     }
 
-    let output = runner.build(&graph, &build_dir, &target, config.profile, build_type)?;
+    let (output, stats) = runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type)?;
 
+    print_build_stats(&stats, verbose);
     eprintln!("  Build complete: {}", output.display());
     Ok(())
 }
@@ -156,8 +157,9 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize) -> Result<(), Cm
             .unwrap_or_default();
 
         let runner = BuildRunner::new(backend, Some(cache)).with_jobs(jobs);
-        match runner.build(&graph, &build_dir, &target, config.profile, build_type) {
-            Ok(output) => {
+        match runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type) {
+            Ok((output, stats)) => {
+                print_build_stats(&stats, verbose);
                 eprintln!("    Built: {}", output.display());
             }
             Err(e) => {
@@ -387,6 +389,46 @@ fn default_target() -> String {
     }
 }
 
+/// Display build statistics to the user.
+fn print_build_stats(stats: &BuildStats, verbose: bool) {
+    let total_nodes = stats.cache_hits + stats.cache_misses + stats.incremental_skipped;
+
+    if total_nodes == 0 {
+        return;
+    }
+
+    // Always show a summary line
+    let mut parts = Vec::new();
+    if stats.cache_misses > 0 {
+        parts.push(format!("{} compiled", stats.cache_misses));
+    }
+    if stats.cache_hits > 0 {
+        parts.push(format!("{} cached", stats.cache_hits));
+    }
+    if stats.incremental_skipped > 0 {
+        parts.push(format!("{} up-to-date", stats.incremental_skipped));
+    }
+
+    eprintln!(
+        "  {} modules ({}), {:.1}s",
+        total_nodes,
+        parts.join(", "),
+        stats.wall_time_ms as f64 / 1000.0,
+    );
+
+    if verbose && stats.total_compile_time_ms > 0 && stats.wall_time_ms > 0 {
+        let speedup = stats.total_compile_time_ms as f64 / stats.wall_time_ms as f64;
+        if speedup > 1.05 {
+            eprintln!(
+                "  Parallel speedup: {:.1}x ({:.1}s compile time in {:.1}s wall time)",
+                speedup,
+                stats.total_compile_time_ms as f64 / 1000.0,
+                stats.wall_time_ms as f64 / 1000.0,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,5 +588,24 @@ mod tests {
     fn test_parse_p1689_invalid_json() {
         let result = parse_p1689_imports("not json");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_print_build_stats_no_panic() {
+        // Verify stats printing doesn't panic for various states
+        let empty = BuildStats::default();
+        print_build_stats(&empty, false);
+        print_build_stats(&empty, true);
+
+        let stats = BuildStats {
+            cache_hits: 3,
+            cache_misses: 2,
+            skipped: 1,
+            incremental_skipped: 5,
+            wall_time_ms: 1500,
+            total_compile_time_ms: 4000,
+        };
+        print_build_stats(&stats, false);
+        print_build_stats(&stats, true);
     }
 }

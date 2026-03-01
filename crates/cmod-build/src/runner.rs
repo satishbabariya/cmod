@@ -14,6 +14,7 @@ use cmod_core::types::{Artifact, BuildType, NodeKind, Profile};
 
 use crate::compiler::{ClangBackend, CompilerBackend};
 use crate::graph::ModuleGraph;
+use crate::incremental::BuildState;
 use crate::plan::{BuildNode, BuildPlan};
 
 /// Statistics from a build execution.
@@ -25,6 +26,8 @@ pub struct BuildStats {
     pub cache_misses: usize,
     /// Number of nodes skipped (link nodes, etc).
     pub skipped: usize,
+    /// Number of nodes skipped due to incremental state (up-to-date).
+    pub incremental_skipped: usize,
     /// Total wall-clock time for the build.
     pub wall_time_ms: u64,
     /// Sum of individual compilation times (may exceed wall_time when parallel).
@@ -35,8 +38,11 @@ pub struct BuildStats {
 pub struct BuildRunner {
     backend: ClangBackend,
     cache: Option<ArtifactCache>,
+    remote_cache: Option<Box<dyn cmod_cache::RemoteCache>>,
     /// When true, skip cache lookups and always recompile.
     pub no_cache: bool,
+    /// When true, ignore incremental state and rebuild everything.
+    pub force_rebuild: bool,
     /// Maximum parallel jobs (0 = auto-detect CPU count).
     pub max_jobs: usize,
 }
@@ -46,12 +52,17 @@ enum NodeOutcome {
     CacheHit(u64),
     Compiled(u64),
     Linked(u64),
+    /// Node skipped because incremental state shows it's up-to-date.
+    Skipped(u64),
 }
 
 impl NodeOutcome {
     fn time_ms(&self) -> u64 {
         match self {
-            NodeOutcome::CacheHit(ms) | NodeOutcome::Compiled(ms) | NodeOutcome::Linked(ms) => *ms,
+            NodeOutcome::CacheHit(ms)
+            | NodeOutcome::Compiled(ms)
+            | NodeOutcome::Linked(ms)
+            | NodeOutcome::Skipped(ms) => *ms,
         }
     }
 }
@@ -61,7 +72,9 @@ impl BuildRunner {
         BuildRunner {
             backend,
             cache,
+            remote_cache: None,
             no_cache: false,
+            force_rebuild: false,
             max_jobs: 0,
         }
     }
@@ -70,6 +83,43 @@ impl BuildRunner {
     pub fn with_jobs(mut self, jobs: usize) -> Self {
         self.max_jobs = jobs;
         self
+    }
+
+    /// Attach a remote cache backend.
+    pub fn with_remote_cache(mut self, remote: Box<dyn cmod_cache::RemoteCache>) -> Self {
+        self.remote_cache = Some(remote);
+        self
+    }
+
+    /// Enable force rebuild (ignore incremental state).
+    pub fn with_force(mut self, force: bool) -> Self {
+        self.force_rebuild = force;
+        self
+    }
+
+    /// Compute a hash representing the current compiler flags.
+    fn flags_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.backend.cxx_standard.as_bytes());
+        if let Some(ref stdlib) = self.backend.stdlib {
+            hasher.update(stdlib.as_bytes());
+        }
+        if let Some(ref target) = self.backend.target {
+            hasher.update(target.as_bytes());
+        }
+        for flag in &self.backend.extra_flags {
+            hasher.update(flag.as_bytes());
+        }
+        if let Some(ref sysroot) = self.backend.sysroot {
+            hasher.update(sysroot.to_string_lossy().as_bytes());
+        }
+        let profile_str = match self.backend.profile {
+            Profile::Debug => "debug",
+            Profile::Release => "release",
+        };
+        hasher.update(profile_str.as_bytes());
+        format!("{:x}", hasher.finalize())
     }
 
     /// Get the effective parallelism level.
@@ -179,56 +229,92 @@ impl BuildRunner {
     }
 
     /// Try to restore a node's outputs from cache. Returns true on hit.
+    ///
+    /// Checks local cache first. On local miss, tries the remote cache
+    /// (if configured) and stores the downloaded artifact locally.
     fn try_cache_restore(
         &self,
         module_id: &str,
         key: &CacheKey,
         node: &BuildNode,
     ) -> bool {
-        let cache = match &self.cache {
-            Some(c) => c,
-            None => return false,
-        };
-
-        if self.no_cache || !cache.has(module_id, key) {
+        if self.no_cache {
             return false;
         }
 
-        // Try to copy each output from cache
-        for output in &node.outputs {
-            let artifact_name = output
-                .file_name()
-                .and_then(|f| f.to_str())
-                .unwrap_or("unknown");
+        // Try local cache first
+        if let Some(ref cache) = self.cache {
+            if cache.has(module_id, key) {
+                let mut all_found = true;
+                for output in &node.outputs {
+                    let artifact_name = output
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .unwrap_or("unknown");
 
-            match cache.get_artifact(module_id, key, artifact_name) {
-                Some(cached_path) => {
-                    if let Some(parent) = output.parent() {
-                        let _ = fs::create_dir_all(parent);
-                    }
-                    if fs::copy(&cached_path, output).is_err() {
-                        return false;
+                    match cache.get_artifact(module_id, key, artifact_name) {
+                        Some(cached_path) => {
+                            if let Some(parent) = output.parent() {
+                                let _ = fs::create_dir_all(parent);
+                            }
+                            if fs::copy(&cached_path, output).is_err() {
+                                all_found = false;
+                                break;
+                            }
+                        }
+                        None => {
+                            all_found = false;
+                            break;
+                        }
                     }
                 }
-                None => return false,
+                if all_found {
+                    return true;
+                }
             }
         }
 
-        true
+        // Try remote cache on local miss
+        if let Some(ref remote) = self.remote_cache {
+            let mut all_downloaded = true;
+            for output in &node.outputs {
+                let artifact_name = output
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or("unknown");
+
+                match remote.get(module_id, key, artifact_name, output) {
+                    Ok(true) => {
+                        // Store locally for next time
+                        if let Some(ref cache) = self.cache {
+                            let name = artifact_name.to_string();
+                            let _ = cache.store_single_artifact(module_id, key, &name, output);
+                        }
+                    }
+                    _ => {
+                        all_downloaded = false;
+                        break;
+                    }
+                }
+            }
+            if all_downloaded && !node.outputs.is_empty() {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Store a node's outputs into cache after successful compilation.
+    ///
+    /// Stores locally and, if a remote cache is configured for writes,
+    /// pushes the artifacts upstream.
     fn cache_store(
         &self,
         module_id: &str,
         key: &CacheKey,
         node: &BuildNode,
     ) {
-        let cache = match &self.cache {
-            Some(c) => c,
-            None => return,
-        };
-
         if self.no_cache {
             return;
         }
@@ -254,37 +340,53 @@ impl BuildRunner {
             artifact_files.push((name, output.clone()));
         }
 
-        let source_hash = node
-            .source
-            .as_ref()
-            .and_then(|s| hash_file(s).ok())
-            .unwrap_or_default();
+        // Store locally
+        if let Some(ref cache) = self.cache {
+            let source_hash = node
+                .source
+                .as_ref()
+                .and_then(|s| hash_file(s).ok())
+                .unwrap_or_default();
 
-        let metadata = ArtifactMetadata {
-            module_name: module_id.to_string(),
-            cache_key: key.to_string(),
-            source_hash,
-            compiler: "clang".to_string(),
-            compiler_version: String::new(),
-            target: String::new(),
-            created_at: String::new(),
-            artifacts: artifact_entries,
-        };
+            let metadata = ArtifactMetadata {
+                module_name: module_id.to_string(),
+                cache_key: key.to_string(),
+                source_hash,
+                compiler: "clang".to_string(),
+                compiler_version: String::new(),
+                target: String::new(),
+                created_at: String::new(),
+                artifacts: artifact_entries,
+            };
 
-        let file_refs: Vec<(&str, &Path)> = artifact_files
-            .iter()
-            .map(|(name, path)| (name.as_str(), path.as_path()))
-            .collect();
+            let file_refs: Vec<(&str, &Path)> = artifact_files
+                .iter()
+                .map(|(name, path)| (name.as_str(), path.as_path()))
+                .collect();
 
-        let _ = cache.store(module_id, key, &metadata, &file_refs);
+            let _ = cache.store(module_id, key, &metadata, &file_refs);
+        }
+
+        // Push to remote cache if configured
+        if let Some(ref remote) = self.remote_cache {
+            for (name, path) in &artifact_files {
+                let _ = remote.put(module_id, key, name, path);
+            }
+        }
     }
 
-    /// Execute a single compile/link node. Returns (node_index, compile_time_ms, outcome).
+    /// Execute a single compile/link node.
+    ///
+    /// The `build_state` and `flags_hash` enable incremental skip detection.
+    /// If the node is unchanged since the last build, it is skipped without
+    /// touching the cache at all.
     fn execute_node(
         &self,
         node: &BuildNode,
         plan: &BuildPlan,
         pcm_map: &HashMap<String, PathBuf>,
+        build_state: Option<&BuildState>,
+        flags_hash: &str,
     ) -> Result<NodeOutcome, CmodError> {
         let start = Instant::now();
 
@@ -294,7 +396,17 @@ impl BuildRunner {
                 let pcm_output = &node.outputs[0];
                 let obj_output = &node.outputs[1];
 
-                // Try cache first
+                // Check incremental state first (cheapest check)
+                if !self.force_rebuild {
+                    if let Some(state) = build_state {
+                        if state.needs_rebuild(node, flags_hash).is_none() {
+                            eprintln!("  Up-to-date: {}", source.display());
+                            return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
+                        }
+                    }
+                }
+
+                // Try cache next
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     if self.try_cache_restore(&module_id, &key, node) {
                         eprintln!("  Cached interface: {}", source.display());
@@ -333,6 +445,15 @@ impl BuildRunner {
                 let source = node.source.as_ref().unwrap();
                 let obj_output = &node.outputs[0];
 
+                if !self.force_rebuild {
+                    if let Some(state) = build_state {
+                        if state.needs_rebuild(node, flags_hash).is_none() {
+                            eprintln!("  Up-to-date: {}", source.display());
+                            return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
+                        }
+                    }
+                }
+
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     if self.try_cache_restore(&module_id, &key, node) {
                         eprintln!("  Cached impl: {}", source.display());
@@ -367,6 +488,15 @@ impl BuildRunner {
             NodeKind::Object => {
                 let source = node.source.as_ref().unwrap();
                 let obj_output = &node.outputs[0];
+
+                if !self.force_rebuild {
+                    if let Some(state) = build_state {
+                        if state.needs_rebuild(node, flags_hash).is_none() {
+                            eprintln!("  Up-to-date: {}", source.display());
+                            return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
+                        }
+                    }
+                }
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     if self.try_cache_restore(&module_id, &key, node) {
@@ -429,6 +559,10 @@ impl BuildRunner {
         let wall_start = Instant::now();
         let jobs = self.effective_jobs();
 
+        // Load incremental build state
+        let build_state = Arc::new(BuildState::load(&plan.build_dir));
+        let flags_hash = Arc::new(self.flags_hash());
+
         // Separate compile nodes from the link node
         let (compile_nodes, link_nodes): (Vec<_>, Vec<_>) =
             plan.nodes.iter().enumerate().partition(|(_, n)| n.kind != NodeKind::Link);
@@ -457,6 +591,7 @@ impl BuildRunner {
         let total_compile_ms = Arc::new(AtomicUsize::new(0));
         let cache_hits = Arc::new(AtomicUsize::new(0));
         let cache_misses = Arc::new(AtomicUsize::new(0));
+        let incr_skipped = Arc::new(AtomicUsize::new(0));
 
         // In-degree tracking: how many deps each node is still waiting on
         // Only count deps that are compile nodes (not link)
@@ -479,6 +614,7 @@ impl BuildRunner {
         let in_degree = Arc::new(Mutex::new(in_degree));
         let dependents = Arc::new(dependents);
         let errors: Arc<Mutex<Vec<CmodError>>> = Arc::new(Mutex::new(Vec::new()));
+        let new_build_state: Arc<Mutex<BuildState>> = Arc::new(Mutex::new(BuildState::default()));
 
         // Work channel: send ready node indices to workers
         let (work_tx, work_rx) = bounded::<usize>(total);
@@ -502,10 +638,14 @@ impl BuildRunner {
                 let total_compile_ms = Arc::clone(&total_compile_ms);
                 let cache_hits = Arc::clone(&cache_hits);
                 let cache_misses = Arc::clone(&cache_misses);
+                let incr_skipped = Arc::clone(&incr_skipped);
                 let in_degree = Arc::clone(&in_degree);
                 let dependents = Arc::clone(&dependents);
                 let errors = Arc::clone(&errors);
                 let pcm_map = Arc::clone(&pcm_map);
+                let new_build_state = Arc::clone(&new_build_state);
+                let build_state = Arc::clone(&build_state);
+                let flags_hash = Arc::clone(&flags_hash);
 
                 scope.spawn(move || {
                     while let Ok(idx) = work_rx.recv() {
@@ -519,7 +659,7 @@ impl BuildRunner {
                         }
 
                         let node = &plan.nodes[idx];
-                        match self.execute_node(node, plan, &pcm_map) {
+                        match self.execute_node(node, plan, &pcm_map, Some(&build_state), &flags_hash) {
                             Ok(outcome) => {
                                 total_compile_ms.fetch_add(
                                     outcome.time_ms() as usize,
@@ -528,9 +668,21 @@ impl BuildRunner {
                                 match outcome {
                                     NodeOutcome::CacheHit(_) => {
                                         cache_hits.fetch_add(1, Ordering::Relaxed);
+                                        // Record state for cached nodes too
+                                        new_build_state.lock().unwrap().record_node(node, &flags_hash);
                                     }
                                     NodeOutcome::Compiled(_) => {
                                         cache_misses.fetch_add(1, Ordering::Relaxed);
+                                        new_build_state.lock().unwrap().record_node(node, &flags_hash);
+                                    }
+                                    NodeOutcome::Skipped(_) => {
+                                        incr_skipped.fetch_add(1, Ordering::Relaxed);
+                                        // Preserve existing state for skipped nodes
+                                        if let Some(prev) = build_state.nodes.get(&node.id) {
+                                            new_build_state.lock().unwrap().nodes.insert(
+                                                node.id.clone(), prev.clone(),
+                                            );
+                                        }
                                     }
                                     NodeOutcome::Linked(_) => {}
                                 }
@@ -568,6 +720,11 @@ impl BuildRunner {
         }
         drop(errs);
 
+        // Save the new build state
+        let final_state = new_build_state.lock().unwrap();
+        let _ = final_state.save(&plan.build_dir);
+        drop(final_state);
+
         // Rebuild pcm_map for link phase (Arc was shared with threads)
         let link_pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
 
@@ -575,7 +732,7 @@ impl BuildRunner {
         let mut final_output = PathBuf::new();
         for &(idx, _) in &link_nodes {
             let node = &plan.nodes[idx];
-            self.execute_node(node, plan, &link_pcm_map)?;
+            self.execute_node(node, plan, &link_pcm_map, None, &flags_hash)?;
             if let Some(out) = node.outputs.first() {
                 final_output = out.clone();
             }
@@ -585,6 +742,7 @@ impl BuildRunner {
             cache_hits: cache_hits.load(Ordering::Relaxed),
             cache_misses: cache_misses.load(Ordering::Relaxed),
             skipped: link_nodes.len(),
+            incremental_skipped: incr_skipped.load(Ordering::Relaxed),
             wall_time_ms: wall_start.elapsed().as_millis() as u64,
             total_compile_time_ms: total_compile_ms.load(Ordering::Relaxed) as u64,
         };
@@ -598,20 +756,33 @@ impl BuildRunner {
         plan: &BuildPlan,
     ) -> Result<(PathBuf, BuildStats), CmodError> {
         let wall_start = Instant::now();
+        let build_state = BuildState::load(&plan.build_dir);
+        let flags_hash = self.flags_hash();
         let pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
+        let mut new_state = BuildState::default();
         let mut final_output = PathBuf::new();
         let mut stats = BuildStats::default();
 
         for node in &plan.nodes {
-            let outcome = self.execute_node(node, plan, &pcm_map)?;
+            let outcome = self.execute_node(node, plan, &pcm_map, Some(&build_state), &flags_hash)?;
             match outcome {
                 NodeOutcome::CacheHit(ms) => {
                     stats.cache_hits += 1;
                     stats.total_compile_time_ms += ms;
+                    new_state.record_node(node, &flags_hash);
                 }
                 NodeOutcome::Compiled(ms) => {
                     stats.cache_misses += 1;
                     stats.total_compile_time_ms += ms;
+                    new_state.record_node(node, &flags_hash);
+                }
+                NodeOutcome::Skipped(ms) => {
+                    stats.incremental_skipped += 1;
+                    stats.total_compile_time_ms += ms;
+                    // Preserve existing state for skipped nodes
+                    if let Some(prev) = build_state.nodes.get(&node.id) {
+                        new_state.nodes.insert(node.id.clone(), prev.clone());
+                    }
                 }
                 NodeOutcome::Linked(ms) => {
                     stats.skipped += 1;
@@ -622,6 +793,9 @@ impl BuildRunner {
                 }
             }
         }
+
+        // Save updated build state
+        let _ = new_state.save(&plan.build_dir);
 
         stats.wall_time_ms = wall_start.elapsed().as_millis() as u64;
         Ok((final_output, stats))
@@ -853,6 +1027,7 @@ mod tests {
         assert_eq!(stats.cache_hits, 0);
         assert_eq!(stats.cache_misses, 0);
         assert_eq!(stats.skipped, 0);
+        assert_eq!(stats.incremental_skipped, 0);
         assert_eq!(stats.wall_time_ms, 0);
         assert_eq!(stats.total_compile_time_ms, 0);
     }
@@ -877,6 +1052,7 @@ mod tests {
         assert_eq!(NodeOutcome::CacheHit(42).time_ms(), 42);
         assert_eq!(NodeOutcome::Compiled(100).time_ms(), 100);
         assert_eq!(NodeOutcome::Linked(7).time_ms(), 7);
+        assert_eq!(NodeOutcome::Skipped(3).time_ms(), 3);
     }
 
     #[test]

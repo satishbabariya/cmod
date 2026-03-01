@@ -99,6 +99,21 @@ impl ArtifactCache {
         Ok(())
     }
 
+    /// Store a single artifact file into the cache (used when downloading from remote).
+    pub fn store_single_artifact(
+        &self,
+        module_id: &str,
+        key: &CacheKey,
+        artifact_name: &str,
+        source: &Path,
+    ) -> Result<(), CmodError> {
+        let dir = self.entry_dir(module_id, key);
+        fs::create_dir_all(&dir)?;
+        let dest = dir.join(artifact_name);
+        fs::copy(source, &dest)?;
+        Ok(())
+    }
+
     /// Retrieve a cached artifact file path. Returns None if not cached.
     pub fn get_artifact(
         &self,

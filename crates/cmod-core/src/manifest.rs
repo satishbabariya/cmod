@@ -51,6 +51,23 @@ pub struct Manifest {
 
     #[serde(default)]
     pub publish: Option<Publish>,
+
+    /// Target-specific dependencies, keyed by cfg expression string.
+    ///
+    /// In `cmod.toml` these appear as:
+    /// ```toml
+    /// [target.'cfg(target_os = "linux")'.dependencies]
+    /// liburing = "^2.0"
+    /// ```
+    #[serde(default)]
+    pub target: BTreeMap<String, TargetSpec>,
+}
+
+/// Target-specific configuration block.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TargetSpec {
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, Dependency>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -390,6 +407,23 @@ impl Manifest {
         Ok(())
     }
 
+    /// Get the effective set of dependencies for a given target triple.
+    ///
+    /// Merges the base `[dependencies]` with any matching `[target.'cfg(...)'.dependencies]`.
+    pub fn effective_dependencies(&self, target_triple: &str) -> BTreeMap<String, Dependency> {
+        let mut deps = self.dependencies.clone();
+
+        for (cfg_expr, spec) in &self.target {
+            if eval_cfg(cfg_expr, target_triple) {
+                for (name, dep) in &spec.dependencies {
+                    deps.entry(name.clone()).or_insert_with(|| dep.clone());
+                }
+            }
+        }
+
+        deps
+    }
+
     /// Resolve a dependency key to a Git URL.
     ///
     /// For simple deps where the key is a Git path like `github.com/fmtlib/fmt`,
@@ -408,6 +442,150 @@ impl Manifest {
                 }
             }
         }
+    }
+}
+
+/// Evaluate a `cfg(...)` expression against a target triple.
+///
+/// Supports:
+/// - `cfg(target_os = "linux")` — matches the OS portion of the triple
+/// - `cfg(target_arch = "x86_64")` — matches the arch portion
+/// - `cfg(target_family = "unix")` — unix = linux/macos/freebsd; windows = windows
+/// - `cfg(unix)` — shorthand for unix family
+/// - `cfg(windows)` — shorthand for windows family
+/// - `cfg(all(...))` — all conditions must match
+/// - `cfg(any(...))` — at least one condition must match
+/// - `cfg(not(...))` — negation
+/// - Plain triple matching: `x86_64-unknown-linux-gnu` (literal target key)
+pub fn eval_cfg(expr: &str, target_triple: &str) -> bool {
+    let trimmed = expr.trim();
+
+    // If it looks like a cfg() expression, parse it
+    if let Some(inner) = trimmed.strip_prefix("cfg(").and_then(|s| s.strip_suffix(')')) {
+        return eval_cfg_inner(inner.trim(), target_triple);
+    }
+
+    // Otherwise, treat as a literal target triple match
+    trimmed == target_triple
+}
+
+fn eval_cfg_inner(expr: &str, target: &str) -> bool {
+    let expr = expr.trim();
+
+    // all(...)
+    if let Some(inner) = expr.strip_prefix("all(").and_then(|s| s.strip_suffix(')')) {
+        return split_cfg_args(inner)
+            .iter()
+            .all(|arg| eval_cfg_inner(arg, target));
+    }
+
+    // any(...)
+    if let Some(inner) = expr.strip_prefix("any(").and_then(|s| s.strip_suffix(')')) {
+        return split_cfg_args(inner)
+            .iter()
+            .any(|arg| eval_cfg_inner(arg, target));
+    }
+
+    // not(...)
+    if let Some(inner) = expr.strip_prefix("not(").and_then(|s| s.strip_suffix(')')) {
+        return !eval_cfg_inner(inner.trim(), target);
+    }
+
+    // Shorthand: `unix` / `windows`
+    if expr == "unix" {
+        return target_family(target) == "unix";
+    }
+    if expr == "windows" {
+        return target_family(target) == "windows";
+    }
+
+    // key = "value" form
+    if let Some((key, value)) = parse_cfg_kv(expr) {
+        return match key {
+            "target_os" => target_os(target) == value,
+            "target_arch" => target_arch(target) == value,
+            "target_family" => target_family(target) == value,
+            "target_env" => target_env(target) == value,
+            _ => false,
+        };
+    }
+
+    false
+}
+
+/// Split cfg arguments at the top level (respecting nested parentheses).
+fn split_cfg_args(s: &str) -> Vec<&str> {
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                let arg = s[start..i].trim();
+                if !arg.is_empty() {
+                    args.push(arg);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = s[start..].trim();
+    if !last.is_empty() {
+        args.push(last);
+    }
+    args
+}
+
+/// Parse `key = "value"` from a cfg expression atom.
+fn parse_cfg_kv(s: &str) -> Option<(&str, &str)> {
+    let mut parts = s.splitn(2, '=');
+    let key = parts.next()?.trim();
+    let value = parts.next()?.trim().trim_matches('"');
+    Some((key, value))
+}
+
+/// Extract the OS from a target triple (e.g., "linux" from "x86_64-unknown-linux-gnu").
+fn target_os(triple: &str) -> &str {
+    let parts: Vec<&str> = triple.split('-').collect();
+    match parts.len() {
+        3 => parts[2], // arch-vendor-os
+        4 => parts[2], // arch-vendor-os-env
+        _ => "",
+    }
+}
+
+/// Extract the architecture from a target triple.
+fn target_arch(triple: &str) -> &str {
+    triple.split('-').next().unwrap_or("")
+}
+
+/// Determine the target family from a triple.
+fn target_family(triple: &str) -> &str {
+    let os = target_os(triple);
+    match os {
+        "linux" | "macos" | "darwin" | "freebsd" | "openbsd" | "netbsd" | "dragonfly" => "unix",
+        "windows" => "windows",
+        _ => {
+            // Check for "apple" in the triple (e.g., "arm64-apple-darwin")
+            if triple.contains("apple") || triple.contains("darwin") {
+                "unix"
+            } else {
+                "unknown"
+            }
+        }
+    }
+}
+
+/// Extract the environment/ABI from a target triple (e.g., "gnu" from "x86_64-unknown-linux-gnu").
+fn target_env(triple: &str) -> &str {
+    let parts: Vec<&str> = triple.split('-').collect();
+    if parts.len() >= 4 {
+        parts[3]
+    } else {
+        ""
     }
 }
 
@@ -459,6 +637,7 @@ pub fn default_manifest(name: &str) -> Manifest {
         metadata: None,
         security: None,
         publish: None,
+        target: BTreeMap::new(),
     }
 }
 
@@ -496,6 +675,7 @@ pub fn default_workspace_manifest(name: &str) -> Manifest {
         metadata: None,
         security: None,
         publish: None,
+        target: BTreeMap::new(),
     }
 }
 
@@ -760,5 +940,109 @@ sysroot = "/opt/aarch64-sysroot"
         let tc = manifest.toolchain.unwrap();
         assert_eq!(tc.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
         assert_eq!(tc.sysroot.as_deref(), Some(Path::new("/opt/aarch64-sysroot")));
+    }
+
+    // --- cfg() evaluator tests ---
+
+    #[test]
+    fn test_eval_cfg_target_os() {
+        assert!(eval_cfg(r#"cfg(target_os = "linux")"#, "x86_64-unknown-linux-gnu"));
+        assert!(!eval_cfg(r#"cfg(target_os = "linux")"#, "x86_64-apple-darwin"));
+        assert!(eval_cfg(r#"cfg(target_os = "darwin")"#, "arm64-apple-darwin"));
+    }
+
+    #[test]
+    fn test_eval_cfg_target_arch() {
+        assert!(eval_cfg(r#"cfg(target_arch = "x86_64")"#, "x86_64-unknown-linux-gnu"));
+        assert!(!eval_cfg(r#"cfg(target_arch = "aarch64")"#, "x86_64-unknown-linux-gnu"));
+        assert!(eval_cfg(r#"cfg(target_arch = "aarch64")"#, "aarch64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn test_eval_cfg_family() {
+        assert!(eval_cfg(r#"cfg(target_family = "unix")"#, "x86_64-unknown-linux-gnu"));
+        assert!(eval_cfg(r#"cfg(target_family = "unix")"#, "arm64-apple-darwin"));
+        assert!(eval_cfg(r#"cfg(target_family = "windows")"#, "x86_64-pc-windows-msvc"));
+        assert!(!eval_cfg(r#"cfg(target_family = "unix")"#, "x86_64-pc-windows-msvc"));
+    }
+
+    #[test]
+    fn test_eval_cfg_shorthand() {
+        assert!(eval_cfg("cfg(unix)", "x86_64-unknown-linux-gnu"));
+        assert!(!eval_cfg("cfg(unix)", "x86_64-pc-windows-msvc"));
+        assert!(eval_cfg("cfg(windows)", "x86_64-pc-windows-msvc"));
+        assert!(!eval_cfg("cfg(windows)", "x86_64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn test_eval_cfg_all() {
+        assert!(eval_cfg(
+            r#"cfg(all(target_os = "linux", target_arch = "x86_64"))"#,
+            "x86_64-unknown-linux-gnu"
+        ));
+        assert!(!eval_cfg(
+            r#"cfg(all(target_os = "linux", target_arch = "aarch64"))"#,
+            "x86_64-unknown-linux-gnu"
+        ));
+    }
+
+    #[test]
+    fn test_eval_cfg_any() {
+        assert!(eval_cfg(
+            r#"cfg(any(target_os = "linux", target_os = "macos"))"#,
+            "x86_64-unknown-linux-gnu"
+        ));
+        assert!(!eval_cfg(
+            r#"cfg(any(target_os = "macos", target_os = "windows"))"#,
+            "x86_64-unknown-linux-gnu"
+        ));
+    }
+
+    #[test]
+    fn test_eval_cfg_not() {
+        assert!(eval_cfg(r#"cfg(not(target_os = "windows"))"#, "x86_64-unknown-linux-gnu"));
+        assert!(!eval_cfg(r#"cfg(not(target_os = "linux"))"#, "x86_64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn test_eval_cfg_literal_triple() {
+        assert!(eval_cfg("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"));
+        assert!(!eval_cfg("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn test_effective_dependencies() {
+        let toml_str = r#"
+[package]
+name = "mylib"
+version = "0.1.0"
+
+[dependencies]
+common = "^1.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-only = "^2.0"
+
+[target.'cfg(windows)'.dependencies]
+win-only = "^3.0"
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+
+        let linux_deps = manifest.effective_dependencies("x86_64-unknown-linux-gnu");
+        assert!(linux_deps.contains_key("common"));
+        assert!(linux_deps.contains_key("linux-only"));
+        assert!(!linux_deps.contains_key("win-only"));
+
+        let win_deps = manifest.effective_dependencies("x86_64-pc-windows-msvc");
+        assert!(win_deps.contains_key("common"));
+        assert!(!win_deps.contains_key("linux-only"));
+        assert!(win_deps.contains_key("win-only"));
+    }
+
+    #[test]
+    fn test_target_env() {
+        assert!(eval_cfg(r#"cfg(target_env = "gnu")"#, "x86_64-unknown-linux-gnu"));
+        assert!(eval_cfg(r#"cfg(target_env = "msvc")"#, "x86_64-pc-windows-msvc"));
+        assert!(!eval_cfg(r#"cfg(target_env = "musl")"#, "x86_64-unknown-linux-gnu"));
     }
 }
