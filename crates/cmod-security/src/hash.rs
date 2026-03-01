@@ -122,6 +122,7 @@ mod tests {
             toolchain: None,
             targets: BTreeMap::new(),
             deps: vec![],
+            features: vec![],
         }
     }
 

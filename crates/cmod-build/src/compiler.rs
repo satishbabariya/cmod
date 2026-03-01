@@ -57,6 +57,8 @@ pub struct ClangBackend {
     pub profile: Profile,
     /// Additional flags.
     pub extra_flags: Vec<String>,
+    /// Sysroot path for cross-compilation.
+    pub sysroot: Option<PathBuf>,
 }
 
 impl ClangBackend {
@@ -70,6 +72,7 @@ impl ClangBackend {
             target: None,
             profile,
             extra_flags: Vec::new(),
+            sysroot: None,
         }
     }
 
@@ -83,6 +86,10 @@ impl ClangBackend {
 
         if let Some(ref target) = self.target {
             flags.push(format!("--target={}", target));
+        }
+
+        if let Some(ref sysroot) = self.sysroot {
+            flags.push(format!("--sysroot={}", sysroot.display()));
         }
 
         match self.profile {

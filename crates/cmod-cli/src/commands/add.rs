@@ -34,6 +34,7 @@ pub fn run(
             path: path.map(PathBuf::from),
             features,
             optional: false,
+            default_features: true,
             workspace: false,
         })
     } else if let Some(ver) = version_constraint {

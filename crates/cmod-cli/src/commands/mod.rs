@@ -10,5 +10,7 @@ pub mod remove;
 pub mod resolve;
 pub mod status;
 pub mod test;
+pub mod toolchain;
 pub mod update;
+pub mod vendor;
 pub mod verify;

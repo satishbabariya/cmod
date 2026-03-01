@@ -42,6 +42,15 @@ pub struct Manifest {
 
     #[serde(default)]
     pub cache: Option<Cache>,
+
+    #[serde(default)]
+    pub metadata: Option<Metadata>,
+
+    #[serde(default)]
+    pub security: Option<Security>,
+
+    #[serde(default)]
+    pub publish: Option<Publish>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,9 +105,16 @@ pub struct DetailedDependency {
     pub features: Vec<String>,
     #[serde(default)]
     pub optional: bool,
+    /// Whether to use default features (defaults to true).
+    #[serde(default = "default_true")]
+    pub default_features: bool,
     /// Inherit from workspace dependencies.
     #[serde(default)]
     pub workspace: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Dependency {
@@ -153,6 +169,8 @@ pub struct Toolchain {
     pub stdlib: Option<String>,
     #[serde(default)]
     pub target: Option<String>,
+    #[serde(default)]
+    pub sysroot: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +201,9 @@ pub struct Test {
 pub struct Workspace {
     #[serde(default)]
     pub name: Option<String>,
+    /// Unified version for all workspace members (optional).
+    #[serde(default)]
+    pub version: Option<String>,
     #[serde(default)]
     pub members: Vec<String>,
     #[serde(default)]
@@ -201,6 +222,53 @@ pub struct Cache {
     pub shared_url: Option<String>,
     #[serde(default)]
     pub ttl: Option<String>,
+}
+
+/// Project metadata for discoverability and documentation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Metadata {
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default)]
+    pub links: BTreeMap<String, String>,
+    #[serde(default)]
+    pub documentation: Option<String>,
+}
+
+/// Security configuration for the project.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Security {
+    /// Signing configuration (GPG key ID, SSH key path, etc.).
+    #[serde(default)]
+    pub signing_key: Option<String>,
+    /// Whether to verify content hashes on dependency fetch.
+    #[serde(default)]
+    pub verify_checksums: Option<bool>,
+    /// Trusted source URLs/patterns.
+    #[serde(default)]
+    pub trusted_sources: Vec<String>,
+    /// Required signature policy: "none", "warn", "require".
+    #[serde(default)]
+    pub signature_policy: Option<String>,
+}
+
+/// Publish configuration for distributing the module.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Publish {
+    /// Target registry (Git URL or custom server).
+    #[serde(default)]
+    pub registry: Option<String>,
+    /// File patterns to include in published package.
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// File patterns to exclude from published package.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Tags for the release.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl Manifest {
@@ -250,6 +318,76 @@ impl Manifest {
     /// Check if this manifest defines a workspace.
     pub fn is_workspace(&self) -> bool {
         self.workspace.is_some()
+    }
+
+    /// Validate the manifest for common issues.
+    pub fn validate(&self) -> Result<(), CmodError> {
+        // Package name must be non-empty
+        if self.package.name.is_empty() {
+            return Err(CmodError::InvalidManifest {
+                reason: "package.name must not be empty".to_string(),
+            });
+        }
+
+        // Package name must be a valid identifier
+        if !self.package.name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            return Err(CmodError::InvalidManifest {
+                reason: format!(
+                    "package.name '{}' contains invalid characters (only alphanumeric, _, -)",
+                    self.package.name
+                ),
+            });
+        }
+
+        // Version must parse as semver
+        if semver::Version::parse(&self.package.version).is_err() {
+            return Err(CmodError::InvalidManifest {
+                reason: format!(
+                    "package.version '{}' is not valid semver",
+                    self.package.version
+                ),
+            });
+        }
+
+        // Module name, if specified, should match reverse-domain format
+        if let Some(ref module) = self.module {
+            if module.name.is_empty() {
+                return Err(CmodError::InvalidManifest {
+                    reason: "module.name must not be empty".to_string(),
+                });
+            }
+        }
+
+        // Check for duplicate dependency keys
+        for (name, dep) in &self.dependencies {
+            if let Dependency::Detailed(d) = dep {
+                // A dep can't be both git and path
+                if d.git.is_some() && d.path.is_some() {
+                    return Err(CmodError::InvalidManifest {
+                        reason: format!(
+                            "dependency '{}' specifies both `git` and `path`",
+                            name
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Security policy must be valid if specified
+        if let Some(ref sec) = self.security {
+            if let Some(ref policy) = sec.signature_policy {
+                if !["none", "warn", "require"].contains(&policy.as_str()) {
+                    return Err(CmodError::InvalidManifest {
+                        reason: format!(
+                            "security.signature_policy '{}' must be 'none', 'warn', or 'require'",
+                            policy
+                        ),
+                    });
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Resolve a dependency key to a Git URL.
@@ -306,6 +444,7 @@ pub fn default_manifest(name: &str) -> Manifest {
             cxx_standard: Some("20".to_string()),
             stdlib: None,
             target: None,
+            sysroot: None,
         }),
         build: Some(Build {
             build_type: Some(BuildType::Binary),
@@ -317,6 +456,9 @@ pub fn default_manifest(name: &str) -> Manifest {
         test: None,
         workspace: None,
         cache: None,
+        metadata: None,
+        security: None,
+        publish: None,
     }
 }
 
@@ -344,12 +486,16 @@ pub fn default_workspace_manifest(name: &str) -> Manifest {
         test: None,
         workspace: Some(Workspace {
             name: Some(name.to_string()),
+            version: None,
             members: vec![],
             exclude: vec![],
             dependencies: BTreeMap::new(),
             resolver: Some("2".to_string()),
         }),
         cache: None,
+        metadata: None,
+        security: None,
+        publish: None,
     }
 }
 
@@ -454,6 +600,7 @@ exclude = ["experimental/*"]
             path: None,
             features: vec![],
             optional: false,
+            default_features: true,
             workspace: false,
         });
         assert_eq!(
@@ -469,5 +616,149 @@ exclude = ["experimental/*"]
         assert_eq!(manifest.package.version, "0.1.0");
         let module = manifest.module.unwrap();
         assert_eq!(module.name, "local.hello");
+    }
+
+    #[test]
+    fn test_parse_metadata_section() {
+        let toml_str = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[metadata]
+category = "math"
+keywords = ["linear-algebra", "simd"]
+documentation = "https://docs.example.com"
+
+[metadata.links]
+homepage = "https://example.com"
+issues = "https://example.com/issues"
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+        let meta = manifest.metadata.unwrap();
+        assert_eq!(meta.category.as_deref(), Some("math"));
+        assert_eq!(meta.keywords, vec!["linear-algebra", "simd"]);
+        assert_eq!(meta.links.len(), 2);
+        assert_eq!(meta.documentation.as_deref(), Some("https://docs.example.com"));
+    }
+
+    #[test]
+    fn test_parse_security_section() {
+        let toml_str = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[security]
+signing_key = "ABCD1234"
+verify_checksums = true
+trusted_sources = ["github.com/*", "gitlab.com/myorg/*"]
+signature_policy = "require"
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+        let sec = manifest.security.unwrap();
+        assert_eq!(sec.signing_key.as_deref(), Some("ABCD1234"));
+        assert_eq!(sec.verify_checksums, Some(true));
+        assert_eq!(sec.trusted_sources.len(), 2);
+        assert_eq!(sec.signature_policy.as_deref(), Some("require"));
+    }
+
+    #[test]
+    fn test_parse_publish_section() {
+        let toml_str = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[publish]
+registry = "https://registry.example.com"
+include = ["src/**", "cmod.toml", "LICENSE"]
+exclude = ["tests/**", ".git"]
+tags = ["v0.1.0", "latest"]
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+        let pub_config = manifest.publish.unwrap();
+        assert_eq!(pub_config.registry.as_deref(), Some("https://registry.example.com"));
+        assert_eq!(pub_config.include.len(), 3);
+        assert_eq!(pub_config.exclude.len(), 2);
+        assert_eq!(pub_config.tags, vec!["v0.1.0", "latest"]);
+    }
+
+    #[test]
+    fn test_validate_valid_manifest() {
+        let manifest = default_manifest("hello");
+        assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_empty_name() {
+        let mut manifest = default_manifest("hello");
+        manifest.package.name = String::new();
+        assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_name_chars() {
+        let mut manifest = default_manifest("hello");
+        manifest.package.name = "my lib!".to_string();
+        assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_version() {
+        let mut manifest = default_manifest("hello");
+        manifest.package.version = "not-semver".to_string();
+        assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_git_and_path_conflict() {
+        let mut manifest = default_manifest("hello");
+        manifest.dependencies.insert(
+            "dep".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: None,
+                git: Some("https://github.com/test/dep".to_string()),
+                branch: None,
+                rev: None,
+                tag: None,
+                path: Some(PathBuf::from("./dep")),
+                features: vec![],
+                optional: false,
+                default_features: true,
+                workspace: false,
+            }),
+        );
+        assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_security_policy() {
+        let mut manifest = default_manifest("hello");
+        manifest.security = Some(Security {
+            signing_key: None,
+            verify_checksums: None,
+            trusted_sources: vec![],
+            signature_policy: Some("invalid_policy".to_string()),
+        });
+        assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn test_parse_toolchain_with_sysroot() {
+        let toml_str = r#"
+[package]
+name = "cross-proj"
+version = "0.1.0"
+
+[toolchain]
+compiler = "clang"
+target = "aarch64-unknown-linux-gnu"
+sysroot = "/opt/aarch64-sysroot"
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+        let tc = manifest.toolchain.unwrap();
+        assert_eq!(tc.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
+        assert_eq!(tc.sysroot.as_deref(), Some(Path::new("/opt/aarch64-sysroot")));
     }
 }

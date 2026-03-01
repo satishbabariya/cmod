@@ -7,6 +7,7 @@ use cmod_core::error::CmodError;
 use cmod_core::lockfile::{Lockfile, LockedPackage, LockedToolchain};
 use cmod_core::manifest::{Dependency, Manifest};
 
+use crate::features::{resolve_features, should_include_dep};
 use crate::git;
 use crate::version;
 
@@ -54,6 +55,22 @@ impl Resolver {
         locked: bool,
         offline: bool,
     ) -> Result<Lockfile, CmodError> {
+        self.resolve_with_features(manifest, existing_lock, locked, offline, &[], false)
+    }
+
+    /// Resolve all dependencies with feature flags.
+    ///
+    /// `requested_features` are explicitly enabled features (from --features).
+    /// `no_default_features` disables the `[features] default = [...]` set.
+    pub fn resolve_with_features(
+        &self,
+        manifest: &Manifest,
+        existing_lock: Option<&Lockfile>,
+        locked: bool,
+        offline: bool,
+        requested_features: &[String],
+        no_default_features: bool,
+    ) -> Result<Lockfile, CmodError> {
         if locked {
             if let Some(lock) = existing_lock {
                 self.validate_lockfile(manifest, lock)?;
@@ -63,11 +80,18 @@ impl Resolver {
             }
         }
 
+        // Resolve features to determine which optional deps are activated
+        let resolved_features =
+            resolve_features(manifest, requested_features, no_default_features)?;
+
         let mut lockfile = Lockfile::new();
         let mut resolved = BTreeMap::new();
 
-        // Resolve each dependency
+        // Resolve each dependency, filtering optional deps that are not activated
         for (name, dep) in &manifest.dependencies {
+            if !should_include_dep(name, dep, &resolved_features) {
+                continue;
+            }
             self.resolve_dep(
                 name,
                 dep,
@@ -80,6 +104,13 @@ impl Resolver {
 
         // Build lockfile from resolved deps
         for (name, dep) in &resolved {
+            // Collect features activated for this dep
+            let dep_features: Vec<String> = resolved_features
+                .dep_features
+                .get(name)
+                .map(|fs| fs.iter().cloned().collect())
+                .unwrap_or_default();
+
             lockfile.upsert_package(LockedPackage {
                 name: name.clone(),
                 version: dep.version.to_string(),
@@ -95,6 +126,7 @@ impl Resolver {
                 }),
                 targets: BTreeMap::new(),
                 deps: dep.deps.clone(),
+                features: dep_features,
             });
         }
 
@@ -384,6 +416,9 @@ mod tests {
             test: None,
             workspace: None,
             cache: None,
+            metadata: None,
+            security: None,
+            publish: None,
         }
     }
 
@@ -428,6 +463,7 @@ mod tests {
             toolchain: None,
             targets: BTreeMap::new(),
             deps: vec![],
+            features: vec![],
         });
 
         let result = resolver
@@ -458,6 +494,7 @@ mod tests {
             toolchain: None,
             targets: BTreeMap::new(),
             deps: vec![],
+            features: vec![],
         });
 
         let result = resolver.resolve(&manifest, Some(&lockfile), true, false);
@@ -480,6 +517,7 @@ mod tests {
                 path: Some(PathBuf::from("./libs/local")),
                 features: vec![],
                 optional: false,
+                default_features: true,
                 workspace: false,
             }),
         );
@@ -518,6 +556,7 @@ mod tests {
             path: Some(PathBuf::from("./local")),
             features: vec![],
             optional: false,
+            default_features: true,
             workspace: false,
         });
 
@@ -582,6 +621,7 @@ mod tests {
                 path: Some(PathBuf::from("./a")),
                 features: vec![],
                 optional: false,
+                default_features: true,
                 workspace: false,
             }),
         );
@@ -596,5 +636,129 @@ mod tests {
             .unwrap();
         assert_eq!(lock2.packages.len(), 1);
         assert_eq!(lock2.packages[0].version, lock1.packages[0].version);
+    }
+
+    #[test]
+    fn test_resolve_with_features_filters_optional_deps() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+
+        // Add a required dep
+        manifest.dependencies.insert(
+            "required".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: Some("0.1.0".to_string()),
+                git: None,
+                branch: None,
+                rev: None,
+                tag: None,
+                path: Some(PathBuf::from("./required")),
+                features: vec![],
+                optional: false,
+                default_features: true,
+                workspace: false,
+            }),
+        );
+
+        // Add an optional dep
+        manifest.dependencies.insert(
+            "optional_dep".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: Some("0.1.0".to_string()),
+                git: None,
+                branch: None,
+                rev: None,
+                tag: None,
+                path: Some(PathBuf::from("./optional")),
+                features: vec![],
+                optional: true,
+                default_features: true,
+                workspace: false,
+            }),
+        );
+
+        // Without features — optional dep should be excluded
+        let lock = resolver
+            .resolve_with_features(&manifest, None, false, false, &[], false)
+            .unwrap();
+        assert_eq!(lock.packages.len(), 1);
+        assert_eq!(lock.packages[0].name, "required");
+    }
+
+    #[test]
+    fn test_resolve_with_features_includes_activated_optional() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+
+        // Add an optional dep
+        manifest.dependencies.insert(
+            "optional_dep".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: Some("0.1.0".to_string()),
+                git: None,
+                branch: None,
+                rev: None,
+                tag: None,
+                path: Some(PathBuf::from("./optional")),
+                features: vec![],
+                optional: true,
+                default_features: true,
+                workspace: false,
+            }),
+        );
+
+        // Add feature that activates optional dep
+        let mut features = BTreeMap::new();
+        features.insert(
+            "extra".to_string(),
+            vec!["dep:optional_dep".to_string()],
+        );
+        manifest.features = features;
+
+        // With --features extra — optional dep should be included
+        let lock = resolver
+            .resolve_with_features(
+                &manifest,
+                None,
+                false,
+                false,
+                &["extra".to_string()],
+                false,
+            )
+            .unwrap();
+        assert_eq!(lock.packages.len(), 1);
+        assert_eq!(lock.packages[0].name, "optional_dep");
+    }
+
+    #[test]
+    fn test_resolve_stores_features_in_lockfile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+
+        // Add a dep with features requested
+        manifest.dependencies.insert(
+            "math".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: Some("0.1.0".to_string()),
+                git: None,
+                branch: None,
+                rev: None,
+                tag: None,
+                path: Some(PathBuf::from("./math")),
+                features: vec!["simd".to_string()],
+                optional: false,
+                default_features: true,
+                workspace: false,
+            }),
+        );
+
+        let lock = resolver
+            .resolve_with_features(&manifest, None, false, false, &[], false)
+            .unwrap();
+        assert_eq!(lock.packages.len(), 1);
+        assert!(lock.packages[0].features.contains(&"simd".to_string()));
     }
 }

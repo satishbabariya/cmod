@@ -15,3 +15,4 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 walkdir = { workspace = true }
 tempfile = { workspace = true }
+crossbeam-channel = { workspace = true }

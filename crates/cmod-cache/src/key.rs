@@ -31,6 +31,14 @@ impl CacheKey {
         let result = hasher.finalize();
         CacheKey(hex::encode(result))
     }
+
+    /// Create a CacheKey from a hex string (for tests or lookups).
+    pub fn from_hex(hex_str: &str) -> Option<Self> {
+        if hex_str.is_empty() {
+            return None;
+        }
+        Some(CacheKey(hex_str.to_string()))
+    }
 }
 
 impl fmt::Display for CacheKey {

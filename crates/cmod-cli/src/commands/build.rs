@@ -309,6 +309,9 @@ fn setup_compiler(config: &Config) -> (ClangBackend, String) {
         if let Some(ref stdlib) = tc.stdlib {
             backend.stdlib = Some(stdlib.clone());
         }
+        if let Some(ref sysroot) = tc.sysroot {
+            backend.sysroot = Some(sysroot.clone());
+        }
     }
 
     let target = config

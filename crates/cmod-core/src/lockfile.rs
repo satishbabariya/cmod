@@ -54,6 +54,10 @@ pub struct LockedPackage {
     /// Dependencies of this package.
     #[serde(default)]
     pub deps: Vec<String>,
+
+    /// Activated features for this package.
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 /// Toolchain info locked in the lockfile.
@@ -167,6 +171,7 @@ mod tests {
             }),
             targets: BTreeMap::new(),
             deps: vec![],
+            features: vec![],
         });
 
         let toml_str = lock.to_toml_string().unwrap();
@@ -194,6 +199,7 @@ mod tests {
             toolchain: None,
             targets: BTreeMap::new(),
             deps: vec![],
+            features: vec![],
         });
         lock.upsert_package(LockedPackage {
             name: "pkg_b".to_string(),
@@ -205,6 +211,7 @@ mod tests {
             toolchain: None,
             targets: BTreeMap::new(),
             deps: vec![],
+            features: vec![],
         });
         assert_eq!(lock.packages.len(), 2);
 
@@ -219,6 +226,7 @@ mod tests {
             toolchain: None,
             targets: BTreeMap::new(),
             deps: vec![],
+            features: vec![],
         });
         assert_eq!(lock.packages.len(), 2);
         assert_eq!(lock.find_package("pkg_a").unwrap().version, "1.1.0");

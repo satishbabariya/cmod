@@ -160,6 +160,27 @@ enum Commands {
         /// Module name to explain
         module: String,
     },
+
+    /// Manage the active toolchain
+    Toolchain {
+        #[command(subcommand)]
+        action: ToolchainAction,
+    },
+
+    /// Vendor dependencies for offline builds
+    Vendor {
+        /// Re-synchronize vendored deps with lockfile
+        #[arg(long)]
+        sync: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ToolchainAction {
+    /// Show active toolchain configuration
+    Show,
+    /// Validate toolchain availability
+    Check,
 }
 
 #[derive(Subcommand)]
@@ -168,6 +189,10 @@ enum CacheAction {
     Status,
     /// Clear the local cache
     Clean,
+    /// Push local cache entries to remote cache
+    Push,
+    /// Pull cache entries from remote cache
+    Pull,
 }
 
 fn main() {
@@ -184,7 +209,13 @@ fn main() {
             features,
         } => commands::add::run(dep, git, branch, rev, path, features, cli.locked, cli.offline),
         Commands::Remove { name } => commands::remove::run(name),
-        Commands::Resolve => commands::resolve::run(cli.locked, cli.offline, cli.verbose),
+        Commands::Resolve => commands::resolve::run(
+            cli.locked,
+            cli.offline,
+            cli.verbose,
+            &cli.features,
+            cli.no_default_features,
+        ),
         Commands::Build { release, jobs } => {
             commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs)
         }
@@ -196,12 +227,19 @@ fn main() {
         Commands::Cache { action } => match action {
             CacheAction::Status => commands::cache::status(),
             CacheAction::Clean => commands::cache::clean(),
+            CacheAction::Push => commands::cache::push(cli.verbose),
+            CacheAction::Pull => commands::cache::pull(cli.verbose),
         },
         Commands::Verify { signatures } => commands::verify::run(cli.verbose, signatures),
         Commands::Graph { format, filter } => commands::graph::run(format, filter),
         Commands::Audit => commands::audit::run(cli.verbose),
         Commands::Status => commands::status::run(cli.verbose),
         Commands::Explain { module } => commands::explain::run(module, cli.verbose),
+        Commands::Toolchain { action } => match action {
+            ToolchainAction::Show => commands::toolchain::show(cli.verbose),
+            ToolchainAction::Check => commands::toolchain::check(),
+        },
+        Commands::Vendor { sync } => commands::vendor::run(sync, cli.verbose),
     };
 
     if let Err(e) = result {

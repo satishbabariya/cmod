@@ -1,5 +1,11 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use crossbeam_channel::bounded;
 
 use cmod_cache::cache::{ArtifactCache, ArtifactMetadata, CachedArtifactEntry};
 use cmod_cache::key::{hash_file, CacheKey, CacheKeyInputs};
@@ -19,6 +25,10 @@ pub struct BuildStats {
     pub cache_misses: usize,
     /// Number of nodes skipped (link nodes, etc).
     pub skipped: usize,
+    /// Total wall-clock time for the build.
+    pub wall_time_ms: u64,
+    /// Sum of individual compilation times (may exceed wall_time when parallel).
+    pub total_compile_time_ms: u64,
 }
 
 /// Build runner that executes a build plan.
@@ -29,6 +39,21 @@ pub struct BuildRunner {
     pub no_cache: bool,
     /// Maximum parallel jobs (0 = auto-detect CPU count).
     pub max_jobs: usize,
+}
+
+/// Outcome of executing a single build node.
+enum NodeOutcome {
+    CacheHit(u64),
+    Compiled(u64),
+    Linked(u64),
+}
+
+impl NodeOutcome {
+    fn time_ms(&self) -> u64 {
+        match self {
+            NodeOutcome::CacheHit(ms) | NodeOutcome::Compiled(ms) | NodeOutcome::Linked(ms) => *ms,
+        }
+    }
 }
 
 impl BuildRunner {
@@ -254,158 +279,351 @@ impl BuildRunner {
         let _ = cache.store(module_id, key, &metadata, &file_refs);
     }
 
-    /// Execute each node in the build plan sequentially.
+    /// Execute a single compile/link node. Returns (node_index, compile_time_ms, outcome).
+    fn execute_node(
+        &self,
+        node: &BuildNode,
+        plan: &BuildPlan,
+        pcm_map: &HashMap<String, PathBuf>,
+    ) -> Result<NodeOutcome, CmodError> {
+        let start = Instant::now();
+
+        match node.kind {
+            NodeKind::Interface => {
+                let source = node.source.as_ref().unwrap();
+                let pcm_output = &node.outputs[0];
+                let obj_output = &node.outputs[1];
+
+                // Try cache first
+                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                    if self.try_cache_restore(&module_id, &key, node) {
+                        eprintln!("  Cached interface: {}", source.display());
+                        return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
+                    }
+                }
+
+                let dep_pcms: Vec<(&str, &Path)> = node
+                    .dependencies
+                    .iter()
+                    .filter_map(|dep_id| {
+                        let name = dep_id.strip_prefix("interface:")?;
+                        pcm_map.get(name).map(|p| (name, p.as_path()))
+                    })
+                    .collect();
+
+                if let Some(parent) = pcm_output.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                if let Some(parent) = obj_output.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+
+                self.backend
+                    .compile_interface(source, pcm_output, obj_output, &dep_pcms)?;
+
+                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                    self.cache_store(&module_id, &key, node);
+                }
+
+                eprintln!("  Compiled interface: {}", source.display());
+                Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
+            }
+
+            NodeKind::Implementation => {
+                let source = node.source.as_ref().unwrap();
+                let obj_output = &node.outputs[0];
+
+                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                    if self.try_cache_restore(&module_id, &key, node) {
+                        eprintln!("  Cached impl: {}", source.display());
+                        return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
+                    }
+                }
+
+                let dep_pcms: Vec<(&str, &Path)> = node
+                    .dependencies
+                    .iter()
+                    .filter_map(|dep_id| {
+                        let name = dep_id.strip_prefix("interface:")?;
+                        pcm_map.get(name).map(|p| (name, p.as_path()))
+                    })
+                    .collect();
+
+                if let Some(parent) = obj_output.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+
+                self.backend
+                    .compile_implementation(source, obj_output, &dep_pcms)?;
+
+                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                    self.cache_store(&module_id, &key, node);
+                }
+
+                eprintln!("  Compiled impl: {}", source.display());
+                Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
+            }
+
+            NodeKind::Object => {
+                let source = node.source.as_ref().unwrap();
+                let obj_output = &node.outputs[0];
+
+                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                    if self.try_cache_restore(&module_id, &key, node) {
+                        eprintln!("  Cached: {}", source.display());
+                        return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
+                    }
+                }
+
+                if let Some(parent) = obj_output.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+
+                self.backend
+                    .compile_implementation(source, obj_output, &[])?;
+
+                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
+                    self.cache_store(&module_id, &key, node);
+                }
+
+                eprintln!("  Compiled: {}", source.display());
+                Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
+            }
+
+            NodeKind::Link => {
+                let output = &node.outputs[0];
+                let obj_files = plan.object_paths();
+                let obj_refs: Vec<&Path> =
+                    obj_files.iter().map(|p| p.as_path()).collect();
+
+                if let Some(parent) = output.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+
+                let artifact = match plan.build_type {
+                    BuildType::Binary => Artifact::Executable {
+                        path: output.clone(),
+                    },
+                    BuildType::StaticLib => Artifact::StaticLib {
+                        path: output.clone(),
+                    },
+                    BuildType::SharedLib => Artifact::SharedLib {
+                        path: output.clone(),
+                    },
+                };
+
+                self.backend.link(&obj_refs, output, &artifact)?;
+
+                eprintln!("  Linked: {}", output.display());
+                Ok(NodeOutcome::Linked(start.elapsed().as_millis() as u64))
+            }
+        }
+    }
+
+    /// Execute the build plan with parallel compilation.
     ///
-    /// Nodes are already in topological order (dependencies first).
+    /// Uses a work-stealing scheduler: nodes whose dependencies are all
+    /// complete are enqueued for execution across worker threads.
+    /// The link node always runs last on the main thread.
     fn execute_plan(&self, plan: &BuildPlan) -> Result<(PathBuf, BuildStats), CmodError> {
-        let pcm_map = plan.pcm_paths();
-        let mut final_output = PathBuf::new();
-        let mut stats = BuildStats::default();
+        let wall_start = Instant::now();
+        let jobs = self.effective_jobs();
 
-        for node in &plan.nodes {
-            match node.kind {
-                NodeKind::Interface => {
-                    let source = node.source.as_ref().unwrap();
-                    let pcm_output = &node.outputs[0];
-                    let obj_output = &node.outputs[1];
+        // Separate compile nodes from the link node
+        let (compile_nodes, link_nodes): (Vec<_>, Vec<_>) =
+            plan.nodes.iter().enumerate().partition(|(_, n)| n.kind != NodeKind::Link);
 
-                    // Try cache first
-                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                        if self.try_cache_restore(&module_id, &key, node) {
-                            eprintln!("  Cached interface: {}", source.display());
-                            stats.cache_hits += 1;
-                            continue;
-                        }
-                    }
+        // Build a map of node_id → index for fast lookup
+        let id_to_idx: HashMap<String, usize> = plan
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.clone(), i))
+            .collect();
 
-                    // Build dep PCM references
-                    let dep_pcms: Vec<(&str, &Path)> = node
-                        .dependencies
-                        .iter()
-                        .filter_map(|dep_id| {
-                            let name = dep_id.strip_prefix("interface:")?;
-                            pcm_map.get(name).map(|p| (name, p.as_path()))
-                        })
-                        .collect();
+        // Compute PCM paths for dependency resolution during compilation
+        let pcm_map: Arc<HashMap<String, PathBuf>> = Arc::new(
+            plan.pcm_paths().into_iter().collect(),
+        );
 
-                    // Ensure parent dirs exist
-                    if let Some(parent) = pcm_output.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    if let Some(parent) = obj_output.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
+        // For single-job or very small plans, use sequential execution
+        if jobs <= 1 || compile_nodes.len() <= 1 {
+            return self.execute_plan_sequential(plan);
+        }
 
-                    self.backend
-                        .compile_interface(source, pcm_output, obj_output, &dep_pcms)?;
+        // Parallel scheduler state
+        let total = compile_nodes.len();
+        let completed = Arc::new(AtomicUsize::new(0));
+        let total_compile_ms = Arc::new(AtomicUsize::new(0));
+        let cache_hits = Arc::new(AtomicUsize::new(0));
+        let cache_misses = Arc::new(AtomicUsize::new(0));
 
-                    // Store in cache
-                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                        self.cache_store(&module_id, &key, node);
-                    }
+        // In-degree tracking: how many deps each node is still waiting on
+        // Only count deps that are compile nodes (not link)
+        let mut in_degree: Vec<usize> = vec![0; plan.nodes.len()];
+        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); plan.nodes.len()];
 
-                    eprintln!("  Compiled interface: {}", source.display());
-                    stats.cache_misses += 1;
-                }
-
-                NodeKind::Implementation => {
-                    let source = node.source.as_ref().unwrap();
-                    let obj_output = &node.outputs[0];
-
-                    // Try cache first
-                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                        if self.try_cache_restore(&module_id, &key, node) {
-                            eprintln!("  Cached impl: {}", source.display());
-                            stats.cache_hits += 1;
-                            continue;
-                        }
-                    }
-
-                    let dep_pcms: Vec<(&str, &Path)> = node
-                        .dependencies
-                        .iter()
-                        .filter_map(|dep_id| {
-                            let name = dep_id.strip_prefix("interface:")?;
-                            pcm_map.get(name).map(|p| (name, p.as_path()))
-                        })
-                        .collect();
-
-                    if let Some(parent) = obj_output.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-
-                    self.backend
-                        .compile_implementation(source, obj_output, &dep_pcms)?;
-
-                    // Store in cache
-                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                        self.cache_store(&module_id, &key, node);
-                    }
-
-                    eprintln!("  Compiled impl: {}", source.display());
-                    stats.cache_misses += 1;
-                }
-
-                NodeKind::Object => {
-                    let source = node.source.as_ref().unwrap();
-                    let obj_output = &node.outputs[0];
-
-                    // Try cache first
-                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                        if self.try_cache_restore(&module_id, &key, node) {
-                            eprintln!("  Cached: {}", source.display());
-                            stats.cache_hits += 1;
-                            continue;
-                        }
-                    }
-
-                    if let Some(parent) = obj_output.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-
-                    self.backend
-                        .compile_implementation(source, obj_output, &[])?;
-
-                    // Store in cache
-                    if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                        self.cache_store(&module_id, &key, node);
-                    }
-
-                    eprintln!("  Compiled: {}", source.display());
-                    stats.cache_misses += 1;
-                }
-
-                NodeKind::Link => {
-                    let output = &node.outputs[0];
-                    let obj_files = plan.object_paths();
-                    let obj_refs: Vec<&Path> =
-                        obj_files.iter().map(|p| p.as_path()).collect();
-
-                    if let Some(parent) = output.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-
-                    let artifact = match plan.build_type {
-                        BuildType::Binary => Artifact::Executable {
-                            path: output.clone(),
-                        },
-                        BuildType::StaticLib => Artifact::StaticLib {
-                            path: output.clone(),
-                        },
-                        BuildType::SharedLib => Artifact::SharedLib {
-                            path: output.clone(),
-                        },
-                    };
-
-                    self.backend.link(&obj_refs, output, &artifact)?;
-
-                    eprintln!("  Linked: {}", output.display());
-                    final_output = output.clone();
-                    stats.skipped += 1;
+        for (idx, node) in plan.nodes.iter().enumerate() {
+            if node.kind == NodeKind::Link {
+                continue;
+            }
+            for dep_id in &node.dependencies {
+                if let Some(&dep_idx) = id_to_idx.get(dep_id) {
+                    in_degree[idx] += 1;
+                    dependents[dep_idx].push(idx);
                 }
             }
         }
 
+        // Protected mutable state
+        let in_degree = Arc::new(Mutex::new(in_degree));
+        let dependents = Arc::new(dependents);
+        let errors: Arc<Mutex<Vec<CmodError>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Work channel: send ready node indices to workers
+        let (work_tx, work_rx) = bounded::<usize>(total);
+
+        // Enqueue initially ready compile nodes (in-degree == 0)
+        {
+            let in_deg = in_degree.lock().unwrap();
+            for &(idx, _) in &compile_nodes {
+                if in_deg[idx] == 0 {
+                    let _ = work_tx.send(idx);
+                }
+            }
+        }
+
+        // Spawn worker threads
+        std::thread::scope(|scope| {
+            for _ in 0..jobs {
+                let work_rx = work_rx.clone();
+                let work_tx = work_tx.clone();
+                let completed = Arc::clone(&completed);
+                let total_compile_ms = Arc::clone(&total_compile_ms);
+                let cache_hits = Arc::clone(&cache_hits);
+                let cache_misses = Arc::clone(&cache_misses);
+                let in_degree = Arc::clone(&in_degree);
+                let dependents = Arc::clone(&dependents);
+                let errors = Arc::clone(&errors);
+                let pcm_map = Arc::clone(&pcm_map);
+
+                scope.spawn(move || {
+                    while let Ok(idx) = work_rx.recv() {
+                        // Check if we've had errors — stop processing new work
+                        if !errors.lock().unwrap().is_empty() {
+                            let c = completed.fetch_add(1, Ordering::SeqCst) + 1;
+                            if c >= total {
+                                // Close sender to unblock other workers
+                            }
+                            continue;
+                        }
+
+                        let node = &plan.nodes[idx];
+                        match self.execute_node(node, plan, &pcm_map) {
+                            Ok(outcome) => {
+                                total_compile_ms.fetch_add(
+                                    outcome.time_ms() as usize,
+                                    Ordering::Relaxed,
+                                );
+                                match outcome {
+                                    NodeOutcome::CacheHit(_) => {
+                                        cache_hits.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    NodeOutcome::Compiled(_) => {
+                                        cache_misses.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    NodeOutcome::Linked(_) => {}
+                                }
+                            }
+                            Err(e) => {
+                                errors.lock().unwrap().push(e);
+                            }
+                        }
+
+                        // Signal completion and enqueue newly-ready nodes
+                        let c = completed.fetch_add(1, Ordering::SeqCst) + 1;
+                        {
+                            let mut in_deg = in_degree.lock().unwrap();
+                            for &dep_idx in &dependents[idx] {
+                                in_deg[dep_idx] -= 1;
+                                if in_deg[dep_idx] == 0 {
+                                    let _ = work_tx.send(dep_idx);
+                                }
+                            }
+                        }
+                        let _ = c; // suppress unused warning
+                    }
+                });
+            }
+            // Drop sender on main thread so workers exit when all senders are dropped
+            drop(work_tx);
+        });
+
+        // Check for errors
+        let errs = errors.lock().unwrap();
+        if let Some(first) = errs.first() {
+            return Err(CmodError::BuildFailed {
+                reason: format!("{}", first),
+            });
+        }
+        drop(errs);
+
+        // Rebuild pcm_map for link phase (Arc was shared with threads)
+        let link_pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
+
+        // Execute link node(s) on main thread
+        let mut final_output = PathBuf::new();
+        for &(idx, _) in &link_nodes {
+            let node = &plan.nodes[idx];
+            self.execute_node(node, plan, &link_pcm_map)?;
+            if let Some(out) = node.outputs.first() {
+                final_output = out.clone();
+            }
+        }
+
+        let stats = BuildStats {
+            cache_hits: cache_hits.load(Ordering::Relaxed),
+            cache_misses: cache_misses.load(Ordering::Relaxed),
+            skipped: link_nodes.len(),
+            wall_time_ms: wall_start.elapsed().as_millis() as u64,
+            total_compile_time_ms: total_compile_ms.load(Ordering::Relaxed) as u64,
+        };
+
+        Ok((final_output, stats))
+    }
+
+    /// Sequential fallback for single-job mode or trivial plans.
+    fn execute_plan_sequential(
+        &self,
+        plan: &BuildPlan,
+    ) -> Result<(PathBuf, BuildStats), CmodError> {
+        let wall_start = Instant::now();
+        let pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
+        let mut final_output = PathBuf::new();
+        let mut stats = BuildStats::default();
+
+        for node in &plan.nodes {
+            let outcome = self.execute_node(node, plan, &pcm_map)?;
+            match outcome {
+                NodeOutcome::CacheHit(ms) => {
+                    stats.cache_hits += 1;
+                    stats.total_compile_time_ms += ms;
+                }
+                NodeOutcome::Compiled(ms) => {
+                    stats.cache_misses += 1;
+                    stats.total_compile_time_ms += ms;
+                }
+                NodeOutcome::Linked(ms) => {
+                    stats.skipped += 1;
+                    stats.total_compile_time_ms += ms;
+                    if let Some(out) = node.outputs.first() {
+                        final_output = out.clone();
+                    }
+                }
+            }
+        }
+
+        stats.wall_time_ms = wall_start.elapsed().as_millis() as u64;
         Ok((final_output, stats))
     }
 }
@@ -627,6 +845,38 @@ mod tests {
 
         let sources = discover_sources(tmp.path()).unwrap();
         assert_eq!(sources.len(), 6);
+    }
+
+    #[test]
+    fn test_build_stats_default() {
+        let stats = BuildStats::default();
+        assert_eq!(stats.cache_hits, 0);
+        assert_eq!(stats.cache_misses, 0);
+        assert_eq!(stats.skipped, 0);
+        assert_eq!(stats.wall_time_ms, 0);
+        assert_eq!(stats.total_compile_time_ms, 0);
+    }
+
+    #[test]
+    fn test_effective_jobs_auto() {
+        let backend = crate::compiler::ClangBackend::new("20", cmod_core::types::Profile::Debug);
+        let runner = BuildRunner::new(backend, None);
+        // auto-detect should be at least 1
+        assert!(runner.effective_jobs() >= 1);
+    }
+
+    #[test]
+    fn test_effective_jobs_explicit() {
+        let backend = crate::compiler::ClangBackend::new("20", cmod_core::types::Profile::Debug);
+        let runner = BuildRunner::new(backend, None).with_jobs(4);
+        assert_eq!(runner.effective_jobs(), 4);
+    }
+
+    #[test]
+    fn test_node_outcome_time() {
+        assert_eq!(NodeOutcome::CacheHit(42).time_ms(), 42);
+        assert_eq!(NodeOutcome::Compiled(100).time_ms(), 100);
+        assert_eq!(NodeOutcome::Linked(7).time_ms(), 7);
     }
 
     #[test]

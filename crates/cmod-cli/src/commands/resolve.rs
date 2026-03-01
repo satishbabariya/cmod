@@ -5,7 +5,13 @@ use cmod_resolver::Resolver;
 use cmod_workspace::WorkspaceManager;
 
 /// Run `cmod resolve` — resolve dependencies and generate the lockfile.
-pub fn run(locked: bool, offline: bool, verbose: bool) -> Result<(), CmodError> {
+pub fn run(
+    locked: bool,
+    offline: bool,
+    verbose: bool,
+    features: &[String],
+    no_default_features: bool,
+) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -13,17 +19,19 @@ pub fn run(locked: bool, offline: bool, verbose: bool) -> Result<(), CmodError> 
 
     // Check if this is a workspace
     if config.manifest.is_workspace() {
-        return resolve_workspace(&config, locked, offline, verbose);
+        return resolve_workspace(&config, locked, offline, verbose, features, no_default_features);
     }
 
     let existing_lock = Lockfile::load(&config.lockfile_path).ok();
     let resolver = Resolver::new(config.deps_dir());
 
-    let lockfile = resolver.resolve(
+    let lockfile = resolver.resolve_with_features(
         &config.manifest,
         existing_lock.as_ref(),
         locked,
         offline,
+        features,
+        no_default_features,
     )?;
 
     lockfile.save(&config.lockfile_path)?;
@@ -52,6 +60,8 @@ fn resolve_workspace(
     locked: bool,
     offline: bool,
     verbose: bool,
+    features: &[String],
+    no_default_features: bool,
 ) -> Result<(), CmodError> {
     let ws = WorkspaceManager::load(&config.root)?;
 
@@ -65,11 +75,13 @@ fn resolve_workspace(
     let existing_lock = Lockfile::load(&ws.lockfile_path()).ok();
     let resolver = Resolver::new(config.deps_dir());
 
-    let lockfile = resolver.resolve(
+    let lockfile = resolver.resolve_with_features(
         &combined_manifest,
         existing_lock.as_ref(),
         locked,
         offline,
+        features,
+        no_default_features,
     )?;
 
     lockfile.save(&ws.lockfile_path())?;

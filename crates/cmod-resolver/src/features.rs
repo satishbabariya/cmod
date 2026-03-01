@@ -147,6 +147,9 @@ mod tests {
             test: None,
             workspace: None,
             cache: None,
+            metadata: None,
+            security: None,
+            publish: None,
         }
     }
 
@@ -234,6 +237,7 @@ mod tests {
             path: None,
             features: vec![],
             optional: true,
+            default_features: true,
             workspace: false,
         });
         let resolved = ResolvedFeatures::default();
@@ -251,6 +255,7 @@ mod tests {
             path: None,
             features: vec![],
             optional: true,
+            default_features: true,
             workspace: false,
         });
         let mut resolved = ResolvedFeatures::default();
@@ -270,6 +275,7 @@ mod tests {
             path: None,
             features: vec!["simd".to_string(), "f64".to_string()],
             optional: false,
+            default_features: true,
             workspace: false,
         }));
 

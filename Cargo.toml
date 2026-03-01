@@ -25,3 +25,5 @@ tempfile = "3"
 walkdir = "2"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
+crossbeam-channel = "0.5"
+glob = "0.3"

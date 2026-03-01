@@ -140,6 +140,7 @@ mod tests {
             toolchain: None,
             targets: BTreeMap::new(),
             deps: vec![],
+            features: vec![],
         }
     }
 
@@ -166,6 +167,9 @@ mod tests {
             test: None,
             workspace: None,
             cache: None,
+            metadata: None,
+            security: None,
+            publish: None,
         }
     }
 
@@ -223,6 +227,7 @@ mod tests {
             path: None,
             features: vec![],
             optional: false,
+            default_features: true,
             workspace: false,
         }));
 
