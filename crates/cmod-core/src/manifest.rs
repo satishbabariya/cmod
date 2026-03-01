@@ -705,7 +705,7 @@ pub fn default_manifest(name: &str) -> Manifest {
             homepage: None,
         },
         module: Some(Module {
-            name: format!("local.{}", name),
+            name: format!("local.{}", name.replace('-', "_")),
             root: PathBuf::from("src/lib.cppm"),
         }),
         dependencies: BTreeMap::new(),

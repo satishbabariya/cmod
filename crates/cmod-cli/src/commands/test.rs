@@ -57,13 +57,95 @@ pub fn run(
     }
 
     // Build and run each test file
+    // config.build_dir() already includes the profile subdirectory (e.g., build/debug)
     let build_dir = config.build_dir();
+    let pcm_dir = build_dir.join("pcm");
+    let obj_dir = build_dir.join("obj");
+
     let cxx_standard = config
         .manifest
         .toolchain
         .as_ref()
         .and_then(|tc| tc.cxx_standard.clone())
         .unwrap_or_else(|| "20".to_string());
+
+    // Use the same target triple as the main build to avoid PCM mismatch
+    let target_triple = config
+        .target
+        .clone()
+        .or_else(|| {
+            config
+                .manifest
+                .toolchain
+                .as_ref()
+                .and_then(|tc| tc.target.clone())
+        })
+        .unwrap_or_else(|| {
+            let arch = std::env::consts::ARCH;
+            let os = std::env::consts::OS;
+            match (arch, os) {
+                ("x86_64", "linux") => "x86_64-unknown-linux-gnu".to_string(),
+                ("x86_64", "macos") => "x86_64-apple-darwin".to_string(),
+                ("aarch64", "linux") => "aarch64-unknown-linux-gnu".to_string(),
+                ("aarch64", "macos") => "arm64-apple-darwin".to_string(),
+                ("x86_64", "windows") => "x86_64-pc-windows-msvc".to_string(),
+                _ => format!("{}-unknown-{}", arch, os),
+            }
+        });
+
+    // Collect PCM and object files from the build for linking with tests
+    let mut pcm_flags: Vec<String> = Vec::new();
+    let mut obj_files: Vec<String> = Vec::new();
+
+    // Get the module name from the manifest for accurate PCM mapping
+    let module_name_from_manifest = config
+        .manifest
+        .module
+        .as_ref()
+        .map(|m| m.name.clone());
+
+    if pcm_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&pcm_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("pcm") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        // Try to match the manifest module name to this PCM file.
+                        // PCM filenames are sanitized (dots/colons → underscores),
+                        // so we reverse the sanitization to find the module name.
+                        let module_name = if let Some(ref manifest_name) = module_name_from_manifest {
+                            let sanitized = manifest_name.replace('.', "_").replace(':', "_");
+                            if sanitized == stem {
+                                manifest_name.clone()
+                            } else {
+                                // Fallback: use the stem as-is (for non-manifest modules)
+                                stem.to_string()
+                            }
+                        } else {
+                            stem.to_string()
+                        };
+                        pcm_flags.push(format!("-fmodule-file={}={}", module_name, path.display()));
+                    }
+                }
+            }
+        }
+    }
+
+    if obj_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&obj_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("o") {
+                    // Skip the main entry point object file to avoid
+                    // "multiple definition of main" when linking tests
+                    if path.file_stem().and_then(|s| s.to_str()) == Some("main") {
+                        continue;
+                    }
+                    obj_files.push(path.display().to_string());
+                }
+            }
+        }
+    }
 
     for test_source in &filtered_sources {
         let test_name = test_source
@@ -73,18 +155,30 @@ pub fn run(
 
         eprintln!("  Running test: {}", test_name);
 
-        // Compile the test
+        // Compile the test with module precompiled paths
         let test_binary = build_dir.join(format!("test_{}", test_name));
 
-        let status = std::process::Command::new("clang++")
-            .arg(format!("-std=c++{}", cxx_standard))
-            .arg("-o")
+        let mut cmd = std::process::Command::new("clang++");
+        cmd.arg(format!("-std=c++{}", cxx_standard));
+        cmd.arg(format!("--target={}", target_triple));
+
+        // Add precompiled module references so import statements resolve
+        for flag in &pcm_flags {
+            cmd.arg(flag);
+        }
+
+        cmd.arg("-o")
             .arg(&test_binary)
-            .arg(test_source)
-            .status()
-            .map_err(|e| CmodError::BuildFailed {
-                reason: format!("failed to compile test: {}", e),
-            })?;
+            .arg(test_source);
+
+        // Link against object files from the main build
+        for obj in &obj_files {
+            cmd.arg(obj);
+        }
+
+        let status = cmd.status().map_err(|e| CmodError::BuildFailed {
+            reason: format!("failed to compile test: {}", e),
+        })?;
 
         if !status.success() {
             return Err(CmodError::BuildFailed {

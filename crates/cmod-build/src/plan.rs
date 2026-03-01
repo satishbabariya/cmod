@@ -119,12 +119,21 @@ impl BuildPlan {
                 cmod_core::types::ModuleUnitKind::LegacyUnit => {
                     let obj_path = obj_dir.join(format!("{}.o", sanitize_name(module_name)));
 
+                    // Legacy TUs may import modules — track those as dependencies
+                    let deps: Vec<String> = module_node
+                        .imports
+                        .iter()
+                        .filter_map(|imp| {
+                            pcm_paths.get(imp).map(|_| format!("interface:{}", imp))
+                        })
+                        .collect();
+
                     let node = BuildNode {
                         id: format!("object:{}", module_name),
                         kind: NodeKind::Object,
                         module_name: Some(module_name.clone()),
                         source: Some(module_node.source.clone()),
-                        dependencies: vec![],
+                        dependencies: deps,
                         outputs: vec![obj_path.clone()],
                     };
 
@@ -517,6 +526,39 @@ mod tests {
         assert_eq!(plan.nodes.len(), 2); // object + link
         assert_eq!(plan.nodes[0].kind, NodeKind::Object);
         assert!(plan.nodes[0].dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_build_plan_legacy_unit_with_module_import() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/lib.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+        });
+        graph.add_node(ModuleNode {
+            name: "main".to_string(),
+            kind: ModuleUnitKind::LegacyUnit,
+            source: PathBuf::from("src/main.cpp"),
+            package: "test".to_string(),
+            imports: vec!["mymod".to_string()],
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::Binary,
+        )
+        .unwrap();
+
+        // interface + object + link = 3 nodes
+        assert_eq!(plan.nodes.len(), 3);
+        let main_node = plan.nodes.iter().find(|n| n.id == "object:main").unwrap();
+        assert!(main_node.dependencies.contains(&"interface:mymod".to_string()));
     }
 
     #[test]

@@ -511,8 +511,18 @@ impl BuildRunner {
                     fs::create_dir_all(parent)?;
                 }
 
+                // Pass dependency PCMs so that legacy TUs can import modules
+                let dep_pcms: Vec<(&str, &Path)> = node
+                    .dependencies
+                    .iter()
+                    .filter_map(|dep_id| {
+                        let name = dep_id.strip_prefix("interface:")?;
+                        pcm_map.get(name).map(|p| (name, p.as_path()))
+                    })
+                    .collect();
+
                 self.backend
-                    .compile_implementation(source, obj_output, &[])?;
+                    .compile_implementation(source, obj_output, &dep_pcms)?;
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     self.cache_store(&module_id, &key, node);
@@ -633,8 +643,14 @@ impl BuildRunner {
         }
 
         // Spawn worker threads
+        //
+        // Workers use recv_timeout to avoid deadlock: since workers hold
+        // sender clones (needed to enqueue newly-ready nodes), a plain
+        // recv() would block forever after all work is done. The timeout
+        // lets workers check the completion count and exit gracefully.
         std::thread::scope(|scope| {
-            for _ in 0..jobs {
+            let effective_workers = jobs.min(total);
+            for _ in 0..effective_workers {
                 let work_rx = work_rx.clone();
                 let work_tx = work_tx.clone();
                 let completed = Arc::clone(&completed);
@@ -652,15 +668,21 @@ impl BuildRunner {
                 let node_timings = Arc::clone(&node_timings);
 
                 scope.spawn(move || {
-                    while let Ok(idx) = work_rx.recv() {
-                        // Check if we've had errors — stop processing new work
-                        if !errors.lock().unwrap().is_empty() {
-                            let c = completed.fetch_add(1, Ordering::SeqCst) + 1;
-                            if c >= total {
-                                // Close sender to unblock other workers
-                            }
-                            continue;
+                    loop {
+                        // Check if all work is done
+                        if completed.load(Ordering::SeqCst) >= total {
+                            break;
                         }
+                        // Check if there are errors — stop early
+                        if !errors.lock().unwrap().is_empty() {
+                            break;
+                        }
+
+                        let idx = match work_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                            Ok(idx) => idx,
+                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                        };
 
                         let node = &plan.nodes[idx];
                         match self.execute_node(node, plan, &pcm_map, Some(&build_state), &flags_hash) {
@@ -671,7 +693,6 @@ impl BuildRunner {
                                 match outcome {
                                     NodeOutcome::CacheHit(_) => {
                                         cache_hits.fetch_add(1, Ordering::Relaxed);
-                                        // Record state for cached nodes too
                                         new_build_state.lock().unwrap().record_node(node, &flags_hash);
                                     }
                                     NodeOutcome::Compiled(_) => {
@@ -680,7 +701,6 @@ impl BuildRunner {
                                     }
                                     NodeOutcome::Skipped(_) => {
                                         incr_skipped.fetch_add(1, Ordering::Relaxed);
-                                        // Preserve existing state for skipped nodes
                                         if let Some(prev) = build_state.nodes.get(&node.id) {
                                             new_build_state.lock().unwrap().nodes.insert(
                                                 node.id.clone(), prev.clone(),
@@ -706,11 +726,12 @@ impl BuildRunner {
                                 }
                             }
                         }
-                        let _ = c; // suppress unused warning
+                        let _ = c;
                     }
+                    drop(work_tx);
                 });
             }
-            // Drop sender on main thread so workers exit when all senders are dropped
+            // Drop sender on main thread so workers can detect disconnection
             drop(work_tx);
         });
 
