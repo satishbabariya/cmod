@@ -1225,8 +1225,9 @@ mod tests {
         let graph = build_module_graph(&sources, "test_pkg").unwrap();
 
         assert_eq!(graph.nodes.len(), 1);
-        assert!(graph.nodes.contains_key("mymod"));
-        assert_eq!(graph.nodes["mymod"].package, "test_pkg");
+        // Nodes are keyed by source path, find by module name
+        let node = graph.nodes.values().find(|n| n.name == "mymod").unwrap();
+        assert_eq!(node.package, "test_pkg");
     }
 
     #[test]
@@ -1247,7 +1248,7 @@ mod tests {
         let graph = build_module_graph(&sources, "test").unwrap();
 
         // app should only import base (external_lib filtered out)
-        let app_node = &graph.nodes["app"];
+        let app_node = graph.nodes.values().find(|n| n.name == "app").unwrap();
         assert_eq!(app_node.imports, vec!["base"]);
     }
 
@@ -1260,9 +1261,10 @@ mod tests {
         let sources = vec![file];
         let graph = build_module_graph(&sources, "test").unwrap();
 
-        // Legacy files use filename as module name
+        // Legacy files use filename as module name, nodes keyed by source path
         assert_eq!(graph.nodes.len(), 1);
-        assert!(graph.nodes.contains_key("main"));
+        let node = graph.nodes.values().find(|n| n.name == "main").unwrap();
+        assert_eq!(node.name, "main");
     }
 
     #[test]

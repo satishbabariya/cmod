@@ -266,6 +266,18 @@ pub struct Cache {
     /// Maximum total cache size in human-readable form (e.g., "1G", "500M").
     #[serde(default)]
     pub max_size: Option<String>,
+    /// Bearer token for remote cache authentication.
+    #[serde(default)]
+    pub auth_token: Option<String>,
+    /// HTTP timeout in seconds for remote cache operations (default: 30).
+    #[serde(default)]
+    pub timeout: Option<u64>,
+    /// Number of retry attempts for remote cache operations (default: 3).
+    #[serde(default)]
+    pub retries: Option<u32>,
+    /// Whether to compress artifacts with zstd before uploading (default: true).
+    #[serde(default)]
+    pub compression: Option<bool>,
 }
 
 /// Project metadata for discoverability and documentation.

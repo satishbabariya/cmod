@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -402,6 +403,218 @@ impl ArtifactCache {
 
         Ok(total)
     }
+
+    /// Store artifacts with zstd compression.
+    pub fn store_compressed(
+        &self,
+        module_id: &str,
+        key: &CacheKey,
+        metadata: &ArtifactMetadata,
+        artifact_files: &[(&str, &Path)],
+    ) -> Result<(), CmodError> {
+        let dir = self.entry_dir(module_id, key);
+        fs::create_dir_all(&dir)?;
+
+        // Write metadata
+        let meta_json =
+            serde_json::to_string_pretty(metadata).map_err(|e| CmodError::CacheError {
+                reason: format!("failed to serialize metadata: {}", e),
+            })?;
+        fs::write(dir.join("metadata.json"), meta_json)?;
+
+        // Compress and copy artifact files
+        for (name, src) in artifact_files {
+            let data = fs::read(src)?;
+            let compressed = compress_zstd(&data)?;
+            let dest = dir.join(format!("{}.zst", name));
+            fs::write(&dest, compressed)?;
+        }
+
+        Ok(())
+    }
+
+    /// Retrieve a cached artifact, decompressing if stored with zstd.
+    pub fn get_artifact_decompressed(
+        &self,
+        module_id: &str,
+        key: &CacheKey,
+        artifact_name: &str,
+        dest: &Path,
+    ) -> Result<bool, CmodError> {
+        let entry_dir = self.entry_dir(module_id, key);
+
+        // Try compressed version first
+        let compressed_path = entry_dir.join(format!("{}.zst", artifact_name));
+        if compressed_path.exists() {
+            let compressed = fs::read(&compressed_path)?;
+            let decompressed = decompress_zstd(&compressed)?;
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(dest, decompressed)?;
+            return Ok(true);
+        }
+
+        // Fall back to uncompressed
+        let uncompressed_path = entry_dir.join(artifact_name);
+        if uncompressed_path.exists() {
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&uncompressed_path, dest)?;
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    /// Inspect a specific cache entry and return its metadata plus file info.
+    pub fn inspect(&self, module_id: &str, key: &CacheKey) -> Result<CacheEntryInfo, CmodError> {
+        let dir = self.entry_dir(module_id, key);
+        if !dir.exists() {
+            return Err(CmodError::CacheError {
+                reason: format!("cache entry not found: {}/{}", module_id, key),
+            });
+        }
+
+        let metadata = self.get_metadata(module_id, key).ok();
+        let total_size = dir_size(&dir);
+
+        let mut files = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let size = entry.metadata()?.len();
+                let compressed = name.ends_with(".zst");
+                files.push(CacheFileInfo {
+                    name,
+                    size,
+                    compressed,
+                });
+            }
+        }
+
+        let created = dir
+            .join("metadata.json")
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| {
+                t.duration_since(SystemTime::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs())
+            });
+
+        Ok(CacheEntryInfo {
+            module_id: module_id.to_string(),
+            cache_key: key.0.clone(),
+            total_size,
+            files,
+            metadata,
+            created_timestamp: created,
+        })
+    }
+
+    /// Get full cache status as a serializable struct.
+    pub fn status_json(&self) -> Result<CacheStatusJson, CmodError> {
+        let modules = self.list_modules()?;
+        let total_size = self.total_size()?;
+
+        let mut entries = Vec::new();
+        for module in &modules {
+            let module_dir = self.root.join(module);
+            if !module_dir.exists() {
+                continue;
+            }
+            for key_entry in fs::read_dir(&module_dir)? {
+                let key_entry = key_entry?;
+                if key_entry.file_type()?.is_dir() {
+                    let key_name = key_entry.file_name().to_string_lossy().to_string();
+                    let size = dir_size(&key_entry.path());
+                    entries.push(CacheEntryBrief {
+                        module: module.clone(),
+                        key: key_name,
+                        size,
+                    });
+                }
+            }
+        }
+
+        Ok(CacheStatusJson {
+            cache_dir: self.root.display().to_string(),
+            total_size,
+            module_count: modules.len(),
+            entry_count: entries.len(),
+            modules,
+            entries,
+        })
+    }
+}
+
+/// Detailed info about a specific cache entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEntryInfo {
+    pub module_id: String,
+    pub cache_key: String,
+    pub total_size: u64,
+    pub files: Vec<CacheFileInfo>,
+    pub metadata: Option<ArtifactMetadata>,
+    pub created_timestamp: Option<u64>,
+}
+
+/// Info about a single file in a cache entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheFileInfo {
+    pub name: String,
+    pub size: u64,
+    pub compressed: bool,
+}
+
+/// Machine-readable cache status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheStatusJson {
+    pub cache_dir: String,
+    pub total_size: u64,
+    pub module_count: usize,
+    pub entry_count: usize,
+    pub modules: Vec<String>,
+    pub entries: Vec<CacheEntryBrief>,
+}
+
+/// Brief info about a cache entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEntryBrief {
+    pub module: String,
+    pub key: String,
+    pub size: u64,
+}
+
+/// Compress data using zstd.
+pub fn compress_zstd(data: &[u8]) -> Result<Vec<u8>, CmodError> {
+    let mut encoder = zstd::Encoder::new(Vec::new(), 3).map_err(|e| CmodError::CacheError {
+        reason: format!("zstd compression init failed: {}", e),
+    })?;
+    encoder.write_all(data).map_err(|e| CmodError::CacheError {
+        reason: format!("zstd compression failed: {}", e),
+    })?;
+    encoder.finish().map_err(|e| CmodError::CacheError {
+        reason: format!("zstd compression finalize failed: {}", e),
+    })
+}
+
+/// Decompress zstd-compressed data.
+pub fn decompress_zstd(data: &[u8]) -> Result<Vec<u8>, CmodError> {
+    let mut decoder = zstd::Decoder::new(data).map_err(|e| CmodError::CacheError {
+        reason: format!("zstd decompression init failed: {}", e),
+    })?;
+    let mut output = Vec::new();
+    decoder
+        .read_to_end(&mut output)
+        .map_err(|e| CmodError::CacheError {
+            reason: format!("zstd decompression failed: {}", e),
+        })?;
+    Ok(output)
 }
 
 /// Result of a cache eviction operation.

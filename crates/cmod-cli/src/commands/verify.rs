@@ -3,6 +3,7 @@ use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
 use cmod_core::types::ModuleId;
 use cmod_security::hash::verify_content_hash;
+use cmod_security::policy::{SecurityPolicy, ViolationSeverity};
 use cmod_security::verify::{verify_all_packages, SignatureStatus};
 
 /// Run `cmod verify` — verify integrity and correctness.
@@ -33,6 +34,9 @@ pub fn run(verbose: bool, check_signatures: bool) -> Result<(), CmodError> {
     if check_signatures {
         validate_signatures(&config, &mut errors, &mut warnings, verbose);
     }
+
+    // 7. Enforce security policy from [security] section
+    validate_security_policy(&config, &mut errors, &mut warnings, verbose);
 
     // Print warnings
     if !warnings.is_empty() {
@@ -348,6 +352,51 @@ fn validate_module_declaration(
                     module.root.display(),
                     e
                 ));
+            }
+        }
+    }
+}
+
+/// Enforce security policy from the `[security]` manifest section.
+fn validate_security_policy(
+    config: &Config,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    verbose: bool,
+) {
+    let policy = SecurityPolicy::from_manifest(config.manifest.security.as_ref());
+
+    if !policy.is_active() {
+        if verbose {
+            eprintln!("  No security policy configured.");
+        }
+        return;
+    }
+
+    if verbose {
+        eprintln!("  Enforcing security policy...");
+    }
+
+    let lockfile = match Lockfile::load(&config.lockfile_path) {
+        Ok(l) => l,
+        Err(_) => return, // Already reported
+    };
+
+    if lockfile.packages.is_empty() {
+        return;
+    }
+
+    let deps_dir = config.deps_dir();
+    let trust_db = cmod_security::trust::TrustDb::load_default().ok();
+    let violations = policy.enforce(&lockfile.packages, &deps_dir, trust_db.as_ref());
+
+    for v in &violations {
+        match v.severity {
+            ViolationSeverity::Error => {
+                errors.push(format!("[policy] {}: {}", v.package, v.reason));
+            }
+            ViolationSeverity::Warning => {
+                warnings.push(format!("[policy] {}: {}", v.package, v.reason));
             }
         }
     }

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
-use cmod_core::manifest::{Dependency, DetailedDependency};
+use cmod_core::manifest::{Dependency, DetailedDependency, Manifest};
 use cmod_resolver::Resolver;
 
 /// Run `cmod add <dep>` — add a dependency.
@@ -16,13 +16,37 @@ pub fn run(
     path: Option<String>,
     features: Vec<String>,
     _locked: bool,
-    _offline: bool,
+    offline: bool,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
 
     // Parse the dep specifier: "github.com/fmtlib/fmt@^10.2" or "github.com/fmtlib/fmt"
     let (dep_key, version_constraint) = parse_dep_specifier(&dep);
+
+    // Check if dependency already exists
+    if let Some(existing) = config.manifest.dependencies.get(&dep_key) {
+        let new_version = version_constraint.as_deref();
+        let existing_version = existing.version_req();
+
+        if new_version.is_some() && new_version != existing_version {
+            eprintln!(
+                "  warning: dependency '{}' already exists with version '{}', updating to '{}'",
+                dep_key,
+                existing_version.unwrap_or("*"),
+                new_version.unwrap_or("*")
+            );
+            // Remove the old entry so resolver can re-add
+            config.manifest.dependencies.remove(&dep_key);
+        } else {
+            eprintln!(
+                "  Dependency '{}' already exists (version: {})",
+                dep_key,
+                existing_version.unwrap_or("*")
+            );
+            return Ok(());
+        }
+    }
 
     // Build the Dependency object
     let dependency = if path.is_some()
@@ -48,6 +72,12 @@ pub fn run(
     } else {
         Dependency::Simple("*".to_string())
     };
+
+    // Validate Git URL is reachable (unless offline or path dep)
+    if !offline && !dependency.is_path() {
+        let url = Manifest::resolve_dep_url(&dep_key, &dependency);
+        validate_git_url(&url)?;
+    }
 
     // Load existing lockfile if present
     let existing_lock = Lockfile::load(&config.lockfile_path).ok();
@@ -82,5 +112,34 @@ fn parse_dep_specifier(spec: &str) -> (String, Option<String>) {
         (key, Some(version))
     } else {
         (spec.to_string(), None)
+    }
+}
+
+/// Validate that a Git URL is reachable by attempting to list remote refs.
+fn validate_git_url(url: &str) -> Result<(), CmodError> {
+    // Use git2 to check if the remote is reachable
+    match git2::Repository::init_bare(tempfile::TempDir::new()?.path()) {
+        Ok(repo) => {
+            let mut remote = repo
+                .remote_anonymous(url)
+                .map_err(|e| CmodError::GitError {
+                    reason: format!("invalid Git URL '{}': {}", url, e),
+                })?;
+
+            // Try to connect to the remote (read-only)
+            match remote.connect(git2::Direction::Fetch) {
+                Ok(()) => {
+                    let _ = remote.disconnect();
+                    Ok(())
+                }
+                Err(e) => Err(CmodError::GitError {
+                    reason: format!(
+                        "cannot reach '{}': {}. Use --offline to skip this check",
+                        url, e
+                    ),
+                }),
+            }
+        }
+        Err(e) => Err(CmodError::Other(format!("failed to validate URL: {}", e))),
     }
 }

@@ -356,6 +356,15 @@ enum CacheAction {
         /// Path to the BMI package directory
         path: String,
     },
+    /// Show cache status as JSON (machine-readable)
+    StatusJson,
+    /// Inspect a specific cache entry
+    Inspect {
+        /// Module name
+        module: String,
+        /// Cache key (hex)
+        key: String,
+    },
 }
 
 fn main() {
@@ -440,6 +449,8 @@ fn main() {
                 output,
             } => commands::cache::export_bmi(&module, &key, &output, cli.verbose),
             CacheAction::Import { path } => commands::cache::import_bmi(&path, cli.verbose),
+            CacheAction::StatusJson => commands::cache::status_json(),
+            CacheAction::Inspect { module, key } => commands::cache::inspect(&module, &key),
         },
         Commands::Verify { signatures } => commands::verify::run(cli.verbose, signatures),
         Commands::Graph {
