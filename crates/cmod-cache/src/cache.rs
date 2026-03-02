@@ -163,19 +163,29 @@ impl ArtifactCache {
     }
 
     /// Clear the entire cache.
+    ///
+    /// This is a best-effort operation. On macOS, system services like
+    /// Spotlight can create files (`.DS_Store`) that race with recursive
+    /// deletion, causing `ENOTEMPTY`. We suppress that error since leftover
+    /// OS metadata files do not affect cache correctness.
     pub fn clean(&self) -> Result<(), CmodError> {
         if self.root.exists() {
-            // Remove contents rather than the root directory itself.
-            // Removing and recreating the root can fail on macOS when
-            // Spotlight or other services create files (e.g. .DS_Store)
-            // between the recursive delete and the final rmdir.
             for entry in fs::read_dir(&self.root)? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.is_dir() {
-                    fs::remove_dir_all(&path)?;
+                let result = if path.is_dir() {
+                    fs::remove_dir_all(&path)
                 } else {
-                    fs::remove_file(&path)?;
+                    fs::remove_file(&path)
+                };
+                match result {
+                    Ok(()) => {}
+                    // ENOTEMPTY (66 on macOS, 39 on Linux): transient race
+                    // with OS file-system services — safe to ignore.
+                    Err(ref e)
+                        if e.raw_os_error() == Some(66)
+                            || e.raw_os_error() == Some(39) => {}
+                    Err(e) => return Err(e.into()),
                 }
             }
         }
