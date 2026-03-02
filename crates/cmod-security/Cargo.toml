@@ -1,8 +1,15 @@
 [package]
 name = "cmod-security"
-version = "0.1.0"
-edition = "2021"
 description = "Security, trust, and supply-chain integrity for cmod"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 cmod-core = { path = "../cmod-core" }
