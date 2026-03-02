@@ -1,9 +1,9 @@
 /// @file main.cpp
 /// Entry point for the hello example
 
-import local.hello;
+#include <iostream>
 
-import <iostream>;
+import local.hello;
 
 int main() {
     std::cout << hello::greet("world") << std::endl;

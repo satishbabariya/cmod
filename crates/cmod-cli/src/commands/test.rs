@@ -181,7 +181,8 @@ pub fn run(
         // Compile the test with module precompiled paths
         let test_binary = build_dir.join(format!("test_{}", test_name));
 
-        let mut cmd = std::process::Command::new("clang++");
+        let clang_path = std::env::var_os("CXX").unwrap_or_else(|| std::ffi::OsString::from("clang++"));
+        let mut cmd = std::process::Command::new(&clang_path);
         cmd.arg(format!("-std=c++{}", cxx_standard));
         cmd.arg(format!("--target={}", target_triple));
 

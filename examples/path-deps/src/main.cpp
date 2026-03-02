@@ -3,10 +3,10 @@
 ///
 /// Demonstrates using two local path dependencies: geometry and colors.
 
+#include <iostream>
+
 import local.geometry;
 import local.colors;
-
-import <iostream>;
 
 int main() {
     // Geometry: compute distance and interpolation

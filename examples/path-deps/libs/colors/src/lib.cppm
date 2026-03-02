@@ -3,10 +3,12 @@
 ///
 /// RGBA color type with constexpr blending and packing operations.
 
-export module local.colors;
+module;
 
-import <cstdint>;
-import <algorithm>;
+#include <algorithm>
+#include <cstdint>
+
+export module local.colors;
 
 export namespace colors {
 

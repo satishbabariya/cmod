@@ -1,9 +1,9 @@
 /// @file main.cpp
 /// Entry point for the with-deps example
 
-import local.with_deps;
+#include <iostream>
 
-import <iostream>;
+import local.with_deps;
 
 int main() {
     std::cout << with_deps::make_greeting("Alice", 30) << std::endl;

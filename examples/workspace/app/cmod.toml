@@ -13,7 +13,6 @@ root = "src/lib.cppm"
 [dependencies]
 core = { path = "../core" }
 utils = { path = "../utils" }
-"github.com/satishbabariya/fmt-cmod" = { workspace = true }
 
 [toolchain]
 compiler = "clang"

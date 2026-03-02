@@ -6,29 +6,25 @@ Multi-member workspace (monorepo) example.
 
 - Workspace root `cmod.toml` with `[workspace]` section
 - Multiple members with inter-member path dependencies
-- Shared workspace-level dependency (`{ workspace = true }`)
 - Topological build ordering across members
 
 ## Project structure
 
 ```
 workspace/
-├── cmod.toml           # Workspace root: members + shared deps
+├── cmod.toml           # Workspace root: members list
 ├── core/
 │   ├── cmod.toml       # static-lib, no deps
 │   └── src/
-│       ├── lib.cppm    # export module local.core; (Record, make_record, lookup)
-│       └── core.cpp    # module local.core; (lookup implementation)
+│       └── lib.cppm    # export module local.core; (Record, make_record, lookup)
 ├── utils/
 │   ├── cmod.toml       # static-lib, path dep on core
 │   └── src/
-│       ├── lib.cppm    # export module local.utils; import local.core;
-│       └── utils.cpp   # module local.utils;
+│       └── lib.cppm    # export module local.utils; import local.core;
 └── app/
-    ├── cmod.toml       # binary, path deps on core+utils, workspace dep on fmt-cmod
+    ├── cmod.toml       # binary, path deps on core+utils
     └── src/
         ├── lib.cppm    # export module local.app;
-        ├── app.cpp     # module local.app; (run implementation)
         └── main.cpp    # import local.app; int main()
 ```
 
@@ -45,9 +41,6 @@ core -> utils -> app
 ```bash
 cd examples/workspace
 
-# Resolve all workspace dependencies
-cmod resolve
-
 # Build the entire workspace
 cmod build
 
@@ -55,9 +48,18 @@ cmod build
 cmod run -p app
 ```
 
+Expected output:
+
+```
+alpha: 10 -> 20
+beta: 20 -> 40
+gamma: 30 -> 60
+Found 'beta' with value 20
+```
+
 ## Key concepts
 
-- **Workspace root**: the top-level `cmod.toml` lists `members` and can declare `[workspace.dependencies]` shared across all members.
+- **Workspace root**: the top-level `cmod.toml` lists `members` — each member is a sub-directory with its own `cmod.toml`.
 - **Path dependencies**: `core = { path = "../core" }` references a sibling workspace member by relative path.
-- **`{ workspace = true }`**: inherits the dependency version from `[workspace.dependencies]` in the workspace root, ensuring all members use the same version.
-- **Unified lockfile**: the workspace shares a single `cmod.lock` for all external dependencies.
+- **Topological build order**: cmod automatically builds `core` first, then `utils` (which depends on `core`), then `app` (which depends on both).
+- **PCM propagation**: when building `utils`, cmod passes the PCM from `core` so `import local.core;` resolves correctly.

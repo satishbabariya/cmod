@@ -1730,7 +1730,7 @@ fn test_e2e_locked_flag_without_lockfile() {
     let tmp = TempDir::new().unwrap();
     init_project(tmp.path(), "lockedtest");
 
-    // Add a dep but don't resolve — then build with --locked should fail
+    // cmod build --locked should fail if cmod.lock does not exist AND there are dependencies
     let lib_dir = tmp.path().join("libs/dep");
     fs::create_dir_all(&lib_dir).unwrap();
     fs::write(
@@ -1740,9 +1740,13 @@ fn test_e2e_locked_flag_without_lockfile() {
     .unwrap();
     run_cmod(tmp.path(), &["add", "dep", "--path", "./libs/dep"]);
 
+    // Delete the lockfile that `cmod add` resolved
+    std::fs::remove_file(tmp.path().join("cmod.lock")).unwrap();
+
     let output = run_cmod(tmp.path(), &["--locked", "build"]);
     assert!(!output.status.success());
-    assert!(stderr(&output).contains("lockfile") || stderr(&output).contains("lock"));
+    let err = stderr(&output);
+    assert!(err.contains("lockfile") || err.contains("not found"));
 }
 
 // ─── Group 28: Full E2E Workflows ───────────────────────────────────────────

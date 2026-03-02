@@ -5,12 +5,15 @@
 ///   - fmt (from github.com/satishbabariya/fmt-cmod)
 ///   - nlohmann.json (from github.com/satishbabariya/json-cmod)
 
+module;
+
+#include <string>
+#include <string_view>
+
 export module local.with_deps;
 
 import fmt;
 import nlohmann.json;
-
-import <string>;
 
 export namespace with_deps {
 

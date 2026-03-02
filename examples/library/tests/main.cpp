@@ -1,11 +1,11 @@
 /// @file tests/main.cpp
 /// Assert-based tests for local.math (ops + stats partitions)
 
-import local.math;
+#include <array>
+#include <cassert>
+#include <iostream>
 
-import <cassert>;
-import <array>;
-import <iostream>;
+import local.math;
 
 void test_ops() {
     static_assert(math::add(2, 3) == 5);

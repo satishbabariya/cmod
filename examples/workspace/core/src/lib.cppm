@@ -3,11 +3,14 @@
 ///
 /// Provides the Record data type and basic operations.
 
-export module local.core;
+module;
 
-import <string>;
-import <vector>;
-import <optional>;
+#include <algorithm>
+#include <optional>
+#include <string>
+#include <vector>
+
+export module local.core;
 
 export namespace core {
 
@@ -18,12 +21,19 @@ struct Record {
 };
 
 /// Create a new record.
-auto make_record(std::string key, int value) -> Record {
+inline auto make_record(std::string key, int value) -> Record {
     return Record{std::move(key), value};
 }
 
 /// Look up a record by key. Returns nullopt if not found.
-auto lookup(const std::vector<Record>& records,
-            std::string_view key) -> std::optional<Record>;
+inline auto lookup(const std::vector<Record>& records,
+                   std::string_view key) -> std::optional<Record> {
+    auto it = std::find_if(records.begin(), records.end(),
+        [&](const Record& r) { return r.key == key; });
+    if (it != records.end()) {
+        return *it;
+    }
+    return std::nullopt;
+}
 
 } // namespace core

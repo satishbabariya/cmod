@@ -8,6 +8,3 @@ license = "Apache-2.0"
 
 [workspace]
 members = ["core", "utils", "app"]
-
-[workspace.dependencies]
-"github.com/satishbabariya/fmt-cmod" = "^0.1"
