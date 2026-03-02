@@ -29,6 +29,14 @@ pub fn run(workspace: bool, name: Option<String>) -> Result<(), CmodError> {
     }
 }
 
+/// Sanitize a name for use as a C++ identifier (module name, namespace).
+///
+/// Replaces hyphens with underscores since hyphens are not valid in C++
+/// identifiers or module names.
+fn sanitize_cpp_name(name: &str) -> String {
+    name.replace('-', "_")
+}
+
 /// Initialize a single module project.
 fn init_module(dir: &Path, name: &str) -> Result<(), CmodError> {
     let m = manifest::default_manifest(name);
@@ -40,18 +48,30 @@ fn init_module(dir: &Path, name: &str) -> Result<(), CmodError> {
     // Write manifest
     m.save(&dir.join("cmod.toml"))?;
 
+    // Sanitize name for use in C++ identifiers
+    let cpp_name = sanitize_cpp_name(name);
+
     // Create stub module interface
     let module_name = m
         .module
         .as_ref()
         .map(|m| m.name.clone())
-        .unwrap_or_else(|| format!("local.{}", name));
+        .unwrap_or_else(|| format!("local.{}", cpp_name));
 
     std::fs::write(
         dir.join("src/lib.cppm"),
         format!(
             "export module {};\n\nexport namespace {} {{\n\n}} // namespace {}\n",
-            module_name, name, name
+            module_name, cpp_name, cpp_name
+        ),
+    )?;
+
+    // Create main entry point for binary projects
+    std::fs::write(
+        dir.join("src/main.cpp"),
+        format!(
+            "import {};\n\nint main() {{\n    return 0;\n}}\n",
+            module_name
         ),
     )?;
 
@@ -67,6 +87,7 @@ fn init_module(dir: &Path, name: &str) -> Result<(), CmodError> {
     eprintln!("  Created module '{}' in {}", name, dir.display());
     eprintln!("  - cmod.toml");
     eprintln!("  - src/lib.cppm");
+    eprintln!("  - src/main.cpp");
     eprintln!("  - tests/main.cpp");
 
     Ok(())

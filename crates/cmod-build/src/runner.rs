@@ -47,6 +47,11 @@ pub struct BuildRunner {
     pub force_rebuild: bool,
     /// Maximum parallel jobs (0 = auto-detect CPU count).
     pub max_jobs: usize,
+    /// Extra PCM paths from external sources (e.g., workspace dependencies).
+    /// Maps module name to PCM file path.
+    extra_pcm_paths: HashMap<String, PathBuf>,
+    /// Extra object files to link (e.g., from workspace dependencies).
+    extra_obj_paths: Vec<PathBuf>,
 }
 
 /// Outcome of executing a single build node.
@@ -78,6 +83,8 @@ impl BuildRunner {
             no_cache: false,
             force_rebuild: false,
             max_jobs: 0,
+            extra_pcm_paths: HashMap::new(),
+            extra_obj_paths: Vec::new(),
         }
     }
 
@@ -96,6 +103,18 @@ impl BuildRunner {
     /// Enable force rebuild (ignore incremental state).
     pub fn with_force(mut self, force: bool) -> Self {
         self.force_rebuild = force;
+        self
+    }
+
+    /// Add extra PCM paths from external sources (e.g., other workspace members).
+    pub fn with_extra_pcm_paths(mut self, pcms: HashMap<String, PathBuf>) -> Self {
+        self.extra_pcm_paths = pcms;
+        self
+    }
+
+    /// Add extra object files to link (e.g., from workspace dependencies).
+    pub fn with_extra_obj_paths(mut self, objs: Vec<PathBuf>) -> Self {
+        self.extra_obj_paths = objs;
         self
     }
 
@@ -416,13 +435,11 @@ impl BuildRunner {
                     }
                 }
 
-                let dep_pcms: Vec<(&str, &Path)> = node
-                    .dependencies
+                // Pass all available PCMs — clang needs transitive module visibility
+                // (e.g., when a module re-exports partitions via `export import :part;`)
+                let all_pcms: Vec<(&str, &Path)> = pcm_map
                     .iter()
-                    .filter_map(|dep_id| {
-                        let name = dep_id.strip_prefix("interface:")?;
-                        pcm_map.get(name).map(|p| (name, p.as_path()))
-                    })
+                    .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
                 if let Some(parent) = pcm_output.parent() {
@@ -433,7 +450,7 @@ impl BuildRunner {
                 }
 
                 self.backend
-                    .compile_interface(source, pcm_output, obj_output, &dep_pcms)?;
+                    .compile_interface(source, pcm_output, obj_output, &all_pcms)?;
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     self.cache_store(&module_id, &key, node);
@@ -463,13 +480,10 @@ impl BuildRunner {
                     }
                 }
 
-                let dep_pcms: Vec<(&str, &Path)> = node
-                    .dependencies
+                // Pass all available PCMs for transitive visibility
+                let all_pcms: Vec<(&str, &Path)> = pcm_map
                     .iter()
-                    .filter_map(|dep_id| {
-                        let name = dep_id.strip_prefix("interface:")?;
-                        pcm_map.get(name).map(|p| (name, p.as_path()))
-                    })
+                    .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
                 if let Some(parent) = obj_output.parent() {
@@ -477,7 +491,7 @@ impl BuildRunner {
                 }
 
                 self.backend
-                    .compile_implementation(source, obj_output, &dep_pcms)?;
+                    .compile_implementation(source, obj_output, &all_pcms)?;
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     self.cache_store(&module_id, &key, node);
@@ -511,8 +525,14 @@ impl BuildRunner {
                     fs::create_dir_all(parent)?;
                 }
 
+                // Pass all available PCMs for transitive module visibility
+                let all_pcms: Vec<(&str, &Path)> = pcm_map
+                    .iter()
+                    .map(|(name, path)| (name.as_str(), path.as_path()))
+                    .collect();
+
                 self.backend
-                    .compile_implementation(source, obj_output, &[])?;
+                    .compile_implementation(source, obj_output, &all_pcms)?;
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     self.cache_store(&module_id, &key, node);
@@ -524,7 +544,8 @@ impl BuildRunner {
 
             NodeKind::Link => {
                 let output = &node.outputs[0];
-                let obj_files = plan.object_paths();
+                let mut obj_files = plan.object_paths();
+                obj_files.extend(self.extra_obj_paths.clone());
                 let obj_refs: Vec<&Path> =
                     obj_files.iter().map(|p| p.as_path()).collect();
 
@@ -577,10 +598,12 @@ impl BuildRunner {
             .map(|(i, n)| (n.id.clone(), i))
             .collect();
 
-        // Compute PCM paths for dependency resolution during compilation
-        let pcm_map: Arc<HashMap<String, PathBuf>> = Arc::new(
-            plan.pcm_paths().into_iter().collect(),
-        );
+        // Compute PCM paths for dependency resolution during compilation.
+        // Include extra PCMs from workspace dependencies.
+        let mut pcm_map_inner: HashMap<String, PathBuf> =
+            plan.pcm_paths().into_iter().collect();
+        pcm_map_inner.extend(self.extra_pcm_paths.clone());
+        let pcm_map: Arc<HashMap<String, PathBuf>> = Arc::new(pcm_map_inner);
 
         // For single-job or very small plans, use sequential execution
         if jobs <= 1 || compile_nodes.len() <= 1 {
@@ -633,8 +656,14 @@ impl BuildRunner {
         }
 
         // Spawn worker threads
+        //
+        // Workers use recv_timeout to avoid deadlock: since workers hold
+        // sender clones (needed to enqueue newly-ready nodes), a plain
+        // recv() would block forever after all work is done. The timeout
+        // lets workers check the completion count and exit gracefully.
         std::thread::scope(|scope| {
-            for _ in 0..jobs {
+            let effective_workers = jobs.min(total);
+            for _ in 0..effective_workers {
                 let work_rx = work_rx.clone();
                 let work_tx = work_tx.clone();
                 let completed = Arc::clone(&completed);
@@ -652,15 +681,21 @@ impl BuildRunner {
                 let node_timings = Arc::clone(&node_timings);
 
                 scope.spawn(move || {
-                    while let Ok(idx) = work_rx.recv() {
-                        // Check if we've had errors — stop processing new work
-                        if !errors.lock().unwrap().is_empty() {
-                            let c = completed.fetch_add(1, Ordering::SeqCst) + 1;
-                            if c >= total {
-                                // Close sender to unblock other workers
-                            }
-                            continue;
+                    loop {
+                        // Check if all work is done
+                        if completed.load(Ordering::SeqCst) >= total {
+                            break;
                         }
+                        // Check if there are errors — stop early
+                        if !errors.lock().unwrap().is_empty() {
+                            break;
+                        }
+
+                        let idx = match work_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                            Ok(idx) => idx,
+                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                        };
 
                         let node = &plan.nodes[idx];
                         match self.execute_node(node, plan, &pcm_map, Some(&build_state), &flags_hash) {
@@ -671,7 +706,6 @@ impl BuildRunner {
                                 match outcome {
                                     NodeOutcome::CacheHit(_) => {
                                         cache_hits.fetch_add(1, Ordering::Relaxed);
-                                        // Record state for cached nodes too
                                         new_build_state.lock().unwrap().record_node(node, &flags_hash);
                                     }
                                     NodeOutcome::Compiled(_) => {
@@ -680,7 +714,6 @@ impl BuildRunner {
                                     }
                                     NodeOutcome::Skipped(_) => {
                                         incr_skipped.fetch_add(1, Ordering::Relaxed);
-                                        // Preserve existing state for skipped nodes
                                         if let Some(prev) = build_state.nodes.get(&node.id) {
                                             new_build_state.lock().unwrap().nodes.insert(
                                                 node.id.clone(), prev.clone(),
@@ -706,11 +739,12 @@ impl BuildRunner {
                                 }
                             }
                         }
-                        let _ = c; // suppress unused warning
+                        let _ = c;
                     }
+                    drop(work_tx);
                 });
             }
-            // Drop sender on main thread so workers exit when all senders are dropped
+            // Drop sender on main thread so workers can detect disconnection
             drop(work_tx);
         });
 
@@ -765,7 +799,8 @@ impl BuildRunner {
         let wall_start = Instant::now();
         let build_state = BuildState::load(&plan.build_dir);
         let flags_hash = self.flags_hash();
-        let pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
+        let mut pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
+        pcm_map.extend(self.extra_pcm_paths.clone());
         let mut new_state = BuildState::default();
         let mut final_output = PathBuf::new();
         let mut stats = BuildStats::default();

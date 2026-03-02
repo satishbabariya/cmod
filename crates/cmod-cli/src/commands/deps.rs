@@ -51,7 +51,7 @@ pub fn run(tree: bool, why: Option<String>, conflicts: bool) -> Result<(), CmodE
     }
 
     if tree {
-        print_tree(&config.manifest.package.name, &lockfile);
+        print_tree(&config.manifest.package.name, &config.manifest.package.version, &lockfile);
     } else {
         print_flat(&lockfile);
     }
@@ -74,7 +74,7 @@ fn print_flat(lockfile: &Lockfile) {
 }
 
 /// Print dependencies as an indented tree with box-drawing characters.
-fn print_tree(root_name: &str, lockfile: &Lockfile) {
+fn print_tree(root_name: &str, root_version: &str, lockfile: &Lockfile) {
     // Build an index of packages by name
     let pkg_map: BTreeMap<&str, &LockedPackage> = lockfile
         .packages
@@ -95,7 +95,7 @@ fn print_tree(root_name: &str, lockfile: &Lockfile) {
         .filter(|p| !all_transitive.contains(p.name.as_str()))
         .collect();
 
-    println!("{} v{}", root_name, "0.0.0");
+    println!("{} v{}", root_name, root_version);
 
     let total = root_deps.len();
     for (i, pkg) in root_deps.iter().enumerate() {

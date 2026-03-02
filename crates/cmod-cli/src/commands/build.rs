@@ -200,9 +200,16 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, rem
     // Ensure dependencies are resolved
     let _lockfile = ensure_resolved(config)?;
 
+    // Build members in topological order so dependencies are built first
+    let ordered_members = ws.build_order()?;
+
+    // Accumulate PCM and object files from built members for cross-member imports
+    let mut workspace_pcm_paths: std::collections::HashMap<String, std::path::PathBuf> =
+        std::collections::HashMap::new();
+    let mut workspace_obj_paths: Vec<std::path::PathBuf> = Vec::new();
     let mut failed = Vec::new();
 
-    for member in &ws.members {
+    for member in &ordered_members {
         eprintln!("  Building member: {}", member.name);
 
         let member_src = member.path.join("src");
@@ -231,16 +238,45 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, rem
             .and_then(|b| b.build_type)
             .unwrap_or_default();
 
-        let mut runner = BuildRunner::new(backend, Some(cache))
+        let mut runner_instance = BuildRunner::new(backend, Some(cache))
             .with_jobs(jobs)
-            .with_force(force);
+            .with_force(force)
+            .with_extra_pcm_paths(workspace_pcm_paths.clone())
+            .with_extra_obj_paths(workspace_obj_paths.clone());
         if let Some(remote) = make_remote_cache(remote_url, verbose) {
-            runner = runner.with_remote_cache(remote);
+            runner_instance = runner_instance.with_remote_cache(remote);
         }
-        match runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type) {
+        match runner_instance.build_with_stats(&graph, &build_dir, &target, config.profile, build_type) {
             Ok((output, stats)) => {
                 print_build_stats(&stats, verbose, timings);
                 eprintln!("    Built: {}", output.display());
+
+                // Collect PCM files from this member for downstream members
+                let pcm_dir = build_dir.join("pcm");
+                if pcm_dir.exists() {
+                    for source in &sources {
+                        if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
+                            let sanitized = mod_name.replace('.', "_").replace(':', "_").replace('/', "_");
+                            let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
+                            if pcm_path.exists() {
+                                workspace_pcm_paths.insert(mod_name, pcm_path);
+                            }
+                        }
+                    }
+                }
+
+                // Collect object files from this member for downstream linking
+                let obj_dir = build_dir.join("obj");
+                if obj_dir.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&obj_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.extension().and_then(|e| e.to_str()) == Some("o") {
+                                workspace_obj_paths.push(path);
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("    Failed: {}", e);
@@ -505,19 +541,72 @@ fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
 }
 
 /// Simple import extraction by scanning source content for `import` statements.
+///
+/// Handles:
+/// - `import module_name;`
+/// - `export import module_name;` (re-exports)
+/// - `import :partition;` (partition imports, qualified with parent module)
 fn extract_imports_from_source(path: &std::path::Path) -> Result<Vec<String>, CmodError> {
     let content = std::fs::read_to_string(path)?;
     let mut imports = Vec::new();
 
-    for line in content.lines() {
+    // Determine the parent module name for qualifying partition imports.
+    // If this file declares `export module foo.bar;` or `export module foo.bar:part;`,
+    // the parent module is `foo.bar`.
+    let parent_module = content.lines().find_map(|line| {
         let trimmed = line.trim();
-        if trimmed.starts_with("import ") && trimmed.ends_with(';') {
-            let module_name = trimmed
-                .trim_start_matches("import ")
+        if trimmed.starts_with("export module") || trimmed.starts_with("module") {
+            let decl = trimmed
+                .trim_start_matches("export")
+                .trim()
+                .trim_start_matches("module")
+                .trim()
                 .trim_end_matches(';')
                 .trim();
+            // For `foo.bar:partition`, parent is `foo.bar`
+            // For `foo.bar`, parent is `foo.bar`
+            Some(decl.split(':').next().unwrap_or(decl).to_string())
+        } else {
+            None
+        }
+    });
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Match both `import X;` and `export import X;`
+        let import_part = if trimmed.starts_with("export import ") && trimmed.ends_with(';') {
+            Some(
+                trimmed
+                    .trim_start_matches("export import ")
+                    .trim_end_matches(';')
+                    .trim(),
+            )
+        } else if trimmed.starts_with("import ") && trimmed.ends_with(';') {
+            Some(
+                trimmed
+                    .trim_start_matches("import ")
+                    .trim_end_matches(';')
+                    .trim(),
+            )
+        } else {
+            None
+        };
+
+        if let Some(module_name) = import_part {
             // Skip header unit imports (e.g., import <iostream>;)
-            if !module_name.starts_with('<') && !module_name.starts_with('"') {
+            if module_name.starts_with('<') || module_name.starts_with('"') {
+                continue;
+            }
+
+            // Qualify partition imports: `:vec3` → `parent_module:vec3`
+            if module_name.starts_with(':') {
+                if let Some(ref parent) = parent_module {
+                    imports.push(format!("{}{}", parent, module_name));
+                } else {
+                    imports.push(module_name.to_string());
+                }
+            } else {
                 imports.push(module_name.to_string());
             }
         }
@@ -836,6 +925,35 @@ mod tests {
 
         let imports = extract_imports_from_source(&file).unwrap();
         assert_eq!(imports, vec!["base", "utils"]);
+    }
+
+    #[test]
+    fn test_extract_imports_partition() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("mat4.cppm");
+        std::fs::write(
+            &file,
+            "export module mylib:mat4;\nimport :vec3;\nimport :utils;\n",
+        )
+        .unwrap();
+
+        let imports = extract_imports_from_source(&file).unwrap();
+        // Partition imports should be qualified with the parent module
+        assert_eq!(imports, vec!["mylib:vec3", "mylib:utils"]);
+    }
+
+    #[test]
+    fn test_extract_imports_export_import() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("lib.cppm");
+        std::fs::write(
+            &file,
+            "export module mylib;\nexport import :vec3;\nexport import :mat4;\nimport base;\n",
+        )
+        .unwrap();
+
+        let imports = extract_imports_from_source(&file).unwrap();
+        assert_eq!(imports, vec!["mylib:vec3", "mylib:mat4", "base"]);
     }
 
     #[test]

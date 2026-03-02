@@ -22,6 +22,7 @@ fn test_init_creates_project() {
     // Check files were created
     assert!(tmp.path().join("cmod.toml").exists());
     assert!(tmp.path().join("src/lib.cppm").exists());
+    assert!(tmp.path().join("src/main.cpp").exists());
     assert!(tmp.path().join("tests/main.cpp").exists());
 
     // Check manifest content
@@ -1302,4 +1303,136 @@ fn test_plugin_manifest_discovery() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success());
     assert!(stderr.contains("formatter") || stderr.contains("1 plugin"), "manifest plugins should be discovered: {}", stderr);
+}
+
+// ========== Real-project workflow integration tests ==========
+
+#[test]
+fn test_init_sanitizes_hyphens_in_module_name() {
+    let tmp = TempDir::new().unwrap();
+
+    let output = run_cmod(tmp.path(), &["init", "--name", "my-cool-lib"]);
+    assert!(output.status.success());
+
+    // Module name should have underscores, not hyphens
+    let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
+    assert!(manifest.contains("local.my_cool_lib"), "module name should use underscores: {}", manifest);
+    assert!(!manifest.contains("local.my-cool-lib"), "module name should not have hyphens");
+
+    // Source files should use sanitized names
+    let lib_content = fs::read_to_string(tmp.path().join("src/lib.cppm")).unwrap();
+    assert!(lib_content.contains("export module local.my_cool_lib;"));
+    assert!(lib_content.contains("namespace my_cool_lib"));
+
+    // Verify should pass (no invalid characters in module name)
+    let output = run_cmod(tmp.path(), &["verify"]);
+    assert!(output.status.success(), "verify should pass for sanitized module name: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_init_creates_main_cpp() {
+    let tmp = TempDir::new().unwrap();
+
+    run_cmod(tmp.path(), &["init", "--name", "myapp"]);
+
+    // main.cpp should exist and import the module
+    let main_path = tmp.path().join("src/main.cpp");
+    assert!(main_path.exists(), "src/main.cpp should be created by init");
+
+    let content = fs::read_to_string(&main_path).unwrap();
+    assert!(content.contains("import local.myapp;"), "main.cpp should import the module");
+    assert!(content.contains("int main()"), "main.cpp should have a main function");
+}
+
+#[test]
+fn test_deps_tree_shows_correct_version() {
+    let tmp = TempDir::new().unwrap();
+
+    run_cmod(tmp.path(), &["init", "--name", "treetest"]);
+
+    // Add a dependency
+    let lib_dir = tmp.path().join("libs/dep1");
+    fs::create_dir_all(lib_dir.join("src")).unwrap();
+    fs::write(
+        lib_dir.join("cmod.toml"),
+        "[package]\nname = \"dep1\"\nversion = \"2.0.0\"\n",
+    )
+    .unwrap();
+    fs::write(lib_dir.join("src/lib.cppm"), "export module dep1;\n").unwrap();
+
+    run_cmod(tmp.path(), &["add", "dep1", "--path", "./libs/dep1"]);
+    run_cmod(tmp.path(), &["resolve"]);
+
+    let output = run_cmod(tmp.path(), &["deps", "--tree"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Root should show the actual version from manifest (0.1.0), not hardcoded 0.0.0
+    assert!(stdout.starts_with("treetest v0.1.0"), "deps tree root should show actual version: {}", stdout);
+}
+
+#[test]
+fn test_build_with_module_import_in_main() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "buildtest"]);
+
+    // Write a module with actual content
+    fs::write(
+        tmp.path().join("src/lib.cppm"),
+        "export module local.buildtest;\n\nexport int answer() { return 42; }\n",
+    )
+    .unwrap();
+
+    // Write main.cpp that imports and uses the module
+    fs::write(
+        tmp.path().join("src/main.cpp"),
+        "import local.buildtest;\n\nint main() { return answer() == 42 ? 0 : 1; }\n",
+    )
+    .unwrap();
+
+    let output = run_cmod(tmp.path(), &["build"]);
+    assert!(output.status.success(), "build should succeed: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_full_build_run_test_workflow() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "fulltest"]);
+
+    // Write module with testable functionality
+    fs::write(
+        tmp.path().join("src/lib.cppm"),
+        "export module local.fulltest;\n\nexport namespace fulltest {\n  int add(int a, int b) { return a + b; }\n}\n",
+    )
+    .unwrap();
+
+    // Write main that uses the module
+    fs::write(
+        tmp.path().join("src/main.cpp"),
+        "import local.fulltest;\n\nint main() { return fulltest::add(1, 2) == 3 ? 0 : 1; }\n",
+    )
+    .unwrap();
+
+    // Write test that verifies the module
+    fs::write(
+        tmp.path().join("tests/main.cpp"),
+        "import local.fulltest;\n\nint main() {\n  if (fulltest::add(2, 3) != 5) return 1;\n  if (fulltest::add(-1, 1) != 0) return 1;\n  return 0;\n}\n",
+    )
+    .unwrap();
+
+    // Build
+    let output = run_cmod(tmp.path(), &["build"]);
+    assert!(output.status.success(), "build failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    // Verify
+    let output = run_cmod(tmp.path(), &["verify"]);
+    assert!(output.status.success(), "verify failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    // Run
+    let output = run_cmod(tmp.path(), &["run"]);
+    assert!(output.status.success(), "run failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    // Test
+    let output = run_cmod(tmp.path(), &["test"]);
+    assert!(output.status.success(), "test failed: {}", String::from_utf8_lossy(&output.stderr));
 }

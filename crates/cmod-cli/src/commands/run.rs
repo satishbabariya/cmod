@@ -39,20 +39,71 @@ pub fn run(
 }
 
 /// Find the built binary in the build directory.
+///
+/// Searches both the build root and profile subdirectories (debug/release)
+/// for the named executable or any executable file.
 fn find_binary(
     build_dir: &std::path::Path,
     name: &str,
 ) -> Result<std::path::PathBuf, CmodError> {
-    // Try common binary locations / names
-    let candidates = [
-        build_dir.join(name),
-        build_dir.join(format!("{}.exe", name)),
-        build_dir.join("a.out"),
+    // Search in both the build root and profile subdirectories
+    let search_dirs = [
+        build_dir.to_path_buf(),
+        build_dir.join("debug"),
+        build_dir.join("release"),
     ];
 
-    for candidate in &candidates {
-        if candidate.exists() && candidate.is_file() {
-            return Ok(candidate.clone());
+    for dir in &search_dirs {
+        // Try exact name matches first, then common linker output names
+        let candidates = [
+            dir.join(name),
+            dir.join(format!("{}.exe", name)),
+            dir.join("main"),
+            dir.join("main.exe"),
+            dir.join("a.out"),
+        ];
+
+        for candidate in &candidates {
+            if candidate.exists() && candidate.is_file() {
+                return Ok(candidate.clone());
+            }
+        }
+    }
+
+    // Fallback: find any executable file in the build directories
+    // (the linker output name may differ from the package name)
+    for dir in &search_dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    // Skip object files, PCMs, metadata, and test binaries
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if matches!(ext, "o" | "pcm" | "json" | "a" | "so" | "dylib") {
+                        continue;
+                    }
+                    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                    if stem.starts_with("test_") || stem.ends_with("_test") {
+                        continue;
+                    }
+                    // Check if it's an executable (on Unix, check permissions)
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(meta) = std::fs::metadata(&path) {
+                            if meta.permissions().mode() & 0o111 != 0 {
+                                return Ok(path);
+                            }
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        if ext == "exe" || ext.is_empty() {
+                            return Ok(path);
+                        }
+                    }
+                }
+            }
         }
     }
 
