@@ -46,9 +46,8 @@ impl TrustDb {
     /// Load the trust database from a specific file.
     pub fn load(path: &Path) -> Result<Self, CmodError> {
         let content = std::fs::read_to_string(path)?;
-        toml::from_str(&content).map_err(|e| CmodError::Other(
-            format!("failed to parse trust database: {}", e),
-        ))
+        toml::from_str(&content)
+            .map_err(|e| CmodError::Other(format!("failed to parse trust database: {}", e)))
     }
 
     /// Save the trust database.
@@ -56,9 +55,8 @@ impl TrustDb {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let content = toml::to_string_pretty(self).map_err(|e| CmodError::Other(
-            format!("failed to serialize trust database: {}", e),
-        ))?;
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| CmodError::Other(format!("failed to serialize trust database: {}", e)))?;
         std::fs::write(path, content)?;
         Ok(())
     }
@@ -79,32 +77,28 @@ impl TrustDb {
     /// Record trust for a module on first use.
     ///
     /// Returns `true` if this is a new entry, `false` if already trusted.
-    pub fn trust_on_first_use(
-        &mut self,
-        module_name: &str,
-        origin: &str,
-        commit: &str,
-    ) -> bool {
+    pub fn trust_on_first_use(&mut self, module_name: &str, origin: &str, commit: &str) -> bool {
         if self.modules.contains_key(module_name) {
             return false;
         }
 
-        self.modules.insert(module_name.to_string(), TrustedModule {
-            origin: origin.to_string(),
-            first_seen_commit: commit.to_string(),
-            key_fingerprint: None,
-            trusted_at: String::new(),
-            revoked: false,
-        });
+        self.modules.insert(
+            module_name.to_string(),
+            TrustedModule {
+                origin: origin.to_string(),
+                first_seen_commit: commit.to_string(),
+                key_fingerprint: None,
+                trusted_at: String::new(),
+                revoked: false,
+            },
+        );
 
         true
     }
 
     /// Check whether a module is trusted.
     pub fn is_trusted(&self, module_name: &str) -> bool {
-        self.modules
-            .get(module_name)
-            .is_some_and(|m| !m.revoked)
+        self.modules.get(module_name).is_some_and(|m| !m.revoked)
     }
 
     /// Check whether a module's origin matches what was trusted.
@@ -145,9 +139,17 @@ mod tests {
     #[test]
     fn test_trust_on_first_use() {
         let mut db = TrustDb::default();
-        assert!(db.trust_on_first_use("github.fmtlib.fmt", "https://github.com/fmtlib/fmt", "abc123"));
+        assert!(db.trust_on_first_use(
+            "github.fmtlib.fmt",
+            "https://github.com/fmtlib/fmt",
+            "abc123"
+        ));
         // Second time should return false
-        assert!(!db.trust_on_first_use("github.fmtlib.fmt", "https://github.com/fmtlib/fmt", "abc123"));
+        assert!(!db.trust_on_first_use(
+            "github.fmtlib.fmt",
+            "https://github.com/fmtlib/fmt",
+            "abc123"
+        ));
     }
 
     #[test]
@@ -182,8 +184,14 @@ mod tests {
         let mut db = TrustDb::default();
         db.trust_on_first_use("mod1", "https://example.com/repo", "abc");
 
-        assert_eq!(db.origin_matches("mod1", "https://example.com/repo"), Some(true));
-        assert_eq!(db.origin_matches("mod1", "https://other.com/repo"), Some(false));
+        assert_eq!(
+            db.origin_matches("mod1", "https://example.com/repo"),
+            Some(true)
+        );
+        assert_eq!(
+            db.origin_matches("mod1", "https://other.com/repo"),
+            Some(false)
+        );
         assert_eq!(db.origin_matches("nonexistent", "url"), None);
     }
 

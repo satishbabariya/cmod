@@ -46,9 +46,9 @@ pub fn run(module_name: String, verbose: bool) -> Result<(), CmodError> {
         }
     }
 
-    let node = found_node.ok_or_else(|| CmodError::Other(
-        format!("module '{}' not found in source tree", module_name),
-    ))?;
+    let node = found_node.ok_or_else(|| {
+        CmodError::Other(format!("module '{}' not found in source tree", module_name))
+    })?;
 
     println!("Module: {}", node.name);
     println!("Source: {}", node.source.display());
@@ -63,7 +63,10 @@ pub fn run(module_name: String, verbose: bool) -> Result<(), CmodError> {
     let source_hash = hash_file(&node.source).unwrap_or_default();
 
     if verbose {
-        println!("  Source hash: {}", &source_hash[..16.min(source_hash.len())]);
+        println!(
+            "  Source hash: {}",
+            &source_hash[..16.min(source_hash.len())]
+        );
     }
 
     let cxx_standard = config
@@ -128,9 +131,10 @@ pub fn run(module_name: String, verbose: bool) -> Result<(), CmodError> {
 
     // 3. Check if source is newer than output
     if obj_path.exists() {
-        if let (Ok(src_meta), Ok(obj_meta)) =
-            (std::fs::metadata(&node.source), std::fs::metadata(&obj_path))
-        {
+        if let (Ok(src_meta), Ok(obj_meta)) = (
+            std::fs::metadata(&node.source),
+            std::fs::metadata(&obj_path),
+        ) {
             if let (Ok(src_time), Ok(obj_time)) = (src_meta.modified(), obj_meta.modified()) {
                 if src_time > obj_time {
                     reasons.push("source is newer than object file".to_string());

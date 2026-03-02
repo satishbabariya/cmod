@@ -81,7 +81,9 @@ fn validate_manifest(
 
     // Warn if no edition specified
     if config.manifest.package.edition.is_none() {
-        warnings.push("no edition specified in [package]; consider adding edition = \"2023\"".to_string());
+        warnings.push(
+            "no edition specified in [package]; consider adding edition = \"2023\"".to_string(),
+        );
     }
 
     // Warn about missing optional fields
@@ -117,7 +119,11 @@ fn validate_module_identity(
         }
 
         // Validate module name characters (must be alphanumeric, dots, underscores, colons)
-        if !module.name.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == ':') {
+        if !module
+            .name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == ':')
+        {
             errors.push(format!(
                 "module name '{}' contains invalid characters (allowed: alphanumeric, '.', '_', ':')",
                 module.name

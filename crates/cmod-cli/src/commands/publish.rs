@@ -51,7 +51,11 @@ pub fn run(dry_run: bool, push: bool, verbose: bool) -> Result<(), CmodError> {
     super::build::run_hook(
         &config,
         "pre-publish",
-        config.manifest.hooks.as_ref().and_then(|h| h.pre_publish.as_deref()),
+        config
+            .manifest
+            .hooks
+            .as_ref()
+            .and_then(|h| h.pre_publish.as_deref()),
     )?;
 
     if dry_run {
@@ -72,7 +76,10 @@ pub fn run(dry_run: bool, push: bool, verbose: bool) -> Result<(), CmodError> {
         push_tag(&tag)?;
         eprintln!("  Pushed tag '{}' to origin", tag);
     } else {
-        eprintln!("  Tag created locally. Run `git push origin {}` to publish.", tag);
+        eprintln!(
+            "  Tag created locally. Run `git push origin {}` to publish.",
+            tag
+        );
     }
 
     eprintln!("  Published {} v{}", name, version);
@@ -150,10 +157,7 @@ fn create_tag(tag: &str, message: &str) -> Result<(), CmodError> {
         .map_err(|e| CmodError::Other(format!("git not available: {}", e)))?;
 
     if !status.success() {
-        return Err(CmodError::Other(format!(
-            "failed to create tag '{}'",
-            tag
-        )));
+        return Err(CmodError::Other(format!("failed to create tag '{}'", tag)));
     }
 
     Ok(())

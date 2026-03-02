@@ -44,10 +44,7 @@ pub fn version_matches(version: &Version, req: &VersionReq) -> bool {
 }
 
 /// Given a set of available versions and a constraint, select the highest matching version.
-pub fn resolve_best_version(
-    available: &[Version],
-    req: &VersionReq,
-) -> Option<Version> {
+pub fn resolve_best_version(available: &[Version], req: &VersionReq) -> Option<Version> {
     let mut matching: Vec<&Version> = available.iter().filter(|v| req.matches(v)).collect();
     matching.sort();
     matching.last().cloned().cloned()

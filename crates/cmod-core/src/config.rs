@@ -53,10 +53,7 @@ impl Config {
                 path: start_dir.join("cmod.toml").display().to_string(),
             })?;
 
-        let root = manifest_path
-            .parent()
-            .unwrap_or(start_dir)
-            .to_path_buf();
+        let root = manifest_path.parent().unwrap_or(start_dir).to_path_buf();
 
         let manifest = Manifest::load(&manifest_path)?;
         let lockfile_path = root.join("cmod.lock");

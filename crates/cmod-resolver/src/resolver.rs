@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use semver::Version;
 
 use cmod_core::error::CmodError;
-use cmod_core::lockfile::{Lockfile, LockedPackage, LockedToolchain};
+use cmod_core::lockfile::{LockedPackage, LockedToolchain, Lockfile};
 use cmod_core::manifest::{Dependency, Manifest};
 use cmod_security::trust::TrustDb;
 
@@ -101,7 +101,15 @@ impl Resolver {
         requested_features: &[String],
         no_default_features: bool,
     ) -> Result<Lockfile, CmodError> {
-        self.resolve_with_target(manifest, existing_lock, locked, offline, requested_features, no_default_features, None)
+        self.resolve_with_target(
+            manifest,
+            existing_lock,
+            locked,
+            offline,
+            requested_features,
+            no_default_features,
+            None,
+        )
     }
 
     /// Resolve all dependencies with feature flags and target-specific filtering.
@@ -142,14 +150,7 @@ impl Resolver {
             if !should_include_dep(name, dep, &resolved_features) {
                 continue;
             }
-            self.resolve_dep(
-                name,
-                dep,
-                manifest,
-                existing_lock,
-                offline,
-                &mut resolved,
-            )?;
+            self.resolve_dep(name, dep, manifest, existing_lock, offline, &mut resolved)?;
         }
 
         // Build lockfile from resolved deps
@@ -220,10 +221,7 @@ impl Resolver {
                                     name: name.to_string(),
                                     version: locked_ver,
                                     repo_url: url,
-                                    commit: locked_pkg
-                                        .commit
-                                        .clone()
-                                        .unwrap_or_default(),
+                                    commit: locked_pkg.commit.clone().unwrap_or_default(),
                                     hash: locked_pkg.hash.clone().unwrap_or_default(),
                                     local_path: repo_dir,
                                     deps: locked_pkg.deps.clone(),
@@ -257,7 +255,9 @@ impl Resolver {
                     }
                     Some(false) => {
                         // Origin mismatch — potential supply chain attack
-                        let trusted_origin = trust_db.modules.get(name)
+                        let trusted_origin = trust_db
+                            .modules
+                            .get(name)
                             .map(|m| m.origin.as_str())
                             .unwrap_or("unknown");
                         return Err(CmodError::SecurityViolation {
@@ -302,12 +302,12 @@ impl Resolver {
             }
             _ => {
                 // Resolve by version constraint against tags
-                let version_req_str = dep.version_req().ok_or_else(|| {
-                    CmodError::UnresolvableConstraints {
-                        name: name.to_string(),
-                        reason: "no version constraint specified".to_string(),
-                    }
-                })?;
+                let version_req_str =
+                    dep.version_req()
+                        .ok_or_else(|| CmodError::UnresolvableConstraints {
+                            name: name.to_string(),
+                            reason: "no version constraint specified".to_string(),
+                        })?;
                 let req = version::parse_version_req(version_req_str)?;
                 let tags = git::list_version_tags(&repo)?;
                 let available: Vec<Version> = tags.iter().map(|(v, _)| v.clone()).collect();
@@ -420,17 +420,13 @@ impl Resolver {
     }
 
     /// Validate that a lockfile satisfies the current manifest's constraints.
-    fn validate_lockfile(
-        &self,
-        manifest: &Manifest,
-        lockfile: &Lockfile,
-    ) -> Result<(), CmodError> {
+    fn validate_lockfile(&self, manifest: &Manifest, lockfile: &Lockfile) -> Result<(), CmodError> {
         // Note: we validate base dependencies only; target-specific deps
         // are validated at build time when the target is known.
         for (name, dep) in &manifest.dependencies {
-            let locked = lockfile.find_package(name).ok_or_else(|| {
-                CmodError::LockfileOutdated
-            })?;
+            let locked = lockfile
+                .find_package(name)
+                .ok_or_else(|| CmodError::LockfileOutdated)?;
 
             if let Some(req_str) = dep.version_req() {
                 let req = version::parse_version_req(req_str)?;
@@ -468,10 +464,7 @@ impl Resolver {
     }
 
     /// Remove a dependency from the manifest.
-    pub fn remove_dependency(
-        manifest: &mut Manifest,
-        dep_key: &str,
-    ) -> Result<(), CmodError> {
+    pub fn remove_dependency(manifest: &mut Manifest, dep_key: &str) -> Result<(), CmodError> {
         if manifest.dependencies.remove(dep_key).is_none() {
             return Err(CmodError::DependencyNotFound {
                 name: dep_key.to_string(),
@@ -520,7 +513,10 @@ impl Resolver {
 
         for pkg in &lockfile.packages {
             if pkg.deps.contains(&dep_name.to_string()) {
-                reasons.push(format!("{} (v{}) depends on {}", pkg.name, pkg.version, dep_name));
+                reasons.push(format!(
+                    "{} (v{}) depends on {}",
+                    pkg.name, pkg.version, dep_name
+                ));
             }
         }
 
@@ -549,29 +545,27 @@ impl Resolver {
     ///
     /// Compares the project's ABI configuration against dependency metadata
     /// to detect potential incompatibilities.
-    pub fn check_abi_compat(
-        manifest: &Manifest,
-        lockfile: &Lockfile,
-    ) -> Vec<AbiWarning> {
+    pub fn check_abi_compat(manifest: &Manifest, lockfile: &Lockfile) -> Vec<AbiWarning> {
         let mut warnings = Vec::new();
 
         let project_abi = manifest.abi.as_ref();
         let project_compat = manifest.compat.as_ref();
 
         // Extract project's minimum C++ standard
-        let project_cpp = project_compat
-            .and_then(|c| c.cpp.as_deref())
-            .and_then(|s| {
-                s.trim_start_matches(">=")
-                    .trim_start_matches("c++")
-                    .trim_start_matches("C++")
-                    .parse::<u32>()
-                    .ok()
-            });
+        let project_cpp = project_compat.and_then(|c| c.cpp.as_deref()).and_then(|s| {
+            s.trim_start_matches(">=")
+                .trim_start_matches("c++")
+                .trim_start_matches("C++")
+                .parse::<u32>()
+                .ok()
+        });
 
         // Check ABI variant consistency
         if let Some(abi_conf) = project_abi {
-            let project_variant = abi_conf.variant.as_ref().map(|v| format!("{:?}", v).to_lowercase());
+            let project_variant = abi_conf
+                .variant
+                .as_ref()
+                .map(|v| format!("{:?}", v).to_lowercase());
 
             if let Some(ref variant) = project_variant {
                 // Check that dependency platforms are compatible
@@ -591,9 +585,13 @@ impl Resolver {
             }
 
             // Check min_cpp_standard against project
-            if let (Some(abi_min_cpp), Some(proj_cpp)) =
-                (abi_conf.min_cpp_standard.as_deref().and_then(|s| s.parse::<u32>().ok()), project_cpp)
-            {
+            if let (Some(abi_min_cpp), Some(proj_cpp)) = (
+                abi_conf
+                    .min_cpp_standard
+                    .as_deref()
+                    .and_then(|s| s.parse::<u32>().ok()),
+                project_cpp,
+            ) {
                 if proj_cpp < abi_min_cpp {
                     warnings.push(AbiWarning {
                         package: manifest.package.name.clone(),
@@ -618,12 +616,14 @@ impl Resolver {
                     if project_abi_str == "msvc" && is_itanium_dep {
                         warnings.push(AbiWarning {
                             package: pkg.name.clone(),
-                            reason: "potential ABI mismatch: itanium-style dep in MSVC project".to_string(),
+                            reason: "potential ABI mismatch: itanium-style dep in MSVC project"
+                                .to_string(),
                         });
                     } else if project_abi_str == "itanium" && is_msvc_dep {
                         warnings.push(AbiWarning {
                             package: pkg.name.clone(),
-                            reason: "potential ABI mismatch: MSVC-style dep in itanium project".to_string(),
+                            reason: "potential ABI mismatch: MSVC-style dep in itanium project"
+                                .to_string(),
                         });
                     }
                 }
@@ -684,7 +684,11 @@ fn check_dep_compat(
             .and_then(|tc| tc.target.as_deref());
 
         if let Some(target_triple) = target {
-            if !compat.platforms.iter().any(|p| target_triple.contains(p.as_str())) {
+            if !compat
+                .platforms
+                .iter()
+                .any(|p| target_triple.contains(p.as_str()))
+            {
                 return Err(CmodError::UnresolvableConstraints {
                     name: dep_name.to_string(),
                     reason: format!(
@@ -941,8 +945,7 @@ mod tests {
         );
 
         let dep = Dependency::Simple("^2.0".to_string());
-        let result =
-            resolver.add_dependency(&mut manifest, "existing".to_string(), dep, None);
+        let result = resolver.add_dependency(&mut manifest, "existing".to_string(), dep, None);
 
         assert!(result.is_err());
     }
@@ -950,10 +953,9 @@ mod tests {
     #[test]
     fn test_remove_dependency() {
         let mut manifest = minimal_manifest();
-        manifest.dependencies.insert(
-            "pkg".to_string(),
-            Dependency::Simple("^1.0".to_string()),
-        );
+        manifest
+            .dependencies
+            .insert("pkg".to_string(), Dependency::Simple("^1.0".to_string()));
 
         Resolver::remove_dependency(&mut manifest, "pkg").unwrap();
         assert!(manifest.dependencies.is_empty());
@@ -1072,22 +1074,12 @@ mod tests {
 
         // Add feature that activates optional dep
         let mut features = BTreeMap::new();
-        features.insert(
-            "extra".to_string(),
-            vec!["dep:optional_dep".to_string()],
-        );
+        features.insert("extra".to_string(), vec!["dep:optional_dep".to_string()]);
         manifest.features = features;
 
         // With --features extra — optional dep should be included
         let lock = resolver
-            .resolve_with_features(
-                &manifest,
-                None,
-                false,
-                false,
-                &["extra".to_string()],
-                false,
-            )
+            .resolve_with_features(&manifest, None, false, false, &["extra".to_string()], false)
             .unwrap();
         assert_eq!(lock.packages.len(), 1);
         assert_eq!(lock.packages[0].name, "optional_dep");
@@ -1135,18 +1127,36 @@ mod tests {
         );
         manifest.target.insert(
             "cfg(target_os = \"linux\")".to_string(),
-            cmod_core::manifest::TargetSpec { dependencies: linux_deps },
+            cmod_core::manifest::TargetSpec {
+                dependencies: linux_deps,
+            },
         );
 
         // Resolve for linux — should include both deps
         let lock = resolver
-            .resolve_with_target(&manifest, None, false, false, &[], false, Some("x86_64-unknown-linux-gnu"))
+            .resolve_with_target(
+                &manifest,
+                None,
+                false,
+                false,
+                &[],
+                false,
+                Some("x86_64-unknown-linux-gnu"),
+            )
             .unwrap();
         assert_eq!(lock.packages.len(), 2);
 
         // Resolve for macOS — should only include base
         let lock_mac = resolver
-            .resolve_with_target(&manifest, None, false, false, &[], false, Some("aarch64-apple-darwin"))
+            .resolve_with_target(
+                &manifest,
+                None,
+                false,
+                false,
+                &[],
+                false,
+                Some("aarch64-apple-darwin"),
+            )
             .unwrap();
         assert_eq!(lock_mac.packages.len(), 1);
         assert_eq!(lock_mac.packages[0].name, "base_lib");
@@ -1193,8 +1203,7 @@ mod tests {
     fn test_resolve_trust_on_first_use_creates_entry() {
         let tmp = tempfile::TempDir::new().unwrap();
         let trust_db = TrustDb::default();
-        let mut resolver = Resolver::new(tmp.path().to_path_buf())
-            .with_trust_db(trust_db);
+        let mut resolver = Resolver::new(tmp.path().to_path_buf()).with_trust_db(trust_db);
         let mut manifest = minimal_manifest();
 
         // Path deps go through resolve_path_dep, not the trust-checked path.
@@ -1243,8 +1252,7 @@ mod tests {
         );
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let resolver = Resolver::new(tmp.path().to_path_buf())
-            .with_trust_db(trust_db);
+        let resolver = Resolver::new(tmp.path().to_path_buf()).with_trust_db(trust_db);
 
         let mut manifest = minimal_manifest();
         // This dep will resolve to a URL that differs from what was trusted

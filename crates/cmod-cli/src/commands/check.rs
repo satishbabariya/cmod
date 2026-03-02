@@ -11,7 +11,10 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
 
-    eprintln!("  Checking {} v{}", config.manifest.package.name, config.manifest.package.version);
+    eprintln!(
+        "  Checking {} v{}",
+        config.manifest.package.name, config.manifest.package.version
+    );
 
     // 1. Check module name matches export declaration
     if let Some(ref module) = config.manifest.module {
@@ -53,13 +56,19 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
         }
 
         // 3. Check for reserved prefixes
-        if module.name.starts_with("std.") || module.name.starts_with("std:") || module.name == "std" {
+        if module.name.starts_with("std.")
+            || module.name.starts_with("std:")
+            || module.name == "std"
+        {
             errors.push(format!(
                 "module name '{}' uses reserved 'std' prefix",
                 module.name
             ));
         }
-        if module.name.starts_with("stdx.") || module.name.starts_with("stdx:") || module.name == "stdx" {
+        if module.name.starts_with("stdx.")
+            || module.name.starts_with("stdx:")
+            || module.name == "stdx"
+        {
             errors.push(format!(
                 "module name '{}' uses reserved 'stdx' prefix",
                 module.name
@@ -68,7 +77,9 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     }
 
     // 4. Validate compat constraints against toolchain
-    if let (Some(ref compat), Some(ref toolchain)) = (&config.manifest.compat, &config.manifest.toolchain) {
+    if let (Some(ref compat), Some(ref toolchain)) =
+        (&config.manifest.compat, &config.manifest.toolchain)
+    {
         if let (Some(ref req_cpp), Some(ref tc_std)) = (&compat.cpp, &toolchain.cxx_standard) {
             // Simple numeric comparison for C++ standards
             let req_num = extract_std_version(req_cpp);

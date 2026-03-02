@@ -2,7 +2,6 @@ mod commands;
 
 use clap::{Parser, Subcommand};
 
-
 #[derive(Parser)]
 #[command(
     name = "cmod",
@@ -370,7 +369,16 @@ fn main() {
             rev,
             path,
             features,
-        } => commands::add::run(dep, git, branch, rev, path, features, cli.locked, cli.offline),
+        } => commands::add::run(
+            dep,
+            git,
+            branch,
+            rev,
+            path,
+            features,
+            cli.locked,
+            cli.offline,
+        ),
         Commands::Remove { name } => commands::remove::run(name),
         Commands::Resolve => commands::resolve::run(
             cli.locked,
@@ -381,25 +389,64 @@ fn main() {
             cli.target.clone(),
             cli.untrusted,
         ),
-        Commands::Build { release, jobs, force, remote_cache, no_hooks, verify, timings } => {
-            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache, no_hooks, verify, timings, &cli.features, cli.no_default_features, cli.no_cache)
-        }
-        Commands::Test { release } => {
-            commands::test::run(release, cli.locked, cli.offline, cli.verbose, cli.target, cli.no_cache)
-        }
+        Commands::Build {
+            release,
+            jobs,
+            force,
+            remote_cache,
+            no_hooks,
+            verify,
+            timings,
+        } => commands::build::run(
+            release,
+            cli.locked,
+            cli.offline,
+            cli.verbose,
+            cli.target,
+            jobs,
+            force,
+            remote_cache,
+            no_hooks,
+            verify,
+            timings,
+            &cli.features,
+            cli.no_default_features,
+            cli.no_cache,
+        ),
+        Commands::Test { release } => commands::test::run(
+            release,
+            cli.locked,
+            cli.offline,
+            cli.verbose,
+            cli.target,
+            cli.no_cache,
+        ),
         Commands::Update { name, patch } => commands::update::run(name, patch, cli.verbose),
-        Commands::Deps { tree, why, conflicts } => commands::deps::run(tree, why, conflicts),
+        Commands::Deps {
+            tree,
+            why,
+            conflicts,
+        } => commands::deps::run(tree, why, conflicts),
         Commands::Cache { action } => match action {
             CacheAction::Status => commands::cache::status(),
             CacheAction::Clean => commands::cache::clean(),
             CacheAction::Push => commands::cache::push(cli.verbose),
             CacheAction::Pull => commands::cache::pull(cli.verbose),
             CacheAction::Gc => commands::cache::gc(cli.verbose),
-            CacheAction::Export { module, key, output } => commands::cache::export_bmi(&module, &key, &output, cli.verbose),
+            CacheAction::Export {
+                module,
+                key,
+                output,
+            } => commands::cache::export_bmi(&module, &key, &output, cli.verbose),
             CacheAction::Import { path } => commands::cache::import_bmi(&path, cli.verbose),
         },
         Commands::Verify { signatures } => commands::verify::run(cli.verbose, signatures),
-        Commands::Graph { format, filter, status, critical_path } => commands::graph::run(format, filter, status, critical_path),
+        Commands::Graph {
+            format,
+            filter,
+            status,
+            critical_path,
+        } => commands::graph::run(format, filter, status, critical_path),
         Commands::Audit => commands::audit::run(cli.verbose),
         Commands::Status => commands::status::run(cli.verbose),
         Commands::Explain { module } => commands::explain::run(module, cli.verbose),
@@ -411,7 +458,9 @@ fn main() {
         Commands::Lint => commands::lint::run(cli.verbose),
         Commands::Fmt { check } => commands::fmt::run(check, cli.verbose),
         Commands::Search { query } => commands::search::run(&query, cli.verbose),
-        Commands::Run { release, args } => commands::run::run(release, args, cli.verbose, cli.no_cache),
+        Commands::Run { release, args } => {
+            commands::run::run(release, args, cli.verbose, cli.no_cache)
+        }
         Commands::Clean => commands::clean::run(cli.verbose),
         Commands::Workspace { action } => match action {
             WorkspaceAction::List => commands::workspace::list(cli.verbose),
@@ -420,7 +469,9 @@ fn main() {
         },
         Commands::Sbom { output } => commands::sbom::run(output, cli.verbose),
         Commands::Publish { dry_run, push } => commands::publish::run(dry_run, push, cli.verbose),
-        Commands::CompileCommands => commands::compile_commands::run(cli.verbose, cli.target.clone()),
+        Commands::CompileCommands => {
+            commands::compile_commands::run(cli.verbose, cli.target.clone())
+        }
         Commands::Tidy { apply } => commands::tidy::run(apply, cli.verbose),
         Commands::Check => commands::check::run(cli.verbose),
         Commands::Plugin { action } => match action {
@@ -447,24 +498,16 @@ fn main() {
 fn error_hint(e: &cmod_core::error::CmodError) -> Option<&'static str> {
     use cmod_core::error::CmodError;
     match e {
-        CmodError::ManifestNotFound { .. } => {
-            Some("run `cmod init` to create a new project")
-        }
-        CmodError::LockfileNotFound => {
-            Some("run `cmod resolve` to generate the lockfile")
-        }
-        CmodError::LockfileOutdated => {
-            Some("run `cmod resolve` to update the lockfile")
-        }
+        CmodError::ManifestNotFound { .. } => Some("run `cmod init` to create a new project"),
+        CmodError::LockfileNotFound => Some("run `cmod resolve` to generate the lockfile"),
+        CmodError::LockfileOutdated => Some("run `cmod resolve` to update the lockfile"),
         CmodError::DependencyNotFound { .. } => {
             Some("check the dependency name or add it with `cmod add <dep>`")
         }
         CmodError::CompilerNotFound { .. } => {
             Some("ensure clang is installed and available on PATH")
         }
-        CmodError::GitRepoNotFound { .. } => {
-            Some("check the Git URL and your network connection")
-        }
+        CmodError::GitRepoNotFound { .. } => Some("check the Git URL and your network connection"),
         CmodError::CircularDependency { .. } => {
             Some("review your dependency graph with `cmod deps --tree`")
         }

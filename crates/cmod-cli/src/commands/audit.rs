@@ -22,14 +22,29 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     let report = audit_dependencies(&config.manifest, &lockfile)?;
 
     if report.findings.is_empty() {
-        eprintln!("  No issues found. {} dependencies audited.", lockfile.packages.len());
+        eprintln!(
+            "  No issues found. {} dependencies audited.",
+            lockfile.packages.len()
+        );
         return Ok(());
     }
 
     // Print findings grouped by severity
-    let errors: Vec<_> = report.findings.iter().filter(|f| f.severity == Severity::Error).collect();
-    let warnings: Vec<_> = report.findings.iter().filter(|f| f.severity == Severity::Warning).collect();
-    let infos: Vec<_> = report.findings.iter().filter(|f| f.severity == Severity::Info).collect();
+    let errors: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.severity == Severity::Error)
+        .collect();
+    let warnings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.severity == Severity::Warning)
+        .collect();
+    let infos: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.severity == Severity::Info)
+        .collect();
 
     if !errors.is_empty() {
         eprintln!("  Errors:");

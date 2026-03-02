@@ -31,17 +31,11 @@ pub fn run(name: Option<String>, patch_only: bool, verbose: bool) -> Result<(), 
 
         existing_lock.remove_package(dep_name);
 
-        let lockfile = resolver.resolve(
-            &config.manifest,
-            Some(&existing_lock),
-            false,
-            false,
-        )?;
+        let lockfile = resolver.resolve(&config.manifest, Some(&existing_lock), false, false)?;
 
         // If --patch, verify the update is only a patch bump
         if patch_only {
-            if let (Some(old_ver), Some(new_pkg)) =
-                (&old_version, lockfile.find_package(dep_name))
+            if let (Some(old_ver), Some(new_pkg)) = (&old_version, lockfile.find_package(dep_name))
             {
                 if !is_patch_update(old_ver, &new_pkg.version) {
                     return Err(CmodError::Other(format!(
@@ -65,8 +59,7 @@ pub fn run(name: Option<String>, patch_only: bool, verbose: bool) -> Result<(), 
             None
         };
 
-        let lockfile =
-            resolver.resolve(&config.manifest, None, false, false)?;
+        let lockfile = resolver.resolve(&config.manifest, None, false, false)?;
 
         // If --patch, validate all updates are patch-only
         if patch_only {
@@ -86,10 +79,7 @@ pub fn run(name: Option<String>, patch_only: bool, verbose: bool) -> Result<(), 
 
         lockfile.save(&config.lockfile_path)?;
 
-        eprintln!(
-            "  Updated {} dependencies",
-            lockfile.packages.len()
-        );
+        eprintln!("  Updated {} dependencies", lockfile.packages.len());
         if verbose {
             for pkg in &lockfile.packages {
                 eprintln!("    {} v{}", pkg.name, pkg.version);

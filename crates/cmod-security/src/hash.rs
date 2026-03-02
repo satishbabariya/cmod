@@ -3,7 +3,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use cmod_core::error::CmodError;
-use cmod_core::lockfile::{Lockfile, LockedPackage};
+use cmod_core::lockfile::{LockedPackage, Lockfile};
 
 /// Result of verifying a lockfile entry's content hash.
 #[derive(Debug, Clone)]
@@ -47,9 +47,10 @@ pub fn verify_checkout_hash(
     pkg: &LockedPackage,
     repo_path: &Path,
 ) -> Result<HashVerifyResult, CmodError> {
-    let expected = pkg.commit.as_ref().ok_or_else(|| CmodError::Other(
-        format!("package '{}' has no commit hash", pkg.name),
-    ))?;
+    let expected = pkg
+        .commit
+        .as_ref()
+        .ok_or_else(|| CmodError::Other(format!("package '{}' has no commit hash", pkg.name)))?;
 
     let repo = git2::Repository::open(repo_path).map_err(|e| CmodError::GitError {
         reason: format!("failed to open {}: {}", repo_path.display(), e),
@@ -59,9 +60,7 @@ pub fn verify_checkout_hash(
         reason: format!("no HEAD in {}: {}", repo_path.display(), e),
     })?;
 
-    let actual = head
-        .target()
-        .map(|oid| oid.to_string());
+    let actual = head.target().map(|oid| oid.to_string());
 
     let valid = actual.as_deref() == Some(expected.as_str());
 

@@ -22,14 +22,27 @@ pub fn run(
     super::build::run_hook(
         &config,
         "pre-resolve",
-        config.manifest.hooks.as_ref().and_then(|h| h.pre_resolve.as_deref()),
+        config
+            .manifest
+            .hooks
+            .as_ref()
+            .and_then(|h| h.pre_resolve.as_deref()),
     )?;
 
     eprintln!("  Resolving dependencies...");
 
     // Check if this is a workspace
     if config.manifest.is_workspace() {
-        return resolve_workspace(&config, locked, offline, verbose, features, no_default_features, &target, untrusted);
+        return resolve_workspace(
+            &config,
+            locked,
+            offline,
+            verbose,
+            features,
+            no_default_features,
+            &target,
+            untrusted,
+        );
     }
 
     let existing_lock = Lockfile::load(&config.lockfile_path).ok();
@@ -58,10 +71,7 @@ pub fn run(
     lockfile.compute_integrity();
     lockfile.save(&config.lockfile_path)?;
 
-    eprintln!(
-        "  Resolved {} dependencies",
-        lockfile.packages.len()
-    );
+    eprintln!("  Resolved {} dependencies", lockfile.packages.len());
     if verbose {
         for pkg in &lockfile.packages {
             eprintln!(

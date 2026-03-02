@@ -449,7 +449,12 @@ impl Manifest {
         }
 
         // Package name must be a valid identifier
-        if !self.package.name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        if !self
+            .package
+            .name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
             return Err(CmodError::InvalidManifest {
                 reason: format!(
                     "package.name '{}' contains invalid characters (only alphanumeric, _, -)",
@@ -483,10 +488,7 @@ impl Manifest {
                 // A dep can't be both git and path
                 if d.git.is_some() && d.path.is_some() {
                     return Err(CmodError::InvalidManifest {
-                        reason: format!(
-                            "dependency '{}' specifies both `git` and `path`",
-                            name
-                        ),
+                        reason: format!("dependency '{}' specifies both `git` and `path`", name),
                     });
                 }
             }
@@ -563,7 +565,10 @@ pub fn eval_cfg(expr: &str, target_triple: &str) -> bool {
     let trimmed = expr.trim();
 
     // If it looks like a cfg() expression, parse it
-    if let Some(inner) = trimmed.strip_prefix("cfg(").and_then(|s| s.strip_suffix(')')) {
+    if let Some(inner) = trimmed
+        .strip_prefix("cfg(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         return eval_cfg_inner(inner.trim(), target_triple);
     }
 
@@ -807,7 +812,10 @@ root = "src/lib.cppm"
         let manifest = Manifest::from_str(toml_str).unwrap();
         assert_eq!(manifest.package.name, "my_math");
         assert_eq!(manifest.package.version, "1.0.0");
-        assert_eq!(manifest.module.as_ref().unwrap().name, "github.user.my_math");
+        assert_eq!(
+            manifest.module.as_ref().unwrap().name,
+            "github.user.my_math"
+        );
     }
 
     #[test]
@@ -929,7 +937,10 @@ issues = "https://example.com/issues"
         assert_eq!(meta.category.as_deref(), Some("math"));
         assert_eq!(meta.keywords, vec!["linear-algebra", "simd"]);
         assert_eq!(meta.links.len(), 2);
-        assert_eq!(meta.documentation.as_deref(), Some("https://docs.example.com"));
+        assert_eq!(
+            meta.documentation.as_deref(),
+            Some("https://docs.example.com")
+        );
     }
 
     #[test]
@@ -968,7 +979,10 @@ tags = ["v0.1.0", "latest"]
 "#;
         let manifest = Manifest::from_str(toml_str).unwrap();
         let pub_config = manifest.publish.unwrap();
-        assert_eq!(pub_config.registry.as_deref(), Some("https://registry.example.com"));
+        assert_eq!(
+            pub_config.registry.as_deref(),
+            Some("https://registry.example.com")
+        );
         assert_eq!(pub_config.include.len(), 3);
         assert_eq!(pub_config.exclude.len(), 2);
         assert_eq!(pub_config.tags, vec!["v0.1.0", "latest"]);
@@ -1049,31 +1063,64 @@ sysroot = "/opt/aarch64-sysroot"
         let manifest = Manifest::from_str(toml_str).unwrap();
         let tc = manifest.toolchain.unwrap();
         assert_eq!(tc.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
-        assert_eq!(tc.sysroot.as_deref(), Some(Path::new("/opt/aarch64-sysroot")));
+        assert_eq!(
+            tc.sysroot.as_deref(),
+            Some(Path::new("/opt/aarch64-sysroot"))
+        );
     }
 
     // --- cfg() evaluator tests ---
 
     #[test]
     fn test_eval_cfg_target_os() {
-        assert!(eval_cfg(r#"cfg(target_os = "linux")"#, "x86_64-unknown-linux-gnu"));
-        assert!(!eval_cfg(r#"cfg(target_os = "linux")"#, "x86_64-apple-darwin"));
-        assert!(eval_cfg(r#"cfg(target_os = "darwin")"#, "arm64-apple-darwin"));
+        assert!(eval_cfg(
+            r#"cfg(target_os = "linux")"#,
+            "x86_64-unknown-linux-gnu"
+        ));
+        assert!(!eval_cfg(
+            r#"cfg(target_os = "linux")"#,
+            "x86_64-apple-darwin"
+        ));
+        assert!(eval_cfg(
+            r#"cfg(target_os = "darwin")"#,
+            "arm64-apple-darwin"
+        ));
     }
 
     #[test]
     fn test_eval_cfg_target_arch() {
-        assert!(eval_cfg(r#"cfg(target_arch = "x86_64")"#, "x86_64-unknown-linux-gnu"));
-        assert!(!eval_cfg(r#"cfg(target_arch = "aarch64")"#, "x86_64-unknown-linux-gnu"));
-        assert!(eval_cfg(r#"cfg(target_arch = "aarch64")"#, "aarch64-unknown-linux-gnu"));
+        assert!(eval_cfg(
+            r#"cfg(target_arch = "x86_64")"#,
+            "x86_64-unknown-linux-gnu"
+        ));
+        assert!(!eval_cfg(
+            r#"cfg(target_arch = "aarch64")"#,
+            "x86_64-unknown-linux-gnu"
+        ));
+        assert!(eval_cfg(
+            r#"cfg(target_arch = "aarch64")"#,
+            "aarch64-unknown-linux-gnu"
+        ));
     }
 
     #[test]
     fn test_eval_cfg_family() {
-        assert!(eval_cfg(r#"cfg(target_family = "unix")"#, "x86_64-unknown-linux-gnu"));
-        assert!(eval_cfg(r#"cfg(target_family = "unix")"#, "arm64-apple-darwin"));
-        assert!(eval_cfg(r#"cfg(target_family = "windows")"#, "x86_64-pc-windows-msvc"));
-        assert!(!eval_cfg(r#"cfg(target_family = "unix")"#, "x86_64-pc-windows-msvc"));
+        assert!(eval_cfg(
+            r#"cfg(target_family = "unix")"#,
+            "x86_64-unknown-linux-gnu"
+        ));
+        assert!(eval_cfg(
+            r#"cfg(target_family = "unix")"#,
+            "arm64-apple-darwin"
+        ));
+        assert!(eval_cfg(
+            r#"cfg(target_family = "windows")"#,
+            "x86_64-pc-windows-msvc"
+        ));
+        assert!(!eval_cfg(
+            r#"cfg(target_family = "unix")"#,
+            "x86_64-pc-windows-msvc"
+        ));
     }
 
     #[test]
@@ -1110,14 +1157,26 @@ sysroot = "/opt/aarch64-sysroot"
 
     #[test]
     fn test_eval_cfg_not() {
-        assert!(eval_cfg(r#"cfg(not(target_os = "windows"))"#, "x86_64-unknown-linux-gnu"));
-        assert!(!eval_cfg(r#"cfg(not(target_os = "linux"))"#, "x86_64-unknown-linux-gnu"));
+        assert!(eval_cfg(
+            r#"cfg(not(target_os = "windows"))"#,
+            "x86_64-unknown-linux-gnu"
+        ));
+        assert!(!eval_cfg(
+            r#"cfg(not(target_os = "linux"))"#,
+            "x86_64-unknown-linux-gnu"
+        ));
     }
 
     #[test]
     fn test_eval_cfg_literal_triple() {
-        assert!(eval_cfg("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"));
-        assert!(!eval_cfg("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"));
+        assert!(eval_cfg(
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu"
+        ));
+        assert!(!eval_cfg(
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu"
+        ));
     }
 
     #[test]
@@ -1151,8 +1210,17 @@ win-only = "^3.0"
 
     #[test]
     fn test_target_env() {
-        assert!(eval_cfg(r#"cfg(target_env = "gnu")"#, "x86_64-unknown-linux-gnu"));
-        assert!(eval_cfg(r#"cfg(target_env = "msvc")"#, "x86_64-pc-windows-msvc"));
-        assert!(!eval_cfg(r#"cfg(target_env = "musl")"#, "x86_64-unknown-linux-gnu"));
+        assert!(eval_cfg(
+            r#"cfg(target_env = "gnu")"#,
+            "x86_64-unknown-linux-gnu"
+        ));
+        assert!(eval_cfg(
+            r#"cfg(target_env = "msvc")"#,
+            "x86_64-pc-windows-msvc"
+        ));
+        assert!(!eval_cfg(
+            r#"cfg(target_env = "musl")"#,
+            "x86_64-unknown-linux-gnu"
+        ));
     }
 }

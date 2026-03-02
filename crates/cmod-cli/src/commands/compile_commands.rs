@@ -37,13 +37,7 @@ pub fn run(verbose: bool, target_override: Option<String>) -> Result<(), CmodErr
 
     let (backend, target) = setup_compiler(&config);
 
-    let plan = BuildPlan::from_graph(
-        &graph,
-        &build_dir,
-        &target,
-        config.profile,
-        build_type,
-    )?;
+    let plan = BuildPlan::from_graph(&graph, &build_dir, &target, config.profile, build_type)?;
 
     let commands = plan.compile_commands(&backend, &config.root);
     let json = serde_json::to_string_pretty(&commands).map_err(|e| CmodError::BuildFailed {
@@ -69,10 +63,7 @@ pub fn run(verbose: bool, target_override: Option<String>) -> Result<(), CmodErr
 }
 
 /// Build a ModuleGraph from discovered source files (same logic as build.rs).
-fn build_module_graph(
-    sources: &[PathBuf],
-    package_name: &str,
-) -> Result<ModuleGraph, CmodError> {
+fn build_module_graph(sources: &[PathBuf], package_name: &str) -> Result<ModuleGraph, CmodError> {
     let mut graph = ModuleGraph::new();
 
     for source in sources {
@@ -97,8 +88,7 @@ fn build_module_graph(
     }
 
     // Filter imports to only include modules that exist in the graph
-    let known_modules: std::collections::BTreeSet<String> =
-        graph.nodes.keys().cloned().collect();
+    let known_modules: std::collections::BTreeSet<String> = graph.nodes.keys().cloned().collect();
     for node in graph.nodes.values_mut() {
         node.imports.retain(|imp| known_modules.contains(imp));
     }

@@ -32,15 +32,23 @@ impl AuditReport {
     }
 
     pub fn has_warnings(&self) -> bool {
-        self.findings.iter().any(|f| f.severity == Severity::Warning)
+        self.findings
+            .iter()
+            .any(|f| f.severity == Severity::Warning)
     }
 
     pub fn error_count(&self) -> usize {
-        self.findings.iter().filter(|f| f.severity == Severity::Error).count()
+        self.findings
+            .iter()
+            .filter(|f| f.severity == Severity::Error)
+            .count()
     }
 
     pub fn warning_count(&self) -> usize {
-        self.findings.iter().filter(|f| f.severity == Severity::Warning).count()
+        self.findings
+            .iter()
+            .filter(|f| f.severity == Severity::Warning)
+            .count()
     }
 }
 
@@ -90,7 +98,8 @@ pub fn audit_dependencies(
                 findings.push(AuditFinding {
                     severity: Severity::Warning,
                     package: name.clone(),
-                    message: "dependency uses a branch ref — consider pinning to a tag or commit".to_string(),
+                    message: "dependency uses a branch ref — consider pinning to a tag or commit"
+                        .to_string(),
                 });
             }
         }
@@ -102,7 +111,8 @@ pub fn audit_dependencies(
             findings.push(AuditFinding {
                 severity: Severity::Info,
                 package: pkg.name.clone(),
-                message: "package in lockfile but not in dependencies (transitive or orphaned)".to_string(),
+                message: "package in lockfile but not in dependencies (transitive or orphaned)"
+                    .to_string(),
             });
         }
     }
@@ -181,7 +191,11 @@ mod tests {
     #[test]
     fn test_audit_empty() {
         let manifest = minimal_manifest(BTreeMap::new());
-        let lockfile = Lockfile { version: 1, integrity: None, packages: vec![] };
+        let lockfile = Lockfile {
+            version: 1,
+            integrity: None,
+            packages: vec![],
+        };
 
         let report = audit_dependencies(&manifest, &lockfile).unwrap();
         assert!(report.findings.is_empty());
@@ -193,7 +207,11 @@ mod tests {
         deps.insert("fmt".to_string(), Dependency::Simple("^10".to_string()));
 
         let manifest = minimal_manifest(deps);
-        let lockfile = Lockfile { version: 1, integrity: None, packages: vec![] };
+        let lockfile = Lockfile {
+            version: 1,
+            integrity: None,
+            packages: vec![],
+        };
 
         let report = audit_dependencies(&manifest, &lockfile).unwrap();
         assert!(report.has_errors());
@@ -218,24 +236,30 @@ mod tests {
 
         let report = audit_dependencies(&manifest, &lockfile).unwrap();
         assert!(report.has_warnings());
-        assert!(report.findings.iter().any(|f| f.message.contains("no pinned commit")));
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.message.contains("no pinned commit")));
     }
 
     #[test]
     fn test_audit_branch_ref_warning() {
         let mut deps = BTreeMap::new();
-        deps.insert("mylib".to_string(), Dependency::Detailed(DetailedDependency {
-            version: None,
-            git: Some("https://github.com/user/mylib".to_string()),
-            branch: Some("main".to_string()),
-            rev: None,
-            tag: None,
-            path: None,
-            features: vec![],
-            optional: false,
-            default_features: true,
-            workspace: false,
-        }));
+        deps.insert(
+            "mylib".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: None,
+                git: Some("https://github.com/user/mylib".to_string()),
+                branch: Some("main".to_string()),
+                rev: None,
+                tag: None,
+                path: None,
+                features: vec![],
+                optional: false,
+                default_features: true,
+                workspace: false,
+            }),
+        );
 
         let manifest = minimal_manifest(deps);
         let mut pkg = make_pkg("mylib", Some("abc123"));
@@ -248,7 +272,10 @@ mod tests {
         };
 
         let report = audit_dependencies(&manifest, &lockfile).unwrap();
-        assert!(report.findings.iter().any(|f| f.message.contains("branch ref")));
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.message.contains("branch ref")));
     }
 
     #[test]

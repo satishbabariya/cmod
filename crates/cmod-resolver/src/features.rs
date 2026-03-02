@@ -99,11 +99,7 @@ pub fn resolve_features(
 }
 
 /// Check if a dependency should be included (non-optional, or activated optional).
-pub fn should_include_dep(
-    name: &str,
-    dep: &Dependency,
-    resolved: &ResolvedFeatures,
-) -> bool {
+pub fn should_include_dep(name: &str, dep: &Dependency, resolved: &ResolvedFeatures) -> bool {
     match dep {
         Dependency::Simple(_) => true,
         Dependency::Detailed(d) => {
@@ -214,7 +210,10 @@ mod tests {
     fn test_resolve_transitive_features() {
         let mut features = BTreeMap::new();
         features.insert("default".to_string(), vec!["full".to_string()]);
-        features.insert("full".to_string(), vec!["simd".to_string(), "logging".to_string()]);
+        features.insert(
+            "full".to_string(),
+            vec!["simd".to_string(), "logging".to_string()],
+        );
         features.insert("simd".to_string(), vec!["dep:simd_lib".to_string()]);
         features.insert("logging".to_string(), vec!["dep:log_lib".to_string()]);
 
@@ -264,25 +263,30 @@ mod tests {
             workspace: false,
         });
         let mut resolved = ResolvedFeatures::default();
-        resolved.activated_optional_deps.insert("opt_dep".to_string());
+        resolved
+            .activated_optional_deps
+            .insert("opt_dep".to_string());
         assert!(should_include_dep("opt_dep", &dep, &resolved));
     }
 
     #[test]
     fn test_dep_declared_features() {
         let mut deps = BTreeMap::new();
-        deps.insert("math".to_string(), Dependency::Detailed(DetailedDependency {
-            version: Some("^1.0".to_string()),
-            git: None,
-            branch: None,
-            rev: None,
-            tag: None,
-            path: None,
-            features: vec!["simd".to_string(), "f64".to_string()],
-            optional: false,
-            default_features: true,
-            workspace: false,
-        }));
+        deps.insert(
+            "math".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: Some("^1.0".to_string()),
+                git: None,
+                branch: None,
+                rev: None,
+                tag: None,
+                path: None,
+                features: vec!["simd".to_string(), "f64".to_string()],
+                optional: false,
+                default_features: true,
+                workspace: false,
+            }),
+        );
 
         let manifest = test_manifest(BTreeMap::new(), deps);
         let result = resolve_features(&manifest, &[], false).unwrap();

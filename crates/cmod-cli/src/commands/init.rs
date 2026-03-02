@@ -98,11 +98,7 @@ fn init_workspace(dir: &Path, name: &str) -> Result<(), CmodError> {
     let m = manifest::default_workspace_manifest(name);
     m.save(&dir.join("cmod.toml"))?;
 
-    eprintln!(
-        "  Created workspace '{}' in {}",
-        name,
-        dir.display()
-    );
+    eprintln!("  Created workspace '{}' in {}", name, dir.display());
     eprintln!("  - cmod.toml (workspace)");
     eprintln!();
     eprintln!("  Add members with `cmod init --name <member>` in subdirectories.");

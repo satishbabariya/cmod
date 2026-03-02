@@ -33,12 +33,7 @@ pub trait CompilerBackend {
     ) -> Result<(), CmodError>;
 
     /// Link object files into a final artifact.
-    fn link(
-        &self,
-        objects: &[&Path],
-        output: &Path,
-        artifact: &Artifact,
-    ) -> Result<(), CmodError>;
+    fn link(&self, objects: &[&Path], output: &Path, artifact: &Artifact) -> Result<(), CmodError>;
 }
 
 /// Clang/LLVM compiler backend.
@@ -182,9 +177,11 @@ impl CompilerBackend for ClangBackend {
         // First pass: compile to PCM
         let pcm_status = Command::new(&self.clang_path)
             .args(&self.common_flags())
-            .args(dep_pcms.iter().map(|(name, path)| {
-                format!("-fmodule-file={}={}", name, path.display())
-            }))
+            .args(
+                dep_pcms
+                    .iter()
+                    .map(|(name, path)| format!("-fmodule-file={}={}", name, path.display())),
+            )
             .arg("--precompile")
             .arg("-o")
             .arg(pcm_output)
@@ -196,10 +193,7 @@ impl CompilerBackend for ClangBackend {
 
         if !pcm_status.success() {
             return Err(CmodError::BuildFailed {
-                reason: format!(
-                    "failed to compile module interface: {}",
-                    source.display()
-                ),
+                reason: format!("failed to compile module interface: {}", source.display()),
             });
         }
 
@@ -207,9 +201,11 @@ impl CompilerBackend for ClangBackend {
         // Dependency PCMs are still needed for modules that import other modules
         let obj_status = Command::new(&self.clang_path)
             .args(&self.common_flags())
-            .args(dep_pcms.iter().map(|(name, path)| {
-                format!("-fmodule-file={}={}", name, path.display())
-            }))
+            .args(
+                dep_pcms
+                    .iter()
+                    .map(|(name, path)| format!("-fmodule-file={}={}", name, path.display())),
+            )
             .arg("-c")
             .arg("-o")
             .arg(obj_output)
@@ -221,10 +217,7 @@ impl CompilerBackend for ClangBackend {
 
         if !obj_status.success() {
             return Err(CmodError::BuildFailed {
-                reason: format!(
-                    "failed to compile PCM to object: {}",
-                    pcm_output.display()
-                ),
+                reason: format!("failed to compile PCM to object: {}", pcm_output.display()),
             });
         }
 
@@ -239,9 +232,11 @@ impl CompilerBackend for ClangBackend {
     ) -> Result<(), CmodError> {
         let status = Command::new(&self.clang_path)
             .args(&self.common_flags())
-            .args(dep_pcms.iter().map(|(name, path)| {
-                format!("-fmodule-file={}={}", name, path.display())
-            }))
+            .args(
+                dep_pcms
+                    .iter()
+                    .map(|(name, path)| format!("-fmodule-file={}={}", name, path.display())),
+            )
             .arg("-c")
             .arg("-o")
             .arg(obj_output)
@@ -260,12 +255,7 @@ impl CompilerBackend for ClangBackend {
         Ok(())
     }
 
-    fn link(
-        &self,
-        objects: &[&Path],
-        output: &Path,
-        artifact: &Artifact,
-    ) -> Result<(), CmodError> {
+    fn link(&self, objects: &[&Path], output: &Path, artifact: &Artifact) -> Result<(), CmodError> {
         let mut cmd = Command::new(&self.clang_path);
         cmd.args(&self.common_flags());
 
@@ -327,10 +317,7 @@ fn parse_p1689_imports(output: &str) -> Result<Vec<String>, CmodError> {
         for rule in rules {
             if let Some(requires) = rule.get("requires").and_then(|v| v.as_array()) {
                 for req in requires {
-                    if let Some(name) = req
-                        .get("logical-name")
-                        .and_then(|v| v.as_str())
-                    {
+                    if let Some(name) = req.get("logical-name").and_then(|v| v.as_str()) {
                         imports.push(name.to_string());
                     }
                 }
@@ -436,10 +423,7 @@ mod tests {
     #[test]
     fn test_common_flags_with_extra_flags() {
         let mut backend = ClangBackend::new("20", Profile::Debug);
-        backend.extra_flags = vec![
-            "-fsanitize=address".to_string(),
-            "-Wall".to_string(),
-        ];
+        backend.extra_flags = vec!["-fsanitize=address".to_string(), "-Wall".to_string()];
         let flags = backend.common_flags();
         assert!(flags.contains(&"-fsanitize=address".to_string()));
         assert!(flags.contains(&"-Wall".to_string()));
@@ -494,7 +478,10 @@ mod tests {
     fn test_find_executable_fallback() {
         // A nonexistent executable should fall back to the name itself
         let path = find_executable("definitely_not_a_real_executable_12345");
-        assert_eq!(path, PathBuf::from("definitely_not_a_real_executable_12345"));
+        assert_eq!(
+            path,
+            PathBuf::from("definitely_not_a_real_executable_12345")
+        );
     }
 
     #[test]

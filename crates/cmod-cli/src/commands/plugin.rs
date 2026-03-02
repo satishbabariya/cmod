@@ -66,11 +66,12 @@ pub fn run_plugin(name: &str, verbose: bool) -> Result<(), CmodError> {
     let config = Config::load(&cwd)?;
 
     let plugins = discover_plugins(&config);
-    let plugin = plugins.iter().find(|p| p.name == name).ok_or_else(|| {
-        CmodError::BuildFailed {
+    let plugin = plugins
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| CmodError::BuildFailed {
             reason: format!("plugin '{}' not found", name),
-        }
-    })?;
+        })?;
 
     let entry = find_plugin_entry(&config.root, plugin)?;
 
@@ -125,7 +126,11 @@ pub fn run_plugin(name: &str, verbose: bool) -> Result<(), CmodError> {
 
     if !status.success() {
         return Err(CmodError::BuildFailed {
-            reason: format!("plugin '{}' exited with code {}", name, status.code().unwrap_or(-1)),
+            reason: format!(
+                "plugin '{}' exited with code {}",
+                name,
+                status.code().unwrap_or(-1)
+            ),
         });
     }
 
@@ -252,7 +257,8 @@ mod tests {
         std::fs::write(
             plugin_dir.join("plugin.toml"),
             "[plugin]\nname = \"myfuzz\"\ncapabilities = [\"cli\"]\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         let plugins = discover_plugins_in(tmp.path());
         assert_eq!(plugins.len(), 1);

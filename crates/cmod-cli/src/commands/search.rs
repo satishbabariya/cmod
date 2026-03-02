@@ -43,8 +43,7 @@ pub fn run(query: &str, verbose: bool) -> Result<(), CmodError> {
     if config.lockfile_path.exists() {
         if let Ok(lockfile) = cmod_core::lockfile::Lockfile::load(&config.lockfile_path) {
             for pkg in &lockfile.packages {
-                if matches_pattern(&pkg.name, &pattern)
-                    && !found.iter().any(|r| r.name == pkg.name)
+                if matches_pattern(&pkg.name, &pattern) && !found.iter().any(|r| r.name == pkg.name)
                 {
                     found.push(SearchResult {
                         name: pkg.name.clone(),

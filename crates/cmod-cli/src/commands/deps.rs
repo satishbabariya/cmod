@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
-use cmod_core::lockfile::{Lockfile, LockedPackage};
+use cmod_core::lockfile::{LockedPackage, Lockfile};
 use cmod_resolver::Resolver;
 
 /// Run `cmod deps` — display the dependency graph.
@@ -10,9 +10,8 @@ pub fn run(tree: bool, why: Option<String>, conflicts: bool) -> Result<(), CmodE
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    let lockfile = Lockfile::load(&config.lockfile_path).map_err(|_| {
-        CmodError::LockfileNotFound
-    })?;
+    let lockfile =
+        Lockfile::load(&config.lockfile_path).map_err(|_| CmodError::LockfileNotFound)?;
 
     // --why <dep>: explain why a dependency is included
     if let Some(dep_name) = why {
@@ -51,7 +50,11 @@ pub fn run(tree: bool, why: Option<String>, conflicts: bool) -> Result<(), CmodE
     }
 
     if tree {
-        print_tree(&config.manifest.package.name, &config.manifest.package.version, &lockfile);
+        print_tree(
+            &config.manifest.package.name,
+            &config.manifest.package.version,
+            &lockfile,
+        );
     } else {
         print_flat(&lockfile);
     }
@@ -63,7 +66,11 @@ pub fn run(tree: bool, why: Option<String>, conflicts: bool) -> Result<(), CmodE
 fn print_flat(lockfile: &Lockfile) {
     for pkg in &lockfile.packages {
         let source_info = if let Some(ref commit) = pkg.commit {
-            format!("{}#{}", pkg.repo.as_deref().unwrap_or("?"), &commit[..8.min(commit.len())])
+            format!(
+                "{}#{}",
+                pkg.repo.as_deref().unwrap_or("?"),
+                &commit[..8.min(commit.len())]
+            )
         } else {
             "local".to_string()
         };
@@ -132,7 +139,11 @@ fn print_tree_node(
         if let Some(dep_pkg) = pkg_map.get(dep_name.as_str()) {
             print_tree_node(dep_pkg, pkg_map, &child_indent, dep_is_last, visited);
         } else {
-            let dep_connector = if dep_is_last { "└── " } else { "├── " };
+            let dep_connector = if dep_is_last {
+                "└── "
+            } else {
+                "├── "
+            };
             println!("{}{}{} (unresolved)", child_indent, dep_connector, dep_name);
         }
     }

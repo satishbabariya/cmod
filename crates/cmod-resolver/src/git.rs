@@ -81,7 +81,6 @@ pub fn list_version_tags(repo: &Repository) -> Result<Vec<(Version, Oid)>, CmodE
     Ok(versions)
 }
 
-
 /// Resolve a branch name to a commit OID.
 pub fn resolve_branch(repo: &Repository, branch: &str) -> Result<Oid, CmodError> {
     // Try remote branch first
@@ -128,16 +127,14 @@ pub fn short_hash(oid: &Oid) -> String {
 
 /// Get the date of a commit as YYYYMMDD.
 pub fn commit_date(repo: &Repository, oid: Oid) -> Result<String, CmodError> {
-    let commit = repo
-        .find_commit(oid)
-        .map_err(|e| CmodError::GitError {
-            reason: format!("commit not found: {}", e),
-        })?;
+    let commit = repo.find_commit(oid).map_err(|e| CmodError::GitError {
+        reason: format!("commit not found: {}", e),
+    })?;
 
     let time = commit.time();
     let secs = time.seconds();
-    let dt = chrono::DateTime::from_timestamp(secs, 0)
-        .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
+    let dt =
+        chrono::DateTime::from_timestamp(secs, 0).unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
     Ok(dt.format("%Y%m%d").to_string())
 }
 
@@ -151,14 +148,18 @@ pub fn checkout_commit(repo: &Repository, oid: Oid) -> Result<(), CmodError> {
         reason: format!("failed to get tree: {}", e),
     })?;
 
-    repo.checkout_tree(tree.as_object(), Some(git2::build::CheckoutBuilder::new().force()))
-        .map_err(|e| CmodError::GitError {
-            reason: format!("checkout failed: {}", e),
-        })?;
-
-    repo.set_head_detached(oid).map_err(|e| CmodError::GitError {
-        reason: format!("failed to detach HEAD: {}", e),
+    repo.checkout_tree(
+        tree.as_object(),
+        Some(git2::build::CheckoutBuilder::new().force()),
+    )
+    .map_err(|e| CmodError::GitError {
+        reason: format!("checkout failed: {}", e),
     })?;
+
+    repo.set_head_detached(oid)
+        .map_err(|e| CmodError::GitError {
+            reason: format!("failed to detach HEAD: {}", e),
+        })?;
 
     Ok(())
 }

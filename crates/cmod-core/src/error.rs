@@ -139,12 +139,8 @@ mod tests {
     #[test]
     fn test_resolution_errors_exit_code_2() {
         let errors: Vec<CmodError> = vec![
-            CmodError::DependencyNotFound {
-                name: "pkg".into(),
-            },
-            CmodError::DependencyAlreadyExists {
-                name: "pkg".into(),
-            },
+            CmodError::DependencyNotFound { name: "pkg".into() },
+            CmodError::DependencyAlreadyExists { name: "pkg".into() },
             CmodError::VersionConflict {
                 name: "pkg".into(),
                 reason: "test".into(),

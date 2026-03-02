@@ -13,9 +13,7 @@ impl ModuleId {
     /// `https://github.com/fmtlib/fmt` → `github.fmtlib.fmt`
     /// `https://gitlab.com/org/infra/log` → `gitlab.org.infra.log`
     pub fn from_git_url(url: &str) -> Option<Self> {
-        let url = url
-            .trim_end_matches('/')
-            .trim_end_matches(".git");
+        let url = url.trim_end_matches('/').trim_end_matches(".git");
 
         // Strip protocol and normalize
         let path_str = if let Some(rest) = url.strip_prefix("https://") {
@@ -51,7 +49,10 @@ impl ModuleId {
 
     /// Check whether this module ID uses a reserved prefix (std.*, stdx.*).
     pub fn is_reserved(&self) -> bool {
-        self.0.starts_with("std.") || self.0.starts_with("stdx.") || self.0 == "std" || self.0 == "stdx"
+        self.0.starts_with("std.")
+            || self.0.starts_with("stdx.")
+            || self.0 == "std"
+            || self.0 == "stdx"
     }
 
     /// Check whether this is a local-only module.

@@ -12,7 +12,22 @@ pub fn run(
     no_cache: bool,
 ) -> Result<(), CmodError> {
     // First, build the project
-    super::build::run(release, locked, offline, verbose, target, 0, false, None, false, false, false, &[], false, no_cache)?;
+    super::build::run(
+        release,
+        locked,
+        offline,
+        verbose,
+        target,
+        0,
+        false,
+        None,
+        false,
+        false,
+        false,
+        &[],
+        false,
+        no_cache,
+    )?;
 
     eprintln!("  Running tests...");
 
@@ -24,12 +39,19 @@ pub fn run(
     super::build::run_hook(
         &config,
         "pre-test",
-        config.manifest.hooks.as_ref().and_then(|h| h.pre_test.as_deref()),
+        config
+            .manifest
+            .hooks
+            .as_ref()
+            .and_then(|h| h.pre_test.as_deref()),
     )?;
 
     // Get test patterns from manifest
     let (test_patterns, exclude_patterns) = match config.manifest.test.as_ref() {
-        Some(test_cfg) => (test_cfg.test_patterns.clone(), test_cfg.exclude_patterns.clone()),
+        Some(test_cfg) => (
+            test_cfg.test_patterns.clone(),
+            test_cfg.exclude_patterns.clone(),
+        ),
         None => (vec![], vec![]),
     };
 
@@ -104,11 +126,15 @@ pub fn run(
     if pcm_dir.exists() {
         // Build a sanitized-stem → module-name map from source files
         let src_dir = config.src_dir();
-        let mut name_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut name_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         if let Ok(sources) = cmod_build::runner::discover_sources(&src_dir) {
             for source in &sources {
                 if let Ok(Some(mod_name)) = cmod_build::runner::extract_module_name(source) {
-                    let sanitized = mod_name.replace('.', "_").replace(':', "_").replace('/', "_");
+                    let sanitized = mod_name
+                        .replace('.', "_")
+                        .replace(':', "_")
+                        .replace('/', "_");
                     name_map.insert(sanitized, mod_name);
                 }
             }
@@ -167,9 +193,7 @@ pub fn run(
             cmd.arg(flag);
         }
 
-        cmd.arg("-o")
-            .arg(&test_binary)
-            .arg(test_source);
+        cmd.arg("-o").arg(&test_binary).arg(test_source);
 
         // Link against object files from the main build
         for obj in &obj_files {
@@ -195,7 +219,11 @@ pub fn run(
 
         if !test_status.success() {
             return Err(CmodError::BuildFailed {
-                reason: format!("test '{}' failed with exit code {:?}", test_name, test_status.code()),
+                reason: format!(
+                    "test '{}' failed with exit code {:?}",
+                    test_name,
+                    test_status.code()
+                ),
             });
         }
 
@@ -206,7 +234,11 @@ pub fn run(
     super::build::run_hook(
         &config,
         "post-test",
-        config.manifest.hooks.as_ref().and_then(|h| h.post_test.as_deref()),
+        config
+            .manifest
+            .hooks
+            .as_ref()
+            .and_then(|h| h.post_test.as_deref()),
     )?;
 
     eprintln!("  All tests passed.");
@@ -218,11 +250,12 @@ pub fn run(
 /// If `test_patterns` is empty, all sources match (no filtering).
 /// If `test_patterns` is non-empty, the filename must contain at least one pattern.
 /// If `exclude_patterns` is non-empty, the filename must not contain any exclude pattern.
-fn matches_test_patterns(source: &Path, test_patterns: &[String], exclude_patterns: &[String]) -> bool {
-    let filename = source
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+fn matches_test_patterns(
+    source: &Path,
+    test_patterns: &[String],
+    exclude_patterns: &[String],
+) -> bool {
+    let filename = source.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
     // Check exclude patterns first
     for pattern in exclude_patterns {
@@ -237,5 +270,7 @@ fn matches_test_patterns(source: &Path, test_patterns: &[String], exclude_patter
     }
 
     // Must match at least one include pattern
-    test_patterns.iter().any(|pattern| filename.contains(pattern.as_str()))
+    test_patterns
+        .iter()
+        .any(|pattern| filename.contains(pattern.as_str()))
 }

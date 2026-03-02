@@ -338,9 +338,7 @@ fn resolve_workspace_deps(
     for (name, dep) in deps {
         if dep.is_workspace() {
             if let Some(ws_dep) = workspace_deps.get(&name) {
-                member_manifest
-                    .dependencies
-                    .insert(name, ws_dep.clone());
+                member_manifest.dependencies.insert(name, ws_dep.clone());
             } else {
                 // Keep the original if workspace dep not found
                 member_manifest.dependencies.insert(name, dep);
@@ -386,8 +384,7 @@ name = "local.core"
 root = "src/lib.cppm"
 "#;
         std::fs::write(root.join("core/cmod.toml"), core_toml).unwrap();
-        std::fs::write(root.join("core/src/lib.cppm"), "export module local.core;")
-            .unwrap();
+        std::fs::write(root.join("core/src/lib.cppm"), "export module local.core;").unwrap();
 
         // App member
         std::fs::create_dir_all(root.join("app/src")).unwrap();
@@ -404,8 +401,7 @@ root = "src/lib.cppm"
 "github.com/fmtlib/fmt" = { workspace = true }
 "#;
         std::fs::write(root.join("app/cmod.toml"), app_toml).unwrap();
-        std::fs::write(root.join("app/src/lib.cppm"), "export module local.app;")
-            .unwrap();
+        std::fs::write(root.join("app/src/lib.cppm"), "export module local.app;").unwrap();
 
         tmp
     }
@@ -475,10 +471,7 @@ members = ["crates/*"]
         for name in &["alpha", "beta", "gamma"] {
             let dir = root.join("crates").join(name);
             std::fs::create_dir_all(dir.join("src")).unwrap();
-            let member_toml = format!(
-                "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n",
-                name
-            );
+            let member_toml = format!("[package]\nname = \"{}\"\nversion = \"0.1.0\"\n", name);
             std::fs::write(dir.join("cmod.toml"), member_toml).unwrap();
         }
 
@@ -509,10 +502,7 @@ exclude = ["crates/experimental"]
         for name in &["stable", "experimental"] {
             let dir = root.join("crates").join(name);
             std::fs::create_dir_all(dir.join("src")).unwrap();
-            let member_toml = format!(
-                "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n",
-                name
-            );
+            let member_toml = format!("[package]\nname = \"{}\"\nversion = \"0.1.0\"\n", name);
             std::fs::write(dir.join("cmod.toml"), member_toml).unwrap();
         }
 

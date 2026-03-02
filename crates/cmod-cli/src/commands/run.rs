@@ -12,7 +12,22 @@ pub fn run(
     let config = Config::load(&cwd)?;
 
     // Build first
-    super::build::run(release, false, false, verbose, None, 0, false, None, false, false, false, &[], false, no_cache)?;
+    super::build::run(
+        release,
+        false,
+        false,
+        verbose,
+        None,
+        0,
+        false,
+        None,
+        false,
+        false,
+        false,
+        &[],
+        false,
+        no_cache,
+    )?;
 
     // Find the built binary
     let build_dir = config.build_dir();
@@ -43,10 +58,7 @@ pub fn run(
 ///
 /// Searches both the build root and profile subdirectories (debug/release)
 /// for the named executable or any executable file.
-fn find_binary(
-    build_dir: &std::path::Path,
-    name: &str,
-) -> Result<std::path::PathBuf, CmodError> {
+fn find_binary(build_dir: &std::path::Path, name: &str) -> Result<std::path::PathBuf, CmodError> {
     // Search in both the build root and profile subdirectories
     let search_dirs = [
         build_dir.to_path_buf(),

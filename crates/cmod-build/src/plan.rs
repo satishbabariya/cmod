@@ -73,9 +73,7 @@ impl BuildPlan {
                     let deps: Vec<String> = module_node
                         .imports
                         .iter()
-                        .filter_map(|imp| {
-                            pcm_paths.get(imp).map(|_| format!("interface:{}", imp))
-                        })
+                        .filter_map(|imp| pcm_paths.get(imp).map(|_| format!("interface:{}", imp)))
                         .collect();
 
                     let node = BuildNode {
@@ -98,9 +96,7 @@ impl BuildPlan {
                     let deps: Vec<String> = module_node
                         .imports
                         .iter()
-                        .filter_map(|imp| {
-                            pcm_paths.get(imp).map(|_| format!("interface:{}", imp))
-                        })
+                        .filter_map(|imp| pcm_paths.get(imp).map(|_| format!("interface:{}", imp)))
                         .collect();
 
                     let node = BuildNode {
@@ -123,9 +119,7 @@ impl BuildPlan {
                     let deps: Vec<String> = module_node
                         .imports
                         .iter()
-                        .filter_map(|imp| {
-                            pcm_paths.get(imp).map(|_| format!("interface:{}", imp))
-                        })
+                        .filter_map(|imp| pcm_paths.get(imp).map(|_| format!("interface:{}", imp)))
                         .collect();
 
                     let node = BuildNode {
@@ -153,9 +147,7 @@ impl BuildPlan {
 
         let link_output = match build_type {
             BuildType::Binary => build_dir.join(sanitize_name(&output_name)),
-            BuildType::StaticLib => {
-                build_dir.join(format!("lib{}.a", sanitize_name(&output_name)))
-            }
+            BuildType::StaticLib => build_dir.join(format!("lib{}.a", sanitize_name(&output_name))),
             BuildType::SharedLib => {
                 build_dir.join(format!("lib{}.so", sanitize_name(&output_name)))
             }
@@ -248,11 +240,7 @@ impl BuildPlan {
             for dep_id in &node.dependencies {
                 if let Some(name) = dep_id.strip_prefix("interface:") {
                     if let Some(pcm_path) = pcm_paths.get(name) {
-                        arguments.push(format!(
-                            "-fmodule-file={}={}",
-                            name,
-                            pcm_path.display()
-                        ));
+                        arguments.push(format!("-fmodule-file={}={}", name, pcm_path.display()));
                     }
                 }
             }
@@ -438,7 +426,11 @@ mod tests {
         let link_node = plan.nodes.last().unwrap();
         assert_eq!(link_node.kind, NodeKind::Link);
         let output_path = link_node.outputs[0].to_str().unwrap();
-        assert!(output_path.ends_with(".a"), "Expected .a output: {}", output_path);
+        assert!(
+            output_path.ends_with(".a"),
+            "Expected .a output: {}",
+            output_path
+        );
     }
 
     #[test]
@@ -463,7 +455,11 @@ mod tests {
 
         let link_node = plan.nodes.last().unwrap();
         let output_path = link_node.outputs[0].to_str().unwrap();
-        assert!(output_path.ends_with(".so"), "Expected .so output: {}", output_path);
+        assert!(
+            output_path.ends_with(".so"),
+            "Expected .so output: {}",
+            output_path
+        );
     }
 
     #[test]
@@ -500,7 +496,9 @@ mod tests {
         assert_eq!(plan.nodes[2].kind, NodeKind::Link);
 
         // Implementation should depend on interface
-        assert!(plan.nodes[1].dependencies.contains(&"interface:iface".to_string()));
+        assert!(plan.nodes[1]
+            .dependencies
+            .contains(&"interface:iface".to_string()));
     }
 
     #[test]
@@ -558,7 +556,9 @@ mod tests {
         // interface + object + link = 3 nodes
         assert_eq!(plan.nodes.len(), 3);
         let main_node = plan.nodes.iter().find(|n| n.id == "object:main").unwrap();
-        assert!(main_node.dependencies.contains(&"interface:mymod".to_string()));
+        assert!(main_node
+            .dependencies
+            .contains(&"interface:mymod".to_string()));
     }
 
     #[test]
@@ -637,9 +637,17 @@ mod tests {
         assert_eq!(plan.nodes.len(), 5);
 
         // top depends on left and right
-        let top_node = plan.nodes.iter().find(|n| n.module_name.as_deref() == Some("top")).unwrap();
-        assert!(top_node.dependencies.contains(&"interface:left".to_string()));
-        assert!(top_node.dependencies.contains(&"interface:right".to_string()));
+        let top_node = plan
+            .nodes
+            .iter()
+            .find(|n| n.module_name.as_deref() == Some("top"))
+            .unwrap();
+        assert!(top_node
+            .dependencies
+            .contains(&"interface:left".to_string()));
+        assert!(top_node
+            .dependencies
+            .contains(&"interface:right".to_string()));
     }
 
     #[test]
@@ -775,7 +783,10 @@ mod tests {
         // The derived module command should have a -fmodule-file reference to base
         let derived_cmd = &commands[1];
         assert!(
-            derived_cmd.arguments.iter().any(|a| a.starts_with("-fmodule-file=base=")),
+            derived_cmd
+                .arguments
+                .iter()
+                .any(|a| a.starts_with("-fmodule-file=base=")),
             "derived command should reference base PCM"
         );
     }

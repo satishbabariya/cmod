@@ -48,7 +48,10 @@ impl NodeStatus {
 }
 
 /// Compute build status for each module from the build state.
-fn compute_node_statuses(graph: &ModuleGraph, build_state: &BuildState) -> BTreeMap<String, NodeStatus> {
+fn compute_node_statuses(
+    graph: &ModuleGraph,
+    build_state: &BuildState,
+) -> BTreeMap<String, NodeStatus> {
     let mut statuses = BTreeMap::new();
 
     for name in graph.nodes.keys() {
@@ -65,7 +68,9 @@ fn compute_node_statuses(graph: &ModuleGraph, build_state: &BuildState) -> BTree
             continue;
         }
 
-        let node_state = build_state.nodes.get(&interface_id)
+        let node_state = build_state
+            .nodes
+            .get(&interface_id)
             .or_else(|| build_state.nodes.get(&impl_id))
             .or_else(|| build_state.nodes.get(&obj_id));
 
@@ -84,7 +89,12 @@ fn compute_node_statuses(graph: &ModuleGraph, build_state: &BuildState) -> BTree
 }
 
 /// Run `cmod graph` — visualize the module dependency graph.
-pub fn run(format: Option<String>, filter: Option<String>, status: bool, critical_path: bool) -> Result<(), CmodError> {
+pub fn run(
+    format: Option<String>,
+    filter: Option<String>,
+    status: bool,
+    critical_path: bool,
+) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -135,7 +145,12 @@ pub fn run(format: Option<String>, filter: Option<String>, status: bool, critica
     };
 
     match format {
-        GraphFormat::Ascii => print_ascii(&graph, &config.manifest.package.name, filter.as_deref(), &statuses),
+        GraphFormat::Ascii => print_ascii(
+            &graph,
+            &config.manifest.package.name,
+            filter.as_deref(),
+            &statuses,
+        ),
         GraphFormat::Dot => print_dot(&graph, filter.as_deref(), &statuses),
         GraphFormat::Json => print_json(&graph, &statuses)?,
     }
@@ -144,7 +159,12 @@ pub fn run(format: Option<String>, filter: Option<String>, status: bool, critica
 }
 
 /// Print the graph as an ASCII tree.
-fn print_ascii(graph: &ModuleGraph, root_name: &str, filter: Option<&str>, statuses: &BTreeMap<String, NodeStatus>) {
+fn print_ascii(
+    graph: &ModuleGraph,
+    root_name: &str,
+    filter: Option<&str>,
+    statuses: &BTreeMap<String, NodeStatus>,
+) {
     let order = match graph.topological_order() {
         Ok(o) => o,
         Err(e) => {
@@ -160,7 +180,16 @@ fn print_ascii(graph: &ModuleGraph, root_name: &str, filter: Option<&str>, statu
 
     for (i, root) in roots.iter().enumerate() {
         let is_last = i == total - 1;
-        print_ascii_node(graph, root, "", is_last, filter, &mut BTreeSet::new(), &order, statuses);
+        print_ascii_node(
+            graph,
+            root,
+            "",
+            is_last,
+            filter,
+            &mut BTreeSet::new(),
+            &order,
+            statuses,
+        );
     }
 }
 
@@ -193,7 +222,10 @@ fn print_ascii_node(
         .get(name)
         .map(|s| format!(" {}", s.ascii_marker()))
         .unwrap_or_default();
-    println!("{}{}{} ({}){}", indent, connector, name, kind_label, status_str);
+    println!(
+        "{}{}{} ({}){}",
+        indent, connector, name, kind_label, status_str
+    );
 
     if !visited.insert(name.to_string()) {
         return;
@@ -204,7 +236,16 @@ fn print_ascii_node(
 
     for (j, dep) in dependents.iter().enumerate() {
         let dep_is_last = j == total - 1;
-        print_ascii_node(graph, dep, &child_indent, dep_is_last, filter, visited, _order, statuses);
+        print_ascii_node(
+            graph,
+            dep,
+            &child_indent,
+            dep_is_last,
+            filter,
+            visited,
+            _order,
+            statuses,
+        );
     }
 
     visited.remove(name);
@@ -230,10 +271,7 @@ fn print_dot(graph: &ModuleGraph, filter: Option<&str>, statuses: &BTreeMap<Stri
             cmod_core::types::ModuleUnitKind::LegacyUnit => "diamond",
         };
 
-        let fill_color = statuses
-            .get(name)
-            .map(|s| s.dot_color())
-            .unwrap_or("white");
+        let fill_color = statuses.get(name).map(|s| s.dot_color()).unwrap_or("white");
 
         let status_label = statuses
             .get(name)
@@ -262,11 +300,13 @@ fn print_dot(graph: &ModuleGraph, filter: Option<&str>, statuses: &BTreeMap<Stri
 }
 
 /// Print the graph as JSON, optionally with status annotations.
-fn print_json(graph: &ModuleGraph, statuses: &BTreeMap<String, NodeStatus>) -> Result<(), CmodError> {
+fn print_json(
+    graph: &ModuleGraph,
+    statuses: &BTreeMap<String, NodeStatus>,
+) -> Result<(), CmodError> {
     if statuses.is_empty() {
-        let json = serde_json::to_string_pretty(&graph.nodes).map_err(|e| {
-            CmodError::Other(format!("failed to serialize graph: {}", e))
-        })?;
+        let json = serde_json::to_string_pretty(&graph.nodes)
+            .map_err(|e| CmodError::Other(format!("failed to serialize graph: {}", e)))?;
         println!("{}", json);
     } else {
         // Build an enhanced JSON with status annotations
@@ -275,14 +315,16 @@ fn print_json(graph: &ModuleGraph, statuses: &BTreeMap<String, NodeStatus>) -> R
             let mut map = serde_json::to_value(node).unwrap_or_default();
             if let Some(status) = statuses.get(name) {
                 if let serde_json::Value::Object(ref mut obj) = map {
-                    obj.insert("status".to_string(), serde_json::to_value(status.label()).unwrap());
+                    obj.insert(
+                        "status".to_string(),
+                        serde_json::to_value(status.label()).unwrap(),
+                    );
                 }
             }
             entries.insert(name.clone(), map);
         }
-        let json = serde_json::to_string_pretty(&entries).map_err(|e| {
-            CmodError::Other(format!("failed to serialize graph: {}", e))
-        })?;
+        let json = serde_json::to_string_pretty(&entries)
+            .map_err(|e| CmodError::Other(format!("failed to serialize graph: {}", e)))?;
         println!("{}", json);
     }
     Ok(())
@@ -299,14 +341,13 @@ fn build_module_graph(
 
     for source in sources {
         let kind = runner::classify_source(source)?;
-        let module_name = runner::extract_module_name(source)?
-            .unwrap_or_else(|| {
-                source
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string()
-            });
+        let module_name = runner::extract_module_name(source)?.unwrap_or_else(|| {
+            source
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        });
 
         let imports = extract_imports(source)?;
 

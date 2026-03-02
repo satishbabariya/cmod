@@ -33,7 +33,10 @@ pub fn clean() -> Result<(), CmodError> {
 
     cache.clean()?;
 
-    eprintln!("  Cleared {} of cached artifacts", format_bytes(size_before));
+    eprintln!(
+        "  Cleared {} of cached artifacts",
+        format_bytes(size_before)
+    );
 
     Ok(())
 }
@@ -48,14 +51,14 @@ pub fn push(verbose: bool) -> Result<(), CmodError> {
         .cache
         .as_ref()
         .and_then(|c| c.shared_url.as_ref())
-        .ok_or_else(|| CmodError::Other(
-            "no shared cache URL configured; add [cache] shared_url to cmod.toml".to_string(),
-        ))?;
+        .ok_or_else(|| {
+            CmodError::Other(
+                "no shared cache URL configured; add [cache] shared_url to cmod.toml".to_string(),
+            )
+        })?;
 
-    let remote = cmod_cache::HttpRemoteCache::new(
-        remote_url,
-        cmod_cache::RemoteCacheMode::ReadWrite,
-    );
+    let remote =
+        cmod_cache::HttpRemoteCache::new(remote_url, cmod_cache::RemoteCacheMode::ReadWrite);
 
     let cache = ArtifactCache::new(config.cache_dir());
     let modules = cache.list_modules()?;
@@ -78,14 +81,16 @@ pub fn push(verbose: bool) -> Result<(), CmodError> {
                 .filter_map(|e| e.ok())
                 .filter(|e| e.file_type().is_file())
             {
-                let relative = entry.path().strip_prefix(&module_dir).unwrap_or(entry.path());
+                let relative = entry
+                    .path()
+                    .strip_prefix(&module_dir)
+                    .unwrap_or(entry.path());
                 let rel_str = relative.to_string_lossy().to_string();
                 let parts: Vec<&str> = rel_str.split('/').collect();
 
                 if parts.len() >= 2 {
-                    let key = cmod_cache::CacheKey::from_hex(parts[0]).unwrap_or(
-                        cmod_cache::CacheKey::from_hex("unknown").unwrap(),
-                    );
+                    let key = cmod_cache::CacheKey::from_hex(parts[0])
+                        .unwrap_or(cmod_cache::CacheKey::from_hex("unknown").unwrap());
                     let artifact_name = parts[1..].join("/");
                     let _ = remote.put(module, &key, &artifact_name, entry.path());
                     pushed += 1;
@@ -111,14 +116,14 @@ pub fn pull(verbose: bool) -> Result<(), CmodError> {
         .cache
         .as_ref()
         .and_then(|c| c.shared_url.as_ref())
-        .ok_or_else(|| CmodError::Other(
-            "no shared cache URL configured; add [cache] shared_url to cmod.toml".to_string(),
-        ))?;
+        .ok_or_else(|| {
+            CmodError::Other(
+                "no shared cache URL configured; add [cache] shared_url to cmod.toml".to_string(),
+            )
+        })?;
 
-    let remote = cmod_cache::HttpRemoteCache::new(
-        remote_url,
-        cmod_cache::RemoteCacheMode::ReadOnly,
-    );
+    let remote =
+        cmod_cache::HttpRemoteCache::new(remote_url, cmod_cache::RemoteCacheMode::ReadOnly);
 
     if verbose {
         eprintln!("  Remote: {}", remote_url);
@@ -126,9 +131,7 @@ pub fn pull(verbose: bool) -> Result<(), CmodError> {
 
     // Load the lockfile to get module names and hashes
     let lockfile = cmod_core::lockfile::Lockfile::load(&config.lockfile_path)
-        .map_err(|_| CmodError::Other(
-            "no lockfile found; run `cmod resolve` first".to_string(),
-        ))?;
+        .map_err(|_| CmodError::Other("no lockfile found; run `cmod resolve` first".to_string()))?;
 
     if lockfile.packages.is_empty() {
         eprintln!("  No dependencies in lockfile, nothing to pull.");
@@ -310,11 +313,16 @@ pub fn import_bmi(path: &str, verbose: bool) -> Result<(), CmodError> {
 
     eprintln!(
         "  Imported BMI for '{}' v{} ({})",
-        metadata.module_name, metadata.version, metadata.compat_key()
+        metadata.module_name,
+        metadata.version,
+        metadata.compat_key()
     );
 
     if verbose {
-        eprintln!("  Compiler: {} {}", metadata.compiler, metadata.compiler_version);
+        eprintln!(
+            "  Compiler: {} {}",
+            metadata.compiler, metadata.compiler_version
+        );
         eprintln!("  Target: {}", metadata.target);
         eprintln!("  C++ standard: {}", metadata.cxx_standard);
     }

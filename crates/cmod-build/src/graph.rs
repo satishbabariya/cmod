@@ -58,10 +58,7 @@ impl ModuleGraph {
             // Self-imports are invalid
             if node.imports.contains(&node.name) {
                 return Err(CmodError::ModuleScanFailed {
-                    reason: format!(
-                        "module '{}' imports itself",
-                        name,
-                    ),
+                    reason: format!("module '{}' imports itself", name,),
                 });
             }
         }
@@ -203,7 +200,11 @@ impl ModuleGraph {
                 .unwrap_or((0, ""));
 
             let total = best_time + node_time;
-            let pred = if best_pred.is_empty() { None } else { Some(best_pred) };
+            let pred = if best_pred.is_empty() {
+                None
+            } else {
+                Some(best_pred)
+            };
             dp.insert(name.as_str(), (total, pred));
         }
 

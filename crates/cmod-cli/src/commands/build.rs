@@ -57,7 +57,15 @@ pub fn run(
 
     // Check if this is a workspace build
     if config.manifest.is_workspace() {
-        return build_workspace(&config, verbose, jobs, force, &effective_remote_url, timings, no_cache);
+        return build_workspace(
+            &config,
+            verbose,
+            jobs,
+            force,
+            &effective_remote_url,
+            timings,
+            no_cache,
+        );
     }
 
     eprintln!(
@@ -86,7 +94,10 @@ pub fn run(
         }
 
         if verbose {
-            eprintln!("  Lockfile integrity verified ({} packages)", lockfile.packages.len());
+            eprintln!(
+                "  Lockfile integrity verified ({} packages)",
+                lockfile.packages.len()
+            );
         }
     }
 
@@ -95,34 +106,75 @@ pub fn run(
 
     // Step 2: Run pre-build hook
     if !no_hooks {
-        run_hook(&config, "pre-build", config.manifest.hooks.as_ref().and_then(|h| h.pre_build.as_deref()))?;
+        run_hook(
+            &config,
+            "pre-build",
+            config
+                .manifest
+                .hooks
+                .as_ref()
+                .and_then(|h| h.pre_build.as_deref()),
+        )?;
     }
 
     // Resolve activated features for compiler defines
-    let activated_features = resolve_build_features(&config.manifest, features, no_default_features);
+    let activated_features =
+        resolve_build_features(&config.manifest, features, no_default_features);
 
     // Step 3: Build the single module
-    let result = build_module(&config, verbose, jobs, force, &effective_remote_url, timings, &activated_features, no_cache);
+    let result = build_module(
+        &config,
+        verbose,
+        jobs,
+        force,
+        &effective_remote_url,
+        timings,
+        &activated_features,
+        no_cache,
+    );
 
     // Step 4: Run post-build hook (only on success)
     if result.is_ok() && !no_hooks {
-        run_hook(&config, "post-build", config.manifest.hooks.as_ref().and_then(|h| h.post_build.as_deref()))?;
+        run_hook(
+            &config,
+            "post-build",
+            config
+                .manifest
+                .hooks
+                .as_ref()
+                .and_then(|h| h.post_build.as_deref()),
+        )?;
     }
 
     result
 }
 
 /// Create a remote cache instance from a URL, if provided.
-fn make_remote_cache(url: &Option<String>, verbose: bool) -> Option<Box<dyn cmod_cache::RemoteCache>> {
+fn make_remote_cache(
+    url: &Option<String>,
+    verbose: bool,
+) -> Option<Box<dyn cmod_cache::RemoteCache>> {
     let url = url.as_ref()?;
     if verbose {
         eprintln!("  Remote cache: {}", url);
     }
-    Some(Box::new(HttpRemoteCache::new(url, RemoteCacheMode::ReadWrite)))
+    Some(Box::new(HttpRemoteCache::new(
+        url,
+        RemoteCacheMode::ReadWrite,
+    )))
 }
 
 /// Build a single module project.
-fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>, timings: bool, activated_features: &[String], no_cache: bool) -> Result<(), CmodError> {
+fn build_module(
+    config: &Config,
+    verbose: bool,
+    jobs: usize,
+    force: bool,
+    remote_url: &Option<String>,
+    timings: bool,
+    activated_features: &[String],
+    no_cache: bool,
+) -> Result<(), CmodError> {
     // Discover source files
     let src_dir = config.src_dir();
     let sources = runner::discover_sources(&src_dir)?;
@@ -179,7 +231,8 @@ fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote
         eprintln!("  Parallelism: {} jobs", runner.effective_jobs());
     }
 
-    let (output, stats) = runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type)?;
+    let (output, stats) =
+        runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type)?;
 
     print_build_stats(&stats, verbose, timings);
     eprintln!("  Build complete: {}", output.display());
@@ -187,7 +240,15 @@ fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote
 }
 
 /// Build all members of a workspace.
-fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>, timings: bool, no_cache: bool) -> Result<(), CmodError> {
+fn build_workspace(
+    config: &Config,
+    verbose: bool,
+    jobs: usize,
+    force: bool,
+    remote_url: &Option<String>,
+    timings: bool,
+    no_cache: bool,
+) -> Result<(), CmodError> {
     let ws = WorkspaceManager::load(&config.root)?;
 
     eprintln!(
@@ -229,9 +290,7 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, rem
         let (backend, target) = setup_compiler(config, &[]);
         let cache = ArtifactCache::new(config.cache_dir());
 
-        let build_dir = config
-            .build_dir()
-            .join(&member.name);
+        let build_dir = config.build_dir().join(&member.name);
 
         let build_type = member
             .manifest
@@ -249,7 +308,13 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, rem
         if let Some(remote) = make_remote_cache(remote_url, verbose) {
             runner_instance = runner_instance.with_remote_cache(remote);
         }
-        match runner_instance.build_with_stats(&graph, &build_dir, &target, config.profile, build_type) {
+        match runner_instance.build_with_stats(
+            &graph,
+            &build_dir,
+            &target,
+            config.profile,
+            build_type,
+        ) {
             Ok((output, stats)) => {
                 print_build_stats(&stats, verbose, timings);
                 eprintln!("    Built: {}", output.display());
@@ -259,7 +324,10 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, rem
                 if pcm_dir.exists() {
                     for source in &sources {
                         if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
-                            let sanitized = mod_name.replace('.', "_").replace(':', "_").replace('/', "_");
+                            let sanitized = mod_name
+                                .replace('.', "_")
+                                .replace(':', "_")
+                                .replace('/', "_");
                             let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
                             if pcm_path.exists() {
                                 workspace_pcm_paths.insert(mod_name, pcm_path);
@@ -290,10 +358,7 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, rem
 
     if !failed.is_empty() {
         return Err(CmodError::BuildFailed {
-            reason: format!(
-                "workspace build failed for members: {}",
-                failed.join(", ")
-            ),
+            reason: format!("workspace build failed for members: {}", failed.join(", ")),
         });
     }
 
@@ -316,14 +381,13 @@ fn build_module_graph(
 
     for source in sources {
         let kind = runner::classify_source(source)?;
-        let module_name = runner::extract_module_name(source)?
-            .unwrap_or_else(|| {
-                source
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string()
-            });
+        let module_name = runner::extract_module_name(source)?.unwrap_or_else(|| {
+            source
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        });
 
         let imports = if use_scanner {
             scan_deps_imports(source).unwrap_or_else(|_| {
@@ -344,8 +408,7 @@ fn build_module_graph(
     }
 
     // Filter imports to only include modules that exist in the graph
-    let known_modules: std::collections::BTreeSet<String> =
-        graph.nodes.keys().cloned().collect();
+    let known_modules: std::collections::BTreeSet<String> = graph.nodes.keys().cloned().collect();
     for node in graph.nodes.values_mut() {
         node.imports.retain(|imp| known_modules.contains(imp));
     }
@@ -391,11 +454,10 @@ fn scan_deps_imports(source: &std::path::Path) -> Result<Vec<String>, CmodError>
 
 /// Parse P1689 JSON format to extract required module names.
 fn parse_p1689_imports(json_str: &str) -> Result<Vec<String>, CmodError> {
-    let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        CmodError::ModuleScanFailed {
+    let value: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| CmodError::ModuleScanFailed {
             reason: format!("failed to parse P1689 output: {}", e),
-        }
-    })?;
+        })?;
 
     let mut imports = Vec::new();
 
@@ -474,7 +536,11 @@ fn setup_compiler(config: &Config, activated_features: &[String]) -> (ClangBacke
 /// Resolve which features are activated for the build.
 ///
 /// Returns a list of feature names that should be passed as `-DCMOD_FEATURE_*` flags.
-fn resolve_build_features(manifest: &cmod_core::manifest::Manifest, features: &[String], no_default_features: bool) -> Vec<String> {
+fn resolve_build_features(
+    manifest: &cmod_core::manifest::Manifest,
+    features: &[String],
+    no_default_features: bool,
+) -> Vec<String> {
     let mut activated = Vec::new();
 
     // Add default features unless disabled
@@ -721,7 +787,11 @@ pub fn run_hook(config: &Config, hook_name: &str, command: Option<&str>) -> Resu
 /// - `"require"`: fail if any git dependency lacks a content hash (proxy for signature)
 /// - `"warn"`: emit warnings for unsigned/unhashed deps
 /// - `"none"` / absent: no enforcement
-fn enforce_signature_policy(config: &Config, lockfile: &Lockfile, verbose: bool) -> Result<(), CmodError> {
+fn enforce_signature_policy(
+    config: &Config,
+    lockfile: &Lockfile,
+    verbose: bool,
+) -> Result<(), CmodError> {
     let policy = config
         .manifest
         .security
@@ -748,7 +818,10 @@ fn enforce_signature_policy(config: &Config, lockfile: &Lockfile, verbose: bool)
                 });
             }
             if verbose {
-                eprintln!("  Security policy: all {} packages have content hashes", lockfile.packages.len());
+                eprintln!(
+                    "  Security policy: all {} packages have content hashes",
+                    lockfile.packages.len()
+                );
             }
         }
         "warn" => {
@@ -781,11 +854,20 @@ pub fn plan(verbose: bool, target_override: Option<String>) -> Result<(), CmodEr
     }
 
     let target = target_override
-        .or_else(|| config.manifest.toolchain.as_ref().and_then(|tc| tc.target.clone()))
+        .or_else(|| {
+            config
+                .manifest
+                .toolchain
+                .as_ref()
+                .and_then(|tc| tc.target.clone())
+        })
         .unwrap_or_else(default_target);
 
     let build_dir = config.build_dir();
-    let build_type = config.manifest.build.as_ref()
+    let build_type = config
+        .manifest
+        .build
+        .as_ref()
         .and_then(|b| b.build_type)
         .unwrap_or_default();
 
@@ -798,8 +880,8 @@ pub fn plan(verbose: bool, target_override: Option<String>) -> Result<(), CmodEr
         build_type,
     )?;
 
-    let json = serde_json::to_string_pretty(&plan.nodes).map_err(|e| {
-        CmodError::BuildFailed { reason: format!("failed to serialize build plan: {}", e) }
+    let json = serde_json::to_string_pretty(&plan.nodes).map_err(|e| CmodError::BuildFailed {
+        reason: format!("failed to serialize build plan: {}", e),
     })?;
 
     println!("{}", json);
@@ -824,7 +906,10 @@ pub fn emit_cmake(verbose: bool) -> Result<(), CmodError> {
     let mut lines = vec![
         "# Generated by cmod — do not edit manually".to_string(),
         format!("cmake_minimum_required(VERSION 3.28)"),
-        format!("project({} VERSION {})", config.manifest.package.name, config.manifest.package.version),
+        format!(
+            "project({} VERSION {})",
+            config.manifest.package.name, config.manifest.package.version
+        ),
         String::new(),
         "set(CMAKE_CXX_STANDARD 20)".to_string(),
         "set(CMAKE_CXX_STANDARD_REQUIRED ON)".to_string(),
@@ -832,13 +917,20 @@ pub fn emit_cmake(verbose: bool) -> Result<(), CmodError> {
     ];
 
     // Collect source files
-    let source_files: Vec<String> = sources.iter()
+    let source_files: Vec<String> = sources
+        .iter()
         .map(|p| {
-            p.strip_prefix(&config.root).unwrap_or(p).display().to_string()
+            p.strip_prefix(&config.root)
+                .unwrap_or(p)
+                .display()
+                .to_string()
         })
         .collect();
 
-    let build_type = config.manifest.build.as_ref()
+    let build_type = config
+        .manifest
+        .build
+        .as_ref()
         .and_then(|b| b.build_type)
         .unwrap_or_default();
 
@@ -854,7 +946,10 @@ pub fn emit_cmake(verbose: bool) -> Result<(), CmodError> {
         _ => "",
     };
 
-    lines.push(format!("{}({}{}", target_type, config.manifest.package.name, modifier));
+    lines.push(format!(
+        "{}({}{}",
+        target_type, config.manifest.package.name, modifier
+    ));
     for src in &source_files {
         lines.push(format!("    {}", src));
     }
@@ -881,11 +976,7 @@ mod tests {
     fn test_extract_imports_module() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("test.cppm");
-        std::fs::write(
-            &file,
-            "export module mymod;\nimport base;\nimport utils;\n",
-        )
-        .unwrap();
+        std::fs::write(&file, "export module mymod;\nimport base;\nimport utils;\n").unwrap();
 
         let imports = extract_imports_from_source(&file).unwrap();
         assert_eq!(imports, vec!["base", "utils"]);
@@ -920,11 +1011,7 @@ mod tests {
     fn test_extract_imports_with_whitespace() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("test.cppm");
-        std::fs::write(
-            &file,
-            "  import   base  ;\n\timport utils;\n",
-        )
-        .unwrap();
+        std::fs::write(&file, "  import   base  ;\n\timport utils;\n").unwrap();
 
         let imports = extract_imports_from_source(&file).unwrap();
         assert_eq!(imports, vec!["base", "utils"]);

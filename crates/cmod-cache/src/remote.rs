@@ -112,7 +112,15 @@ impl RemoteCache for HttpRemoteCache {
         // Use std::process::Command to call curl for HEAD request
         // (avoids adding a heavy HTTP client dependency)
         let output = std::process::Command::new("curl")
-            .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--head", &url])
+            .args([
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "--head",
+                &url,
+            ])
             .output()
             .map_err(|e| CmodError::Other(format!("curl not available: {}", e)))?;
 
@@ -172,9 +180,7 @@ impl RemoteCache for HttpRemoteCache {
         source: &Path,
     ) -> Result<(), CmodError> {
         if !self.can_write() {
-            return Err(CmodError::Other(
-                "remote cache is read-only".to_string(),
-            ));
+            return Err(CmodError::Other("remote cache is read-only".to_string()));
         }
 
         let url = self.cache_url(module_id, key, Some(artifact_name));
@@ -232,11 +238,23 @@ mod tests {
 
     #[test]
     fn test_remote_cache_mode_from_str() {
-        assert_eq!(RemoteCacheMode::from_str("readonly"), RemoteCacheMode::ReadOnly);
-        assert_eq!(RemoteCacheMode::from_str("read-only"), RemoteCacheMode::ReadOnly);
+        assert_eq!(
+            RemoteCacheMode::from_str("readonly"),
+            RemoteCacheMode::ReadOnly
+        );
+        assert_eq!(
+            RemoteCacheMode::from_str("read-only"),
+            RemoteCacheMode::ReadOnly
+        );
         assert_eq!(RemoteCacheMode::from_str("ro"), RemoteCacheMode::ReadOnly);
-        assert_eq!(RemoteCacheMode::from_str("readwrite"), RemoteCacheMode::ReadWrite);
-        assert_eq!(RemoteCacheMode::from_str("read-write"), RemoteCacheMode::ReadWrite);
+        assert_eq!(
+            RemoteCacheMode::from_str("readwrite"),
+            RemoteCacheMode::ReadWrite
+        );
+        assert_eq!(
+            RemoteCacheMode::from_str("read-write"),
+            RemoteCacheMode::ReadWrite
+        );
         assert_eq!(RemoteCacheMode::from_str("rw"), RemoteCacheMode::ReadWrite);
         assert_eq!(RemoteCacheMode::from_str("off"), RemoteCacheMode::Off);
         assert_eq!(RemoteCacheMode::from_str("anything"), RemoteCacheMode::Off);
@@ -251,7 +269,10 @@ mod tests {
         assert_eq!(url, "https://cache.example.com/cache/mymod/abc123");
 
         let url = cache.cache_url("mymod", &key, Some("mymod.pcm"));
-        assert_eq!(url, "https://cache.example.com/cache/mymod/abc123/mymod.pcm");
+        assert_eq!(
+            url,
+            "https://cache.example.com/cache/mymod/abc123/mymod.pcm"
+        );
     }
 
     #[test]
@@ -280,7 +301,9 @@ mod tests {
     fn test_get_returns_false_when_off() {
         let cache = HttpRemoteCache::new("https://cache.example.com", RemoteCacheMode::Off);
         let key = CacheKey::from_hex("abc123").unwrap();
-        let result = cache.get("mymod", &key, "test.pcm", Path::new("/tmp/test")).unwrap();
+        let result = cache
+            .get("mymod", &key, "test.pcm", Path::new("/tmp/test"))
+            .unwrap();
         assert!(!result);
     }
 

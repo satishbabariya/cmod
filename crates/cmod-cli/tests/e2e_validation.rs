@@ -70,7 +70,12 @@ fn has_clang_format() -> bool {
 /// Initialize a cmod project with `cmod init --name <name>`.
 fn init_project(dir: &Path, name: &str) {
     let output = run_cmod(dir, &["init", "--name", name]);
-    assert!(output.status.success(), "init '{}' failed: {}", name, stderr(&output));
+    assert!(
+        output.status.success(),
+        "init '{}' failed: {}",
+        name,
+        stderr(&output)
+    );
 }
 
 /// Initialize a project and write custom C++20 module source files for compilation.
@@ -96,7 +101,8 @@ fn init_project_with_source(dir: &Path, name: &str) {
             "import {};\n\nint main() {{\n    return {}::add(20, 22) == 42 ? 0 : 1;\n}}\n",
             module_name, cpp_name
         ),
-    ).unwrap();
+    )
+    .unwrap();
 
     // Test that uses the module
     fs::write(
@@ -105,7 +111,8 @@ fn init_project_with_source(dir: &Path, name: &str) {
             "import {};\n\nint main() {{\n    return {}::add(1, 2) == 3 ? 0 : 1;\n}}\n",
             module_name, cpp_name
         ),
-    ).unwrap();
+    )
+    .unwrap();
 }
 
 /// Get stderr output as a string.
@@ -141,7 +148,11 @@ fn test_e2e_init_creates_all_files() {
 fn test_e2e_init_workspace_creates_manifest() {
     let tmp = TempDir::new().unwrap();
     let output = run_cmod(tmp.path(), &["init", "--workspace", "--name", "engine"]);
-    assert!(output.status.success(), "init workspace failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "init workspace failed: {}",
+        stderr(&output)
+    );
 
     let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
     assert!(manifest.contains("[workspace]"));
@@ -221,7 +232,8 @@ fn test_e2e_add_path_dependency() {
     fs::write(
         lib_dir.join("cmod.toml"),
         "[package]\nname = \"mylib\"\nversion = \"1.0.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let output = run_cmod(tmp.path(), &["add", "mylib", "--path", "./libs/mylib"]);
     assert!(output.status.success(), "add failed: {}", stderr(&output));
@@ -241,11 +253,16 @@ fn test_e2e_remove_dependency() {
     fs::write(
         lib_dir.join("cmod.toml"),
         "[package]\nname = \"mylib\"\nversion = \"1.0.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     run_cmod(tmp.path(), &["add", "mylib", "--path", "./libs/mylib"]);
     let output = run_cmod(tmp.path(), &["remove", "mylib"]);
-    assert!(output.status.success(), "remove failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "remove failed: {}",
+        stderr(&output)
+    );
 
     let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
     assert!(!manifest.contains("mylib"));
@@ -281,12 +298,17 @@ fn test_e2e_deps_tree_with_path_dep() {
     fs::write(
         lib_dir.join("cmod.toml"),
         "[package]\nname = \"mylib\"\nversion = \"2.0.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     run_cmod(tmp.path(), &["add", "mylib", "--path", "./libs/mylib"]);
 
     let output = run_cmod(tmp.path(), &["deps", "--tree"]);
-    assert!(output.status.success(), "deps --tree failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "deps --tree failed: {}",
+        stderr(&output)
+    );
     let out = stdout(&output);
     assert!(out.contains("app"));
     assert!(out.contains("mylib"));
@@ -334,7 +356,11 @@ fn test_e2e_build_release_module() {
     init_project_with_source(tmp.path(), "hello");
 
     let output = run_cmod_with_llvm(tmp.path(), &["build", "--release"]);
-    assert!(output.status.success(), "build --release failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "build --release failed: {}",
+        stderr(&output)
+    );
 
     let build_dir = tmp.path().join("build/release");
     assert!(build_dir.exists(), "build/release directory not created");
@@ -352,11 +378,19 @@ fn test_e2e_build_force_rebuild() {
 
     // First build
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(output.status.success(), "first build failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "first build failed: {}",
+        stderr(&output)
+    );
 
     // Force rebuild
     let output = run_cmod_with_llvm(tmp.path(), &["build", "--force"]);
-    assert!(output.status.success(), "force rebuild failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "force rebuild failed: {}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -370,7 +404,11 @@ fn test_e2e_build_with_timings() {
     init_project_with_source(tmp.path(), "hello");
 
     let output = run_cmod_with_llvm(tmp.path(), &["build", "--timings"]);
-    assert!(output.status.success(), "build --timings failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "build --timings failed: {}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -384,7 +422,11 @@ fn test_e2e_build_verbose_output() {
     init_project_with_source(tmp.path(), "hello");
 
     let output = run_cmod_with_llvm(tmp.path(), &["-v", "build"]);
-    assert!(output.status.success(), "verbose build failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "verbose build failed: {}",
+        stderr(&output)
+    );
     let err = stderr(&output);
     assert!(err.contains("Found") || err.contains("source files") || err.contains("Build"));
 }
@@ -403,10 +445,14 @@ fn test_e2e_build_compile_error() {
     fs::write(
         tmp.path().join("src/lib.cppm"),
         "export module local.broken;\n\nexport int broken() { this is not valid c++; }\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(!output.status.success(), "build should have failed for broken source");
+    assert!(
+        !output.status.success(),
+        "build should have failed for broken source"
+    );
 }
 
 #[test]
@@ -435,15 +481,24 @@ fn test_e2e_build_incremental_skip() {
 
     // First build
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(output.status.success(), "first build failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "first build failed: {}",
+        stderr(&output)
+    );
 
     // Second build should detect up-to-date modules
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(output.status.success(), "second build failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "second build failed: {}",
+        stderr(&output)
+    );
     let err = stderr(&output);
     assert!(
         err.contains("up-to-date") || err.contains("cached") || err.contains("Build complete"),
-        "expected incremental skip, got: {}", err
+        "expected incremental skip, got: {}",
+        err
     );
 }
 
@@ -466,7 +521,11 @@ fn test_e2e_build_static_lib() {
     fs::remove_file(tmp.path().join("src/main.cpp")).unwrap();
 
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(output.status.success(), "static lib build failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "static lib build failed: {}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -483,7 +542,8 @@ fn test_e2e_build_with_partitions() {
     fs::write(
         tmp.path().join("src/lib.cppm"),
         "export module local.mathlib;\nexport import :ops;\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     fs::write(
         tmp.path().join("src/ops.cppm"),
@@ -496,7 +556,11 @@ fn test_e2e_build_with_partitions() {
     ).unwrap();
 
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(output.status.success(), "partition build failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "partition build failed: {}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -537,12 +601,20 @@ fn test_e2e_run_release() {
 
     // Build in release mode first so both debug and release dirs exist
     let output = run_cmod_with_llvm(tmp.path(), &["build", "--release"]);
-    assert!(output.status.success(), "build --release failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "build --release failed: {}",
+        stderr(&output)
+    );
 
     // Also do a debug build so `cmod run --release` can find a binary
     // (the run command currently looks in the debug build dir)
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(output.status.success(), "build debug failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "build debug failed: {}",
+        stderr(&output)
+    );
 
     let output = run_cmod_with_llvm(tmp.path(), &["run"]);
     assert!(output.status.success(), "run failed: {}", stderr(&output));
@@ -586,7 +658,8 @@ fn test_e2e_test_failure_detected() {
     fs::write(
         tmp.path().join("tests/main.cpp"),
         "int main() { return 1; }\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let output = run_cmod_with_llvm(tmp.path(), &["test"]);
     assert!(!output.status.success(), "test should have failed");
@@ -607,7 +680,11 @@ fn test_e2e_test_no_tests_dir() {
 
     let output = run_cmod_with_llvm(tmp.path(), &["test"]);
     // Should succeed but skip (no tests to run)
-    assert!(output.status.success(), "test without tests dir should succeed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "test without tests dir should succeed: {}",
+        stderr(&output)
+    );
     assert!(stderr(&output).contains("No tests") || stderr(&output).contains("skipping"));
 }
 
@@ -623,7 +700,11 @@ fn test_e2e_workspace_add_and_list() {
 
     // Add a member
     let output = run_cmod(tmp.path(), &["workspace", "add", "core"]);
-    assert!(output.status.success(), "workspace add failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "workspace add failed: {}",
+        stderr(&output)
+    );
 
     // Check member was created
     assert!(tmp.path().join("core/cmod.toml").exists());
@@ -631,7 +712,11 @@ fn test_e2e_workspace_add_and_list() {
 
     // List members
     let output = run_cmod(tmp.path(), &["workspace", "list"]);
-    assert!(output.status.success(), "workspace list failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "workspace list failed: {}",
+        stderr(&output)
+    );
     assert!(stderr(&output).contains("core"));
 }
 
@@ -642,7 +727,11 @@ fn test_e2e_workspace_remove_member() {
     run_cmod(tmp.path(), &["workspace", "add", "lib1"]);
 
     let output = run_cmod(tmp.path(), &["workspace", "remove", "lib1"]);
-    assert!(output.status.success(), "workspace remove failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "workspace remove failed: {}",
+        stderr(&output)
+    );
     assert!(stderr(&output).contains("Removed"));
 }
 
@@ -670,7 +759,8 @@ fn test_e2e_workspace_build() {
     fs::write(
         tmp.path().join("core/src/lib.cppm"),
         "export module local.core;\n\nexport namespace core {\n    int value() { return 42; }\n}\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     // Mark core as a static lib (no main.cpp)
     let core_manifest = fs::read_to_string(tmp.path().join("core/cmod.toml")).unwrap();
@@ -681,8 +771,16 @@ fn test_e2e_workspace_build() {
     let _ = fs::remove_file(tmp.path().join("core/src/main.cpp"));
 
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(output.status.success(), "workspace build failed: {}", stderr(&output));
-    assert!(stderr(&output).contains("Workspace") || stderr(&output).contains("workspace") || stderr(&output).contains("Building member"));
+    assert!(
+        output.status.success(),
+        "workspace build failed: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("Workspace")
+            || stderr(&output).contains("workspace")
+            || stderr(&output).contains("Building member")
+    );
 }
 
 // ─── Group 7: Clean Command ─────────────────────────────────────────────────
@@ -708,11 +806,17 @@ fn test_e2e_clean_after_build() {
     init_project_with_source(tmp.path(), "cleanme");
 
     run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(tmp.path().join("build").exists(), "build dir should exist after build");
+    assert!(
+        tmp.path().join("build").exists(),
+        "build dir should exist after build"
+    );
 
     let output = run_cmod(tmp.path(), &["clean"]);
     assert!(output.status.success(), "clean failed: {}", stderr(&output));
-    assert!(!tmp.path().join("build").exists(), "build dir should be removed after clean");
+    assert!(
+        !tmp.path().join("build").exists(),
+        "build dir should be removed after clean"
+    );
 }
 
 // ─── Group 8: Plan Output ───────────────────────────────────────────────────
@@ -728,7 +832,11 @@ fn test_e2e_plan_json_output() {
     let out = stdout(&output);
     // Plan output should be valid JSON
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&out);
-    assert!(parsed.is_ok(), "plan output should be valid JSON, got: {}", out);
+    assert!(
+        parsed.is_ok(),
+        "plan output should be valid JSON, got: {}",
+        out
+    );
 }
 
 #[test]
@@ -742,8 +850,15 @@ fn test_e2e_plan_contains_nodes() {
     let out = stdout(&output);
     let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
     // Should be an array of nodes
-    assert!(parsed.is_array(), "plan should output an array, got: {}", out);
-    assert!(!parsed.as_array().unwrap().is_empty(), "plan should have at least one node");
+    assert!(
+        parsed.is_array(),
+        "plan should output an array, got: {}",
+        out
+    );
+    assert!(
+        !parsed.as_array().unwrap().is_empty(),
+        "plan should have at least one node"
+    );
 }
 
 // ─── Group 9: CMake Export ──────────────────────────────────────────────────
@@ -754,7 +869,11 @@ fn test_e2e_emit_cmake_creates_file() {
     init_project(tmp.path(), "cmaketest");
 
     let output = run_cmod(tmp.path(), &["emit-cmake"]);
-    assert!(output.status.success(), "emit-cmake failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "emit-cmake failed: {}",
+        stderr(&output)
+    );
     assert!(tmp.path().join("CMakeLists.txt").exists());
 }
 
@@ -781,7 +900,11 @@ fn test_e2e_compile_commands_creates_file() {
     init_project(tmp.path(), "cctest");
 
     let output = run_cmod(tmp.path(), &["compile-commands"]);
-    assert!(output.status.success(), "compile-commands failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "compile-commands failed: {}",
+        stderr(&output)
+    );
     assert!(tmp.path().join("compile_commands.json").exists());
 }
 
@@ -800,8 +923,16 @@ fn test_e2e_compile_commands_valid_json() {
     assert!(arr.is_array());
     // Each entry should have "file", "directory", "command" or "arguments"
     for entry in arr.as_array().unwrap() {
-        assert!(entry.get("file").is_some(), "entry missing 'file': {:?}", entry);
-        assert!(entry.get("directory").is_some(), "entry missing 'directory': {:?}", entry);
+        assert!(
+            entry.get("file").is_some(),
+            "entry missing 'file': {:?}",
+            entry
+        );
+        assert!(
+            entry.get("directory").is_some(),
+            "entry missing 'directory': {:?}",
+            entry
+        );
     }
 }
 
@@ -816,7 +947,10 @@ fn test_e2e_graph_ascii() {
     assert!(output.status.success(), "graph failed: {}", stderr(&output));
 
     let out = stdout(&output);
-    assert!(out.contains("graphtest"), "ASCII graph should show project name");
+    assert!(
+        out.contains("graphtest"),
+        "ASCII graph should show project name"
+    );
 }
 
 #[test]
@@ -825,11 +959,21 @@ fn test_e2e_graph_dot_format() {
     init_project(tmp.path(), "graphtest2");
 
     let output = run_cmod(tmp.path(), &["graph", "--format", "dot"]);
-    assert!(output.status.success(), "graph --format dot failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "graph --format dot failed: {}",
+        stderr(&output)
+    );
 
     let out = stdout(&output);
-    assert!(out.contains("digraph"), "DOT output should contain 'digraph'");
-    assert!(out.contains("rankdir"), "DOT output should contain 'rankdir'");
+    assert!(
+        out.contains("digraph"),
+        "DOT output should contain 'digraph'"
+    );
+    assert!(
+        out.contains("rankdir"),
+        "DOT output should contain 'rankdir'"
+    );
 }
 
 #[test]
@@ -838,11 +982,19 @@ fn test_e2e_graph_json_format() {
     init_project(tmp.path(), "graphtest3");
 
     let output = run_cmod(tmp.path(), &["graph", "--format", "json"]);
-    assert!(output.status.success(), "graph --format json failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "graph --format json failed: {}",
+        stderr(&output)
+    );
 
     let out = stdout(&output);
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&out);
-    assert!(parsed.is_ok(), "graph JSON output should be valid JSON, got: {}", out);
+    assert!(
+        parsed.is_ok(),
+        "graph JSON output should be valid JSON, got: {}",
+        out
+    );
 }
 
 #[test]
@@ -851,7 +1003,11 @@ fn test_e2e_graph_with_filter() {
     init_project(tmp.path(), "graphfilter");
 
     let output = run_cmod(tmp.path(), &["graph", "--filter", "local"]);
-    assert!(output.status.success(), "graph --filter failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "graph --filter failed: {}",
+        stderr(&output)
+    );
 }
 
 // ─── Group 12: Verify Command ───────────────────────────────────────────────
@@ -862,8 +1018,14 @@ fn test_e2e_verify_valid_project() {
     init_project(tmp.path(), "verified");
 
     let output = run_cmod(tmp.path(), &["verify"]);
-    assert!(output.status.success(), "verify failed: {}", stderr(&output));
-    assert!(stderr(&output).contains("Verification passed") || stderr(&output).contains("No issues"));
+    assert!(
+        output.status.success(),
+        "verify failed: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("Verification passed") || stderr(&output).contains("No issues")
+    );
 }
 
 #[test]
@@ -875,10 +1037,14 @@ fn test_e2e_verify_name_mismatch() {
     fs::write(
         tmp.path().join("src/lib.cppm"),
         "export module wrong_name;\n\nexport namespace wrong {}\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let output = run_cmod(tmp.path(), &["verify"]);
-    assert!(!output.status.success(), "verify should fail with name mismatch");
+    assert!(
+        !output.status.success(),
+        "verify should fail with name mismatch"
+    );
     assert!(stderr(&output).contains("mismatch") || stderr(&output).contains("declares"));
 }
 
@@ -891,7 +1057,10 @@ fn test_e2e_verify_missing_source() {
     fs::remove_dir_all(tmp.path().join("src")).unwrap();
 
     let output = run_cmod(tmp.path(), &["verify"]);
-    assert!(!output.status.success(), "verify should fail with missing sources");
+    assert!(
+        !output.status.success(),
+        "verify should fail with missing sources"
+    );
 }
 
 #[test]
@@ -904,7 +1073,8 @@ fn test_e2e_verify_verbose() {
     let err = stderr(&output);
     assert!(
         err.contains("Checking") || err.contains("manifest") || err.contains("module"),
-        "verbose verify should show detailed checks, got: {}", err
+        "verbose verify should show detailed checks, got: {}",
+        err
     );
 }
 
@@ -934,10 +1104,14 @@ fn test_e2e_check_reserved_prefix() {
     fs::write(
         tmp.path().join("src/lib.cppm"),
         "export module std.mymod;\n\nexport namespace stdmod {}\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let output = run_cmod(tmp.path(), &["check"]);
-    assert!(!output.status.success(), "check should fail for reserved prefix");
+    assert!(
+        !output.status.success(),
+        "check should fail for reserved prefix"
+    );
     assert!(stderr(&output).contains("reserved") || stderr(&output).contains("std"));
 }
 
@@ -950,10 +1124,14 @@ fn test_e2e_check_source_mismatch() {
     fs::write(
         tmp.path().join("src/lib.cppm"),
         "export module different_name;\n\nexport namespace mismatch2 {}\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let output = run_cmod(tmp.path(), &["check"]);
-    assert!(!output.status.success(), "check should fail for module name mismatch");
+    assert!(
+        !output.status.success(),
+        "check should fail for module name mismatch"
+    );
     assert!(stderr(&output).contains("mismatch"));
 }
 
@@ -965,10 +1143,17 @@ fn test_e2e_status_output() {
     init_project(tmp.path(), "statustest");
 
     let output = run_cmod(tmp.path(), &["status"]);
-    assert!(output.status.success(), "status failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "status failed: {}",
+        stderr(&output)
+    );
 
     let out = stdout(&output);
-    assert!(out.contains("statustest"), "status should show project name");
+    assert!(
+        out.contains("statustest"),
+        "status should show project name"
+    );
     assert!(out.contains("Module:") || out.contains("local.statustest"));
     assert!(out.contains("Sources:"));
 }
@@ -999,7 +1184,11 @@ fn test_e2e_explain_existing_module() {
     init_project(tmp.path(), "explaintest");
 
     let output = run_cmod(tmp.path(), &["explain", "local.explaintest"]);
-    assert!(output.status.success(), "explain failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "explain failed: {}",
+        stderr(&output)
+    );
 
     let out = stdout(&output);
     assert!(out.contains("Module:") || out.contains("local.explaintest"));
@@ -1036,14 +1225,16 @@ fn test_e2e_lint_detects_issues() {
     fs::write(
         tmp.path().join("src/lib.cppm"),
         "export module local.lintbad;\n\n#pragma once\nusing namespace std;\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let output = run_cmod(tmp.path(), &["-v", "lint"]);
     assert!(output.status.success()); // lint returns success even with warnings
     let err = stderr(&output);
     assert!(
         err.contains("warning") || err.contains("#pragma once") || err.contains("using namespace"),
-        "lint should detect issues, got: {}", err
+        "lint should detect issues, got: {}",
+        err
     );
 }
 
@@ -1094,7 +1285,9 @@ fn test_e2e_tidy_no_unused() {
 
     let output = run_cmod(tmp.path(), &["tidy"]);
     assert!(output.status.success(), "tidy failed: {}", stderr(&output));
-    assert!(stderr(&output).contains("All dependencies are used") || stderr(&output).contains("used"));
+    assert!(
+        stderr(&output).contains("All dependencies are used") || stderr(&output).contains("used")
+    );
 }
 
 #[test]
@@ -1108,9 +1301,13 @@ fn test_e2e_tidy_detects_unused() {
     fs::write(
         lib_dir.join("cmod.toml"),
         "[package]\nname = \"unused_lib\"\nversion = \"1.0.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
 
-    run_cmod(tmp.path(), &["add", "unused_lib", "--path", "./libs/unused_lib"]);
+    run_cmod(
+        tmp.path(),
+        &["add", "unused_lib", "--path", "./libs/unused_lib"],
+    );
 
     let output = run_cmod(tmp.path(), &["tidy"]);
     assert!(output.status.success());
@@ -1128,9 +1325,13 @@ fn test_e2e_tidy_apply_removes() {
     fs::write(
         lib_dir.join("cmod.toml"),
         "[package]\nname = \"dead_dep\"\nversion = \"1.0.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
 
-    run_cmod(tmp.path(), &["add", "dead_dep", "--path", "./libs/dead_dep"]);
+    run_cmod(
+        tmp.path(),
+        &["add", "dead_dep", "--path", "./libs/dead_dep"],
+    );
 
     // Verify the dep is there
     let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
@@ -1138,11 +1339,18 @@ fn test_e2e_tidy_apply_removes() {
 
     // Apply tidy
     let output = run_cmod(tmp.path(), &["tidy", "--apply"]);
-    assert!(output.status.success(), "tidy --apply failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "tidy --apply failed: {}",
+        stderr(&output)
+    );
 
     // Verify the dep was removed
     let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
-    assert!(!manifest.contains("dead_dep"), "dead_dep should have been removed by tidy --apply");
+    assert!(
+        !manifest.contains("dead_dep"),
+        "dead_dep should have been removed by tidy --apply"
+    );
 }
 
 // ─── Group 19: SBOM Command ────────────────────────────────────────────────
@@ -1157,7 +1365,11 @@ fn test_e2e_sbom_stdout() {
 
     let out = stdout(&output);
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&out);
-    assert!(parsed.is_ok(), "SBOM output should be valid JSON, got: {}", out);
+    assert!(
+        parsed.is_ok(),
+        "SBOM output should be valid JSON, got: {}",
+        out
+    );
 }
 
 #[test]
@@ -1167,7 +1379,11 @@ fn test_e2e_sbom_to_file() {
 
     let sbom_path = tmp.path().join("sbom.json");
     let output = run_cmod(tmp.path(), &["sbom", "-o", sbom_path.to_str().unwrap()]);
-    assert!(output.status.success(), "sbom -o failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "sbom -o failed: {}",
+        stderr(&output)
+    );
     assert!(sbom_path.exists(), "SBOM file should exist");
 
     let content = fs::read_to_string(&sbom_path).unwrap();
@@ -1204,7 +1420,11 @@ fn test_e2e_publish_dry_run() {
         .unwrap();
 
     let output = run_cmod(tmp.path(), &["publish", "--dry-run"]);
-    assert!(output.status.success(), "publish --dry-run failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "publish --dry-run failed: {}",
+        stderr(&output)
+    );
     let err = stderr(&output);
     assert!(err.contains("Dry run") || err.contains("dry run") || err.contains("would create"));
 }
@@ -1224,7 +1444,11 @@ fn test_e2e_publish_dirty_tree_fails() {
     // Don't add files — tree is dirty
     let output = run_cmod(tmp.path(), &["publish"]);
     assert!(!output.status.success());
-    assert!(stderr(&output).contains("uncommitted") || stderr(&output).contains("dirty") || stderr(&output).contains("change"));
+    assert!(
+        stderr(&output).contains("uncommitted")
+            || stderr(&output).contains("dirty")
+            || stderr(&output).contains("change")
+    );
 }
 
 #[test]
@@ -1254,7 +1478,11 @@ fn test_e2e_publish_creates_tag() {
         .unwrap();
 
     let output = run_cmod(tmp.path(), &["publish"]);
-    assert!(output.status.success(), "publish failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "publish failed: {}",
+        stderr(&output)
+    );
 
     // Verify tag was created
     let tag_output = Command::new("git")
@@ -1263,7 +1491,10 @@ fn test_e2e_publish_creates_tag() {
         .output()
         .unwrap();
     let tags = String::from_utf8_lossy(&tag_output.stdout);
-    assert!(tags.contains("v0.1.0"), "tag v0.1.0 should exist after publish");
+    assert!(
+        tags.contains("v0.1.0"),
+        "tag v0.1.0 should exist after publish"
+    );
 }
 
 // ─── Group 21: Vendor Command ───────────────────────────────────────────────
@@ -1275,7 +1506,11 @@ fn test_e2e_vendor_no_deps() {
     run_cmod(tmp.path(), &["resolve"]);
 
     let output = run_cmod(tmp.path(), &["vendor"]);
-    assert!(output.status.success(), "vendor failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "vendor failed: {}",
+        stderr(&output)
+    );
     assert!(tmp.path().join("vendor").exists());
     assert!(tmp.path().join("vendor/config.toml").exists());
 }
@@ -1291,7 +1526,11 @@ fn test_e2e_vendor_sync() {
 
     // Vendor with --sync
     let output = run_cmod(tmp.path(), &["vendor", "--sync"]);
-    assert!(output.status.success(), "vendor --sync failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "vendor --sync failed: {}",
+        stderr(&output)
+    );
 }
 
 // ─── Group 22: Cache Operations ─────────────────────────────────────────────
@@ -1302,7 +1541,11 @@ fn test_e2e_cache_status() {
     init_project(tmp.path(), "cachetest");
 
     let output = run_cmod(tmp.path(), &["cache", "status"]);
-    assert!(output.status.success(), "cache status failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "cache status failed: {}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -1311,7 +1554,11 @@ fn test_e2e_cache_clean() {
     init_project(tmp.path(), "cacheclean");
 
     let output = run_cmod(tmp.path(), &["cache", "clean"]);
-    assert!(output.status.success(), "cache clean failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "cache clean failed: {}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -1320,7 +1567,11 @@ fn test_e2e_cache_gc() {
     init_project(tmp.path(), "cachegc");
 
     let output = run_cmod(tmp.path(), &["cache", "gc"]);
-    assert!(output.status.success(), "cache gc failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "cache gc failed: {}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -1347,7 +1598,11 @@ fn test_e2e_toolchain_show() {
     init_project(tmp.path(), "tcshow");
 
     let output = run_cmod(tmp.path(), &["toolchain", "show"]);
-    assert!(output.status.success(), "toolchain show failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "toolchain show failed: {}",
+        stderr(&output)
+    );
     let err = stderr(&output);
     assert!(err.contains("Compiler") || err.contains("compiler") || err.contains("clang"));
     assert!(err.contains("Standard") || err.contains("C++"));
@@ -1387,8 +1642,12 @@ fn test_e2e_search_finds_dependency() {
     fs::write(
         lib_dir.join("cmod.toml"),
         "[package]\nname = \"searchable\"\nversion = \"1.0.0\"\n",
-    ).unwrap();
-    run_cmod(tmp.path(), &["add", "searchable", "--path", "./libs/searchable"]);
+    )
+    .unwrap();
+    run_cmod(
+        tmp.path(),
+        &["add", "searchable", "--path", "./libs/searchable"],
+    );
 
     let output = run_cmod(tmp.path(), &["search", "search"]);
     assert!(output.status.success());
@@ -1405,7 +1664,11 @@ fn test_e2e_audit_no_deps() {
 
     let output = run_cmod(tmp.path(), &["audit"]);
     assert!(output.status.success(), "audit failed: {}", stderr(&output));
-    assert!(stderr(&output).contains("No dependencies") || stderr(&output).contains("No issues") || stderr(&output).contains("audit"));
+    assert!(
+        stderr(&output).contains("No dependencies")
+            || stderr(&output).contains("No issues")
+            || stderr(&output).contains("audit")
+    );
 }
 
 // ─── Group 26: Plugin Command ───────────────────────────────────────────────
@@ -1416,7 +1679,11 @@ fn test_e2e_plugin_list_empty() {
     init_project(tmp.path(), "plugintest");
 
     let output = run_cmod(tmp.path(), &["plugin", "list"]);
-    assert!(output.status.success(), "plugin list failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "plugin list failed: {}",
+        stderr(&output)
+    );
     assert!(stderr(&output).contains("No plugins"));
 }
 
@@ -1469,7 +1736,8 @@ fn test_e2e_locked_flag_without_lockfile() {
     fs::write(
         lib_dir.join("cmod.toml"),
         "[package]\nname = \"dep\"\nversion = \"1.0.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
     run_cmod(tmp.path(), &["add", "dep", "--path", "./libs/dep"]);
 
     let output = run_cmod(tmp.path(), &["--locked", "build"]);
@@ -1493,12 +1761,20 @@ fn test_e2e_full_lifecycle() {
 
     // 2. Resolve
     let output = run_cmod(tmp.path(), &["resolve"]);
-    assert!(output.status.success(), "resolve failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "resolve failed: {}",
+        stderr(&output)
+    );
     assert!(tmp.path().join("cmod.lock").exists());
 
     // 3. Verify
     let output = run_cmod(tmp.path(), &["verify"]);
-    assert!(output.status.success(), "verify failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "verify failed: {}",
+        stderr(&output)
+    );
 
     // 4. Build
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
@@ -1535,7 +1811,8 @@ fn test_e2e_workspace_lifecycle() {
     fs::write(
         tmp.path().join("core/src/lib.cppm"),
         "export module local.core;\n\nexport namespace core {\n    int value() { return 42; }\n}\n",
-    ).unwrap();
+    )
+    .unwrap();
     // Mark core as static lib
     let core_manifest = fs::read_to_string(tmp.path().join("core/cmod.toml")).unwrap();
     let core_manifest = core_manifest.replace("type = \"binary\"", "type = \"static-lib\"");
@@ -1551,7 +1828,8 @@ fn test_e2e_workspace_lifecycle() {
     fs::write(
         tmp.path().join("app/src/main.cpp"),
         "import local.app;\n\nint main() {\n    return app::get() == 42 ? 0 : 1;\n}\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     // 4. List workspace
     let output = run_cmod(tmp.path(), &["workspace", "list"]);
@@ -1562,11 +1840,19 @@ fn test_e2e_workspace_lifecycle() {
 
     // 5. Build workspace
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(output.status.success(), "workspace build failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "workspace build failed: {}",
+        stderr(&output)
+    );
 
     // 6. Verify
     let output = run_cmod(tmp.path(), &["verify"]);
-    assert!(output.status.success(), "workspace verify failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "workspace verify failed: {}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -1581,7 +1867,11 @@ fn test_e2e_build_then_modify_rebuild() {
 
     // First build
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(output.status.success(), "first build failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "first build failed: {}",
+        stderr(&output)
+    );
 
     // Modify source
     let cpp_name = "rebuild";
@@ -1596,7 +1886,11 @@ fn test_e2e_build_then_modify_rebuild() {
 
     // Rebuild — should detect changes
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(output.status.success(), "rebuild failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "rebuild failed: {}",
+        stderr(&output)
+    );
     let err = stderr(&output);
     assert!(err.contains("Build complete") || err.contains("compiled") || err.contains("Building"));
 }
@@ -1609,7 +1903,11 @@ fn test_e2e_resolve_creates_lockfile() {
     init_project(tmp.path(), "resolveme");
 
     let output = run_cmod(tmp.path(), &["resolve"]);
-    assert!(output.status.success(), "resolve failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "resolve failed: {}",
+        stderr(&output)
+    );
     assert!(tmp.path().join("cmod.lock").exists());
 }
 
@@ -1623,12 +1921,17 @@ fn test_e2e_resolve_with_path_dep() {
     fs::write(
         lib_dir.join("cmod.toml"),
         "[package]\nname = \"pathlib\"\nversion = \"0.5.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     run_cmod(tmp.path(), &["add", "pathlib", "--path", "./libs/pathlib"]);
 
     let output = run_cmod(tmp.path(), &["resolve"]);
-    assert!(output.status.success(), "resolve with path dep failed: {}", stderr(&output));
+    assert!(
+        output.status.success(),
+        "resolve with path dep failed: {}",
+        stderr(&output)
+    );
 
     let lockfile = fs::read_to_string(tmp.path().join("cmod.lock")).unwrap();
     assert!(lockfile.contains("pathlib"));

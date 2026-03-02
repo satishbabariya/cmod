@@ -261,10 +261,7 @@ mod tests {
         assert_eq!(parsed.packages.len(), 1);
         assert_eq!(parsed.packages[0].name, "github.com/fmtlib/fmt");
         assert_eq!(parsed.packages[0].version, "10.2.1");
-        assert_eq!(
-            parsed.packages[0].commit.as_deref(),
-            Some("a1b2c3d4")
-        );
+        assert_eq!(parsed.packages[0].commit.as_deref(), Some("a1b2c3d4"));
     }
 
     #[test]

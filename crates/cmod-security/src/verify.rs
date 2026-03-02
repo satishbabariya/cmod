@@ -36,9 +36,12 @@ pub fn verify_locked_package(
     repo_path: &Path,
     check_signatures: bool,
 ) -> Result<VerifyResult, CmodError> {
-    let commit_hash = pkg.commit.as_ref().ok_or_else(|| CmodError::Other(
-        format!("package '{}' has no pinned commit in lockfile", pkg.name),
-    ))?;
+    let commit_hash = pkg.commit.as_ref().ok_or_else(|| {
+        CmodError::Other(format!(
+            "package '{}' has no pinned commit in lockfile",
+            pkg.name
+        ))
+    })?;
 
     // Open the repository
     let repo = Repository::open(repo_path).map_err(|e| CmodError::GitError {
@@ -70,10 +73,7 @@ pub fn verify_locked_package(
 }
 
 /// Check whether a commit has a valid GPG/SSH signature.
-fn check_commit_signature(
-    repo: &Repository,
-    commit: &git2::Commit,
-) -> SignatureStatus {
+fn check_commit_signature(repo: &Repository, commit: &git2::Commit) -> SignatureStatus {
     match repo.extract_signature(&commit.id(), None) {
         Ok(sig_data) => {
             let signature = String::from_utf8_lossy(sig_data.0.as_ref()).to_string();
@@ -134,8 +134,8 @@ pub fn verify_all_packages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use git2::Repository;
+    use std::collections::BTreeMap;
     use tempfile::TempDir;
 
     fn setup_test_repo() -> (TempDir, git2::Oid) {
@@ -146,14 +146,13 @@ mod tests {
         let tree_id = {
             let mut index = repo.index().unwrap();
             std::fs::write(tmp.path().join("README"), "hello").unwrap();
-            index
-                .add_path(std::path::Path::new("README"))
-                .unwrap();
+            index.add_path(std::path::Path::new("README")).unwrap();
             index.write().unwrap();
             index.write_tree().unwrap()
         };
         let tree = repo.find_tree(tree_id).unwrap();
-        let oid = repo.commit(Some("HEAD"), &sig, &sig, "initial commit", &tree, &[])
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial commit", &tree, &[])
             .unwrap();
         drop(tree);
         drop(repo);

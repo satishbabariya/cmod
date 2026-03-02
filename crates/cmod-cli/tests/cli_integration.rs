@@ -36,7 +36,11 @@ fn test_init_workspace() {
     let tmp = TempDir::new().unwrap();
 
     let output = run_cmod(tmp.path(), &["init", "--workspace", "--name", "engine"]);
-    assert!(output.status.success(), "init --workspace failed: {:?}", output);
+    assert!(
+        output.status.success(),
+        "init --workspace failed: {:?}",
+        output
+    );
 
     let content = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
     assert!(content.contains("name = \"engine\""));
@@ -72,11 +76,12 @@ fn test_add_and_remove_dependency() {
     )
     .unwrap();
 
-    let output = run_cmod(
-        tmp.path(),
-        &["add", "mylib", "--path", "./libs/mylib"],
+    let output = run_cmod(tmp.path(), &["add", "mylib", "--path", "./libs/mylib"]);
+    assert!(
+        output.status.success(),
+        "add failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.status.success(), "add failed: {:?}", String::from_utf8_lossy(&output.stderr));
 
     // Verify the dependency was added to cmod.toml
     let content = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
@@ -84,7 +89,11 @@ fn test_add_and_remove_dependency() {
 
     // Remove the dependency
     let output = run_cmod(tmp.path(), &["remove", "mylib"]);
-    assert!(output.status.success(), "remove failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "remove failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // Verify it was removed
     let content = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
@@ -106,7 +115,11 @@ fn test_resolve_no_deps() {
     run_cmod(tmp.path(), &["init", "--name", "test"]);
 
     let output = run_cmod(tmp.path(), &["resolve"]);
-    assert!(output.status.success(), "resolve failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "resolve failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // Should create a lockfile (even if empty)
     assert!(tmp.path().join("cmod.lock").exists());
@@ -130,7 +143,11 @@ fn test_verify_passes_for_valid_project() {
     run_cmod(tmp.path(), &["init", "--name", "test"]);
 
     let output = run_cmod(tmp.path(), &["verify", "--verbose"]);
-    assert!(output.status.success(), "verify failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "verify failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -227,15 +244,20 @@ fn test_add_path_dep_and_resolve() {
     fs::write(lib_dir.join("src/lib.cppm"), "export module mathlib;\n").unwrap();
 
     // Add it
-    let output = run_cmod(
-        tmp.path(),
-        &["add", "mathlib", "--path", "./libs/mathlib"],
+    let output = run_cmod(tmp.path(), &["add", "mathlib", "--path", "./libs/mathlib"]);
+    assert!(
+        output.status.success(),
+        "add failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.status.success(), "add failed: {:?}", String::from_utf8_lossy(&output.stderr));
 
     // Resolve should work
     let output = run_cmod(tmp.path(), &["resolve"]);
-    assert!(output.status.success(), "resolve failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "resolve failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // Lockfile should contain the dependency
     let lock_content = fs::read_to_string(tmp.path().join("cmod.lock")).unwrap();
@@ -243,7 +265,11 @@ fn test_add_path_dep_and_resolve() {
 
     // Verify should pass
     let output = run_cmod(tmp.path(), &["verify"]);
-    assert!(output.status.success(), "verify failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "verify failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -256,7 +282,11 @@ fn test_update_command() {
 
     // Update should succeed even with no deps
     let output = run_cmod(tmp.path(), &["update"]);
-    assert!(output.status.success(), "update failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "update failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -269,7 +299,11 @@ fn test_update_with_patch_flag() {
 
     // --patch should work (no deps so nothing to restrict)
     let output = run_cmod(tmp.path(), &["update", "--patch"]);
-    assert!(output.status.success(), "update --patch failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "update --patch failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -288,10 +322,7 @@ fn test_deps_tree_format() {
     .unwrap();
     fs::write(lib_dir.join("src/lib.cppm"), "export module dep1;\n").unwrap();
 
-    run_cmod(
-        tmp.path(),
-        &["add", "dep1", "--path", "./libs/dep1"],
-    );
+    run_cmod(tmp.path(), &["add", "dep1", "--path", "./libs/dep1"]);
 
     run_cmod(tmp.path(), &["resolve"]);
 
@@ -312,7 +343,10 @@ fn test_verify_catches_missing_source() {
 
     // Verify should fail (module root missing)
     let output = run_cmod(tmp.path(), &["verify"]);
-    assert!(!output.status.success(), "verify should fail when module root is missing");
+    assert!(
+        !output.status.success(),
+        "verify should fail when module root is missing"
+    );
 }
 
 #[test]
@@ -564,10 +598,7 @@ fn test_search_in_deps() {
     .unwrap();
     fs::write(lib_dir.join("src/lib.cppm"), "export module mymath;\n").unwrap();
 
-    run_cmod(
-        tmp.path(),
-        &["add", "mymath", "--path", "./libs/mymath"],
-    );
+    run_cmod(tmp.path(), &["add", "mymath", "--path", "./libs/mymath"]);
 
     // Search should find it
     let output = run_cmod(tmp.path(), &["search", "math"]);
@@ -626,7 +657,10 @@ fn test_build_remote_cache_flag() {
     run_cmod(tmp.path(), &["init", "--name", "rctest"]);
 
     // Just verify the flag is accepted
-    let output = run_cmod(tmp.path(), &["build", "--remote-cache", "https://cache.example.com"]);
+    let output = run_cmod(
+        tmp.path(),
+        &["build", "--remote-cache", "https://cache.example.com"],
+    );
     let _ = output;
 }
 
@@ -648,7 +682,10 @@ fn test_clean_command() {
     );
 
     // build dir should be gone
-    assert!(!build_dir.exists(), "build dir should be removed after clean");
+    assert!(
+        !build_dir.exists(),
+        "build dir should be removed after clean"
+    );
 }
 
 #[test]
@@ -677,7 +714,10 @@ fn test_sbom_output_file() {
     run_cmod(tmp.path(), &["init", "--name", "sbomfile"]);
 
     let out_path = tmp.path().join("sbom.json");
-    let output = run_cmod(tmp.path(), &["sbom", "--output", out_path.to_str().unwrap()]);
+    let output = run_cmod(
+        tmp.path(),
+        &["sbom", "--output", out_path.to_str().unwrap()],
+    );
     assert!(
         output.status.success(),
         "sbom --output should succeed: {}",
@@ -799,7 +839,8 @@ fn test_full_workflow_init_add_resolve_verify_clean() {
     fs::write(
         lib.join("cmod.toml"),
         "[package]\nname = \"utils\"\nversion = \"0.5.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
     fs::write(lib.join("src/lib.cppm"), "export module utils;\n").unwrap();
 
     let o = run_cmod(tmp.path(), &["add", "utils", "--path", "./libs/utils"]);
@@ -842,7 +883,11 @@ fn test_compile_commands_generation() {
     run_cmod(tmp.path(), &["init", "--name", "ccdb_test"]);
 
     let output = run_cmod(tmp.path(), &["compile-commands"]);
-    assert!(output.status.success(), "compile-commands failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "compile-commands failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // Should produce a compile_commands.json
     assert!(tmp.path().join("compile_commands.json").exists());
@@ -859,8 +904,11 @@ fn test_build_with_verify_flag() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     // If it fails, it should NOT be due to an integrity violation
     if !output.status.success() {
-        assert!(!stderr.contains("integrity mismatch") && !stderr.contains("no content hash"),
-            "integrity check should not fail on clean project: {}", stderr);
+        assert!(
+            !stderr.contains("integrity mismatch") && !stderr.contains("no content hash"),
+            "integrity check should not fail on clean project: {}",
+            stderr
+        );
     }
 }
 
@@ -873,7 +921,10 @@ fn test_build_with_timings_flag() {
     let output = run_cmod(tmp.path(), &["build", "--timings"]);
     // Even if build fails due to missing clang, the flag should be accepted
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("unexpected argument"), "timings flag should be accepted");
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "timings flag should be accepted"
+    );
 }
 
 #[test]
@@ -883,7 +934,10 @@ fn test_build_with_no_hooks_flag() {
 
     let output = run_cmod(tmp.path(), &["build", "--no-hooks"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("unexpected argument"), "no-hooks flag should be accepted");
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "no-hooks flag should be accepted"
+    );
 }
 
 #[test]
@@ -892,7 +946,11 @@ fn test_graph_with_status_flag() {
     run_cmod(tmp.path(), &["init", "--name", "graph_status"]);
 
     let output = run_cmod(tmp.path(), &["graph", "--status"]);
-    assert!(output.status.success(), "graph --status failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "graph --status failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -901,7 +959,10 @@ fn test_graph_dot_with_status() {
     run_cmod(tmp.path(), &["init", "--name", "graph_dot_status"]);
 
     let output = run_cmod(tmp.path(), &["graph", "--format", "dot", "--status"]);
-    assert!(output.status.success(), "graph --format dot --status failed");
+    assert!(
+        output.status.success(),
+        "graph --format dot --status failed"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("digraph modules"));
@@ -913,7 +974,10 @@ fn test_graph_json_with_status() {
     run_cmod(tmp.path(), &["init", "--name", "graph_json_status"]);
 
     let output = run_cmod(tmp.path(), &["graph", "--format", "json", "--status"]);
-    assert!(output.status.success(), "graph --format json --status failed");
+    assert!(
+        output.status.success(),
+        "graph --format json --status failed"
+    );
 }
 
 #[test]
@@ -927,13 +991,18 @@ fn test_deps_why_flag() {
     fs::write(
         lib.join("cmod.toml"),
         "[package]\nname = \"mylib\"\nversion = \"0.1.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
     fs::write(lib.join("src/lib.cppm"), "export module mylib;\n").unwrap();
     run_cmod(tmp.path(), &["add", "mylib", "--path", "./libs/mylib"]);
     run_cmod(tmp.path(), &["resolve"]);
 
     let output = run_cmod(tmp.path(), &["deps", "--why", "mylib"]);
-    assert!(output.status.success(), "deps --why failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "deps --why failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -943,11 +1012,17 @@ fn test_deps_conflicts_flag() {
     run_cmod(tmp.path(), &["resolve"]);
 
     let output = run_cmod(tmp.path(), &["deps", "--conflicts"]);
-    assert!(output.status.success(), "deps --conflicts failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "deps --conflicts failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("No version conflicts") || stderr.contains("No dependencies"),
-        "should report no conflicts for clean project");
+    assert!(
+        stderr.contains("No version conflicts") || stderr.contains("No dependencies"),
+        "should report no conflicts for clean project"
+    );
 }
 
 #[test]
@@ -956,7 +1031,11 @@ fn test_cache_gc() {
     run_cmod(tmp.path(), &["init", "--name", "gc_test"]);
 
     let output = run_cmod(tmp.path(), &["cache", "gc"]);
-    assert!(output.status.success(), "cache gc failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "cache gc failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -966,7 +1045,11 @@ fn test_untrusted_flag_accepted() {
 
     // --untrusted is a global flag
     let output = run_cmod(tmp.path(), &["--untrusted", "resolve"]);
-    assert!(output.status.success(), "resolve --untrusted failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "resolve --untrusted failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // =============================================================
@@ -979,10 +1062,17 @@ fn test_tidy_command() {
     run_cmod(tmp.path(), &["init", "--name", "tidy_test"]);
 
     let output = run_cmod(tmp.path(), &["tidy"]);
-    assert!(output.status.success(), "tidy failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "tidy failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unused") || stderr.contains("No dependencies") || stderr.contains("0 unused") || stderr.contains("All dependencies are used"),
+        stderr.contains("unused")
+            || stderr.contains("No dependencies")
+            || stderr.contains("0 unused")
+            || stderr.contains("All dependencies are used"),
         "expected tidy output, got: {}",
         stderr
     );
@@ -994,7 +1084,11 @@ fn test_tidy_apply_flag() {
     run_cmod(tmp.path(), &["init", "--name", "tidy_apply"]);
 
     let output = run_cmod(tmp.path(), &["tidy", "--apply"]);
-    assert!(output.status.success(), "tidy --apply failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "tidy --apply failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -1004,7 +1098,11 @@ fn test_check_command() {
 
     let output = run_cmod(tmp.path(), &["check"]);
     // Check should pass on a fresh project
-    assert!(output.status.success(), "check failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "check failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("Checking") || stderr.contains("checks passed"),
@@ -1019,7 +1117,11 @@ fn test_plugin_list() {
     run_cmod(tmp.path(), &["init", "--name", "plugin_test"]);
 
     let output = run_cmod(tmp.path(), &["plugin", "list"]);
-    assert!(output.status.success(), "plugin list failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "plugin list failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("No plugins") || stderr.contains("configured"),
@@ -1071,7 +1173,11 @@ fn test_graph_critical_path_flag() {
 
     let output = run_cmod(tmp.path(), &["graph", "--critical-path"]);
     // Should not crash, even without build data
-    assert!(output.status.success(), "graph --critical-path failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "graph --critical-path failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -1080,12 +1186,35 @@ fn test_cache_export_import() {
     run_cmod(tmp.path(), &["init", "--name", "cache_exp"]);
 
     // cache export without a real cache entry should fail gracefully
-    let output = run_cmod(tmp.path(), &["cache", "export", "nonexistent", "somekey", "--output", tmp.path().join("export").to_str().unwrap()]);
-    assert!(!output.status.success(), "expected cache export to fail for nonexistent module");
+    let output = run_cmod(
+        tmp.path(),
+        &[
+            "cache",
+            "export",
+            "nonexistent",
+            "somekey",
+            "--output",
+            tmp.path().join("export").to_str().unwrap(),
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "expected cache export to fail for nonexistent module"
+    );
 
     // cache import without a package should fail gracefully
-    let output = run_cmod(tmp.path(), &["cache", "import", tmp.path().join("nopkg").to_str().unwrap()]);
-    assert!(!output.status.success(), "expected cache import to fail for nonexistent path");
+    let output = run_cmod(
+        tmp.path(),
+        &[
+            "cache",
+            "import",
+            tmp.path().join("nopkg").to_str().unwrap(),
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "expected cache import to fail for nonexistent path"
+    );
 }
 
 #[test]
@@ -1099,9 +1228,15 @@ fn test_help_includes_phase6_commands() {
     // Phase 6 commands should appear in help
     assert!(stdout.contains("tidy"), "help should list 'tidy' command");
     assert!(stdout.contains("check"), "help should list 'check' command");
-    assert!(stdout.contains("plugin"), "help should list 'plugin' command");
+    assert!(
+        stdout.contains("plugin"),
+        "help should list 'plugin' command"
+    );
     assert!(stdout.contains("plan"), "help should list 'plan' command");
-    assert!(stdout.contains("emit-cmake"), "help should list 'emit-cmake' command");
+    assert!(
+        stdout.contains("emit-cmake"),
+        "help should list 'emit-cmake' command"
+    );
 }
 
 #[test]
@@ -1117,10 +1252,18 @@ fn test_abi_config_in_manifest() {
 
     // Project should still work with ABI config
     let output = run_cmod(tmp.path(), &["check"]);
-    assert!(output.status.success(), "check with [abi] config failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "check with [abi] config failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let output = run_cmod(tmp.path(), &["resolve"]);
-    assert!(output.status.success(), "resolve with [abi] config failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "resolve with [abi] config failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -1136,7 +1279,11 @@ fn test_ide_config_in_manifest() {
 
     // Project should still work with IDE config
     let output = run_cmod(tmp.path(), &["status"]);
-    assert!(output.status.success(), "status with [ide] config failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "status with [ide] config failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -1152,7 +1299,11 @@ fn test_plugins_config_in_manifest() {
 
     // plugin list should work (but find no actual plugin dirs)
     let output = run_cmod(tmp.path(), &["plugin", "list"]);
-    assert!(output.status.success(), "plugin list with [plugins] config failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "plugin list with [plugins] config failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // =================== Phase 7 integration tests ===================
@@ -1168,11 +1319,16 @@ fn test_lockfile_integrity_hash_computed_on_resolve() {
     fs::write(
         dep_dir.join("cmod.toml"),
         "[package]\nname = \"dep_a\"\nversion = \"1.0.0\"\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     run_cmod(tmp.path(), &["add", "dep_a", "--path", "./libs/dep_a"]);
     let output = run_cmod(tmp.path(), &["resolve"]);
-    assert!(output.status.success(), "resolve failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "resolve failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // Verify integrity hash is present in lockfile
     let lockfile_content = fs::read_to_string(tmp.path().join("cmod.lock")).unwrap();
@@ -1198,7 +1354,11 @@ fn test_optimization_level_in_manifest() {
     let output = run_cmod(tmp.path(), &["build"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Either builds successfully or fails due to clang not found (which is fine for this test)
-    assert!(!stderr.contains("unknown variant"), "optimization level 'size' should parse: {}", stderr);
+    assert!(
+        !stderr.contains("unknown variant"),
+        "optimization level 'size' should parse: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -1215,7 +1375,11 @@ fn test_security_policy_in_manifest() {
     // Build should succeed (no deps to warn about)
     let output = run_cmod(tmp.path(), &["build"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("SecurityViolation"), "warn policy should not fail build: {}", stderr);
+    assert!(
+        !stderr.contains("SecurityViolation"),
+        "warn policy should not fail build: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -1232,7 +1396,11 @@ fn test_hooks_in_manifest() {
     // Resolve should invoke pre-resolve hook
     let output = run_cmod(tmp.path(), &["resolve"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("pre-resolve hook"), "pre-resolve hook should run: {}", stderr);
+    assert!(
+        stderr.contains("pre-resolve hook"),
+        "pre-resolve hook should run: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -1245,11 +1413,19 @@ fn test_compat_in_manifest_accepted() {
         tmp.path().join("cmod.toml"),
         "[package]\nname = \"compattest\"\nversion = \"0.1.0\"\n\n[compat]\ncpp = \">=20\"\nplatforms = [\"x86_64-linux-gnu\", \"aarch64-apple-darwin\"]\n",
     ).unwrap();
-    fs::write(tmp.path().join("src/lib.cppm"), "export module compattest;\n").unwrap();
+    fs::write(
+        tmp.path().join("src/lib.cppm"),
+        "export module compattest;\n",
+    )
+    .unwrap();
 
     // Resolve should work fine (no deps with conflicting compat)
     let output = run_cmod(tmp.path(), &["resolve"]);
-    assert!(output.status.success(), "resolve with [compat] should succeed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "resolve with [compat] should succeed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -1267,7 +1443,11 @@ fn test_features_flag_accepted_by_build() {
     let output = run_cmod(tmp.path(), &["build", "--features", "avx"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Should not error on parsing features; compilation may fail without clang
-    assert!(!stderr.contains("Unknown feature"), "features should be accepted: {}", stderr);
+    assert!(
+        !stderr.contains("Unknown feature"),
+        "features should be accepted: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -1285,7 +1465,11 @@ fn test_test_patterns_in_manifest() {
     let output = run_cmod(tmp.path(), &["test"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     // May fail to compile, but should parse the test config
-    assert!(!stderr.contains("unknown field"), "test_patterns should parse: {}", stderr);
+    assert!(
+        !stderr.contains("unknown field"),
+        "test_patterns should parse: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -1302,7 +1486,11 @@ fn test_plugin_manifest_discovery() {
     let output = run_cmod(tmp.path(), &["plugin", "list"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success());
-    assert!(stderr.contains("formatter") || stderr.contains("1 plugin"), "manifest plugins should be discovered: {}", stderr);
+    assert!(
+        stderr.contains("formatter") || stderr.contains("1 plugin"),
+        "manifest plugins should be discovered: {}",
+        stderr
+    );
 }
 
 // ========== Real-project workflow integration tests ==========
@@ -1316,8 +1504,15 @@ fn test_init_sanitizes_hyphens_in_module_name() {
 
     // Module name should have underscores, not hyphens
     let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
-    assert!(manifest.contains("local.my_cool_lib"), "module name should use underscores: {}", manifest);
-    assert!(!manifest.contains("local.my-cool-lib"), "module name should not have hyphens");
+    assert!(
+        manifest.contains("local.my_cool_lib"),
+        "module name should use underscores: {}",
+        manifest
+    );
+    assert!(
+        !manifest.contains("local.my-cool-lib"),
+        "module name should not have hyphens"
+    );
 
     // Source files should use sanitized names
     let lib_content = fs::read_to_string(tmp.path().join("src/lib.cppm")).unwrap();
@@ -1326,7 +1521,11 @@ fn test_init_sanitizes_hyphens_in_module_name() {
 
     // Verify should pass (no invalid characters in module name)
     let output = run_cmod(tmp.path(), &["verify"]);
-    assert!(output.status.success(), "verify should pass for sanitized module name: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "verify should pass for sanitized module name: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -1340,8 +1539,14 @@ fn test_init_creates_main_cpp() {
     assert!(main_path.exists(), "src/main.cpp should be created by init");
 
     let content = fs::read_to_string(&main_path).unwrap();
-    assert!(content.contains("import local.myapp;"), "main.cpp should import the module");
-    assert!(content.contains("int main()"), "main.cpp should have a main function");
+    assert!(
+        content.contains("import local.myapp;"),
+        "main.cpp should import the module"
+    );
+    assert!(
+        content.contains("int main()"),
+        "main.cpp should have a main function"
+    );
 }
 
 #[test]
@@ -1368,7 +1573,11 @@ fn test_deps_tree_shows_correct_version() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Root should show the actual version from manifest (0.1.0), not hardcoded 0.0.0
-    assert!(stdout.starts_with("treetest v0.1.0"), "deps tree root should show actual version: {}", stdout);
+    assert!(
+        stdout.starts_with("treetest v0.1.0"),
+        "deps tree root should show actual version: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -1391,7 +1600,11 @@ fn test_build_with_module_import_in_main() {
     .unwrap();
 
     let output = run_cmod(tmp.path(), &["build"]);
-    assert!(output.status.success(), "build should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "build should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -1422,17 +1635,33 @@ fn test_full_build_run_test_workflow() {
 
     // Build
     let output = run_cmod(tmp.path(), &["build"]);
-    assert!(output.status.success(), "build failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // Verify
     let output = run_cmod(tmp.path(), &["verify"]);
-    assert!(output.status.success(), "verify failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "verify failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // Run
     let output = run_cmod(tmp.path(), &["run"]);
-    assert!(output.status.success(), "run failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // Test
     let output = run_cmod(tmp.path(), &["test"]);
-    assert!(output.status.success(), "test failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "test failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

@@ -92,9 +92,10 @@ pub fn remove(name: &str, verbose: bool) -> Result<(), CmodError> {
 
     // Check the member exists
     if !ws.members.iter().any(|m| m.name == name) {
-        return Err(CmodError::Other(
-            format!("member '{}' not found in workspace", name),
-        ));
+        return Err(CmodError::Other(format!(
+            "member '{}' not found in workspace",
+            name
+        )));
     }
 
     // Remove from the members list in the manifest

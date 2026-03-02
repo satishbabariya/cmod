@@ -103,9 +103,8 @@ pub fn export_bmi(
     let metadata_path = entry_dir.join("metadata.json");
     let base_metadata: BmiMetadata = if metadata_path.exists() {
         let content = fs::read_to_string(&metadata_path)?;
-        serde_json::from_str(&content).map_err(|e| CmodError::Other(format!(
-            "failed to parse BMI metadata: {}", e
-        )))?
+        serde_json::from_str(&content)
+            .map_err(|e| CmodError::Other(format!("failed to parse BMI metadata: {}", e)))?
     } else {
         // Create minimal metadata from cache entry
         let now = chrono_now();
@@ -138,9 +137,9 @@ pub fn export_bmi(
         let file_name = entry.file_name().to_string_lossy().to_string();
         let src = entry.path();
         if src.is_file() {
-            let hash = hash_file(&src).map_err(|e| CmodError::Other(format!(
-                "failed to hash {}: {}", src.display(), e
-            )))?;
+            let hash = hash_file(&src).map_err(|e| {
+                CmodError::Other(format!("failed to hash {}: {}", src.display(), e))
+            })?;
             let dest = output_dir.join(&file_name);
             fs::copy(&src, &dest)?;
             files.insert(file_name, hash);
@@ -153,19 +152,15 @@ pub fn export_bmi(
         files,
     };
 
-    let package_json = serde_json::to_string_pretty(&package).map_err(|e| {
-        CmodError::Other(format!("failed to serialize BMI package: {}", e))
-    })?;
+    let package_json = serde_json::to_string_pretty(&package)
+        .map_err(|e| CmodError::Other(format!("failed to serialize BMI package: {}", e)))?;
     fs::write(output_dir.join("bmi_package.json"), &package_json)?;
 
     Ok(package)
 }
 
 /// Import a BMI package from a directory into the local cache.
-pub fn import_bmi(
-    cache_root: &Path,
-    package_dir: &Path,
-) -> Result<BmiMetadata, CmodError> {
+pub fn import_bmi(cache_root: &Path, package_dir: &Path) -> Result<BmiMetadata, CmodError> {
     let package_path = package_dir.join("bmi_package.json");
     if !package_path.exists() {
         return Err(CmodError::Other(format!(
@@ -175,9 +170,8 @@ pub fn import_bmi(
     }
 
     let content = fs::read_to_string(&package_path)?;
-    let package: BmiPackage = serde_json::from_str(&content).map_err(|e| {
-        CmodError::Other(format!("failed to parse BMI package: {}", e))
-    })?;
+    let package: BmiPackage = serde_json::from_str(&content)
+        .map_err(|e| CmodError::Other(format!("failed to parse BMI package: {}", e)))?;
 
     // Verify file hashes
     for (file_name, expected_hash) in &package.files {
@@ -187,9 +181,8 @@ pub fn import_bmi(
                 reason: format!("BMI package missing file: {}", file_name),
             });
         }
-        let actual_hash = hash_file(&file_path).map_err(|e| CmodError::Other(format!(
-            "failed to hash {}: {}", file_name, e
-        )))?;
+        let actual_hash = hash_file(&file_path)
+            .map_err(|e| CmodError::Other(format!("failed to hash {}: {}", file_name, e)))?;
         if &actual_hash != expected_hash {
             return Err(CmodError::SecurityViolation {
                 reason: format!(
@@ -215,9 +208,8 @@ pub fn import_bmi(
     }
 
     // Write metadata
-    let metadata_json = serde_json::to_string_pretty(&package.metadata).map_err(|e| {
-        CmodError::Other(format!("failed to serialize BMI metadata: {}", e))
-    })?;
+    let metadata_json = serde_json::to_string_pretty(&package.metadata)
+        .map_err(|e| CmodError::Other(format!("failed to serialize BMI metadata: {}", e)))?;
     fs::write(entry_dir.join("metadata.json"), &metadata_json)?;
 
     Ok(package.metadata)
@@ -374,9 +366,7 @@ mod tests {
                 created_at: "0".to_string(),
                 extra: BTreeMap::new(),
             },
-            files: BTreeMap::from([
-                ("module.pcm".to_string(), "wrong_hash".to_string()),
-            ]),
+            files: BTreeMap::from([("module.pcm".to_string(), "wrong_hash".to_string())]),
         };
 
         let json = serde_json::to_string(&package).unwrap();

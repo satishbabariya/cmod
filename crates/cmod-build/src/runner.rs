@@ -173,13 +173,8 @@ impl BuildRunner {
         graph.validate()?;
 
         // Generate the build plan
-        let plan = BuildPlan::from_graph(
-            graph,
-            &build_dir.to_path_buf(),
-            target,
-            profile,
-            build_type,
-        )?;
+        let plan =
+            BuildPlan::from_graph(graph, &build_dir.to_path_buf(), target, profile, build_type)?;
 
         // Ensure output directories exist
         fs::create_dir_all(build_dir.join("pcm"))?;
@@ -200,24 +195,15 @@ impl BuildRunner {
         build_type: BuildType,
     ) -> Result<(PathBuf, BuildStats), CmodError> {
         graph.validate()?;
-        let plan = BuildPlan::from_graph(
-            graph,
-            &build_dir.to_path_buf(),
-            target,
-            profile,
-            build_type,
-        )?;
+        let plan =
+            BuildPlan::from_graph(graph, &build_dir.to_path_buf(), target, profile, build_type)?;
         fs::create_dir_all(build_dir.join("pcm"))?;
         fs::create_dir_all(build_dir.join("obj"))?;
         self.execute_plan(&plan)
     }
 
     /// Compute a cache key for a build node.
-    fn compute_cache_key(
-        &self,
-        node: &BuildNode,
-        plan: &BuildPlan,
-    ) -> Option<(String, CacheKey)> {
+    fn compute_cache_key(&self, node: &BuildNode, plan: &BuildPlan) -> Option<(String, CacheKey)> {
         let source = node.source.as_ref()?;
         let module_id = node.module_name.as_ref()?;
 
@@ -259,12 +245,7 @@ impl BuildRunner {
     ///
     /// Checks local cache first. On local miss, tries the remote cache
     /// (if configured) and stores the downloaded artifact locally.
-    fn try_cache_restore(
-        &self,
-        module_id: &str,
-        key: &CacheKey,
-        node: &BuildNode,
-    ) -> bool {
+    fn try_cache_restore(&self, module_id: &str, key: &CacheKey, node: &BuildNode) -> bool {
         if self.no_cache {
             return false;
         }
@@ -336,12 +317,7 @@ impl BuildRunner {
     ///
     /// Stores locally and, if a remote cache is configured for writes,
     /// pushes the artifacts upstream.
-    fn cache_store(
-        &self,
-        module_id: &str,
-        key: &CacheKey,
-        node: &BuildNode,
-    ) {
+    fn cache_store(&self, module_id: &str, key: &CacheKey, node: &BuildNode) {
         if self.no_cache {
             return;
         }
@@ -552,8 +528,7 @@ impl BuildRunner {
                 let output = &node.outputs[0];
                 let mut obj_files = plan.object_paths();
                 obj_files.extend(self.extra_obj_paths.clone());
-                let obj_refs: Vec<&Path> =
-                    obj_files.iter().map(|p| p.as_path()).collect();
+                let obj_refs: Vec<&Path> = obj_files.iter().map(|p| p.as_path()).collect();
 
                 if let Some(parent) = output.parent() {
                     fs::create_dir_all(parent)?;
@@ -593,8 +568,11 @@ impl BuildRunner {
         let flags_hash = Arc::new(self.flags_hash());
 
         // Separate compile nodes from the link node
-        let (compile_nodes, link_nodes): (Vec<_>, Vec<_>) =
-            plan.nodes.iter().enumerate().partition(|(_, n)| n.kind != NodeKind::Link);
+        let (compile_nodes, link_nodes): (Vec<_>, Vec<_>) = plan
+            .nodes
+            .iter()
+            .enumerate()
+            .partition(|(_, n)| n.kind != NodeKind::Link);
 
         // Build a map of node_id → index for fast lookup
         let id_to_idx: HashMap<String, usize> = plan
@@ -606,8 +584,7 @@ impl BuildRunner {
 
         // Compute PCM paths for dependency resolution during compilation.
         // Include extra PCMs from workspace dependencies.
-        let mut pcm_map_inner: HashMap<String, PathBuf> =
-            plan.pcm_paths().into_iter().collect();
+        let mut pcm_map_inner: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
         pcm_map_inner.extend(self.extra_pcm_paths.clone());
         let pcm_map: Arc<HashMap<String, PathBuf>> = Arc::new(pcm_map_inner);
 
@@ -704,7 +681,13 @@ impl BuildRunner {
                         };
 
                         let node = &plan.nodes[idx];
-                        match self.execute_node(node, plan, &pcm_map, Some(&build_state), &flags_hash) {
+                        match self.execute_node(
+                            node,
+                            plan,
+                            &pcm_map,
+                            Some(&build_state),
+                            &flags_hash,
+                        ) {
                             Ok(outcome) => {
                                 let ms = outcome.time_ms();
                                 total_compile_ms.fetch_add(ms as usize, Ordering::Relaxed);
@@ -712,18 +695,26 @@ impl BuildRunner {
                                 match outcome {
                                     NodeOutcome::CacheHit(_) => {
                                         cache_hits.fetch_add(1, Ordering::Relaxed);
-                                        new_build_state.lock().unwrap().record_node(node, &flags_hash);
+                                        new_build_state
+                                            .lock()
+                                            .unwrap()
+                                            .record_node(node, &flags_hash);
                                     }
                                     NodeOutcome::Compiled(_) => {
                                         cache_misses.fetch_add(1, Ordering::Relaxed);
-                                        new_build_state.lock().unwrap().record_node(node, &flags_hash);
+                                        new_build_state
+                                            .lock()
+                                            .unwrap()
+                                            .record_node(node, &flags_hash);
                                     }
                                     NodeOutcome::Skipped(_) => {
                                         incr_skipped.fetch_add(1, Ordering::Relaxed);
                                         if let Some(prev) = build_state.nodes.get(&node.id) {
-                                            new_build_state.lock().unwrap().nodes.insert(
-                                                node.id.clone(), prev.clone(),
-                                            );
+                                            new_build_state
+                                                .lock()
+                                                .unwrap()
+                                                .nodes
+                                                .insert(node.id.clone(), prev.clone());
                                         }
                                     }
                                     NodeOutcome::Linked(_) => {}
@@ -791,7 +782,10 @@ impl BuildRunner {
             incremental_skipped: incr_skipped.load(Ordering::Relaxed),
             wall_time_ms: wall_start.elapsed().as_millis() as u64,
             total_compile_time_ms: total_compile_ms.load(Ordering::Relaxed) as u64,
-            node_timings: Arc::try_unwrap(node_timings).unwrap_or_default().into_inner().unwrap_or_default(),
+            node_timings: Arc::try_unwrap(node_timings)
+                .unwrap_or_default()
+                .into_inner()
+                .unwrap_or_default(),
         };
 
         Ok((final_output, stats))
@@ -812,7 +806,8 @@ impl BuildRunner {
         let mut stats = BuildStats::default();
 
         for node in &plan.nodes {
-            let outcome = self.execute_node(node, plan, &pcm_map, Some(&build_state), &flags_hash)?;
+            let outcome =
+                self.execute_node(node, plan, &pcm_map, Some(&build_state), &flags_hash)?;
             let ms = outcome.time_ms();
             stats.node_timings.insert(node.id.clone(), ms);
             match outcome {
@@ -1111,7 +1106,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("test.cppm");
         // Module declaration should be found even with leading comments
-        fs::write(&file, "// Copyright 2024\n// License: MIT\nexport module mymod;\n").unwrap();
+        fs::write(
+            &file,
+            "// Copyright 2024\n// License: MIT\nexport module mymod;\n",
+        )
+        .unwrap();
 
         let kind = classify_source(&file).unwrap();
         assert_eq!(kind, cmod_core::types::ModuleUnitKind::InterfaceUnit);

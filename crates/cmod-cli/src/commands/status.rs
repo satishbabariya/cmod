@@ -10,7 +10,10 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    println!("Project: {} v{}", config.manifest.package.name, config.manifest.package.version);
+    println!(
+        "Project: {} v{}",
+        config.manifest.package.name, config.manifest.package.version
+    );
     println!();
 
     // Module info
@@ -66,7 +69,11 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     let cache = ArtifactCache::new(config.cache_dir());
     match cache.status() {
         Ok(status) => {
-            println!("  Cache: {} entries, {}", status.entry_count, format_size(status.total_size));
+            println!(
+                "  Cache: {} entries, {}",
+                status.entry_count,
+                format_size(status.total_size)
+            );
         }
         Err(_) => println!("  Cache: not initialized"),
     }

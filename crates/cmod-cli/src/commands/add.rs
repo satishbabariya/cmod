@@ -24,7 +24,12 @@ pub fn run(
     let (dep_key, version_constraint) = parse_dep_specifier(&dep);
 
     // Build the Dependency object
-    let dependency = if path.is_some() || git.is_some() || branch.is_some() || rev.is_some() || !features.is_empty() {
+    let dependency = if path.is_some()
+        || git.is_some()
+        || branch.is_some()
+        || rev.is_some()
+        || !features.is_empty()
+    {
         Dependency::Detailed(DetailedDependency {
             version: version_constraint,
             git,

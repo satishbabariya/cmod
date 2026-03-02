@@ -26,9 +26,7 @@ pub fn run(apply: bool, verbose: bool) -> Result<(), CmodError> {
     for dep_name in config.manifest.dependencies.keys() {
         // A dep is "used" if any source file imports a module that matches
         // the dep name or a module that starts with the dep name.
-        let is_used = imports.iter().any(|imp| {
-            dep_matches_import(dep_name, imp)
-        });
+        let is_used = imports.iter().any(|imp| dep_matches_import(dep_name, imp));
 
         if !is_used {
             unused.push(dep_name.clone());
@@ -53,7 +51,10 @@ pub fn run(apply: bool, verbose: bool) -> Result<(), CmodError> {
             manifest.dependencies.remove(name);
         }
         manifest.save(&manifest_path)?;
-        eprintln!("  Removed {} unused dependencies from cmod.toml", unused.len());
+        eprintln!(
+            "  Removed {} unused dependencies from cmod.toml",
+            unused.len()
+        );
     } else {
         eprintln!("  Run `cmod tidy --apply` to remove them.");
     }
@@ -109,10 +110,7 @@ fn collect_all_imports(src_dir: &Path) -> Result<BTreeSet<String>, CmodError> {
 /// A dep like "mylib" matches imports like "mylib", "mylib.utils", etc.
 fn dep_matches_import(dep_name: &str, import_name: &str) -> bool {
     // Extract the short name from a Git-style dep key
-    let short_name = dep_name
-        .rsplit('/')
-        .next()
-        .unwrap_or(dep_name);
+    let short_name = dep_name.rsplit('/').next().unwrap_or(dep_name);
 
     // Module name could be the short dep name or start with it (partition)
     import_name == short_name
@@ -155,10 +153,7 @@ mod tests {
     fn test_collect_imports_from_sources() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("main.cppm");
-        std::fs::write(
-            &file,
-            "export module app;\nimport fmt;\nimport spdlog;\n",
-        ).unwrap();
+        std::fs::write(&file, "export module app;\nimport fmt;\nimport spdlog;\n").unwrap();
 
         let imports = collect_all_imports(tmp.path()).unwrap();
         assert_eq!(imports.len(), 2);

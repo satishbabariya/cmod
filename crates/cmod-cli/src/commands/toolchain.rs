@@ -50,7 +50,13 @@ pub fn check() -> Result<(), CmodError> {
     eprintln!("  Checking toolchain...");
 
     spec.validate()?;
-    eprintln!("  {} {} is available", spec.compiler, spec.compiler_version.as_deref().unwrap_or("(version unknown)"));
+    eprintln!(
+        "  {} {} is available",
+        spec.compiler,
+        spec.compiler_version
+            .as_deref()
+            .unwrap_or("(version unknown)")
+    );
 
     if spec.is_cross_compiling() {
         eprintln!("  Cross-compilation target: {}", spec.target);

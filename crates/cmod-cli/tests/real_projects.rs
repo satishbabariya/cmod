@@ -168,11 +168,7 @@ fn create_local_git_repo(
 /// the primary interface (`export module foo;`), so we avoid them in this fixture.
 fn setup_math_project(dir: &Path) {
     let output = run_cmod(dir, &["init", "--name", "mathlib"]);
-    assert!(
-        output.status.success(),
-        "init failed: {}",
-        stderr(&output)
-    );
+    assert!(output.status.success(), "init failed: {}", stderr(&output));
 
     // Primary interface — re-exports partitions
     fs::write(
@@ -771,11 +767,7 @@ fn test_real_math_plan_shows_all_nodes() {
     setup_math_project(tmp.path());
 
     let output = run_cmod(tmp.path(), &["plan"]);
-    assert!(
-        output.status.success(),
-        "plan failed: {}",
-        stderr(&output)
-    );
+    assert!(output.status.success(), "plan failed: {}", stderr(&output));
 
     let out = stdout(&output);
     let parsed: serde_json::Value = serde_json::from_str(&out)
@@ -900,11 +892,7 @@ fn test_real_path_dep_tidy_all_used() {
 
     let app_dir = tmp.path().join("app");
     let output = run_cmod(&app_dir, &["tidy"]);
-    assert!(
-        output.status.success(),
-        "tidy failed: {}",
-        stderr(&output)
-    );
+    assert!(output.status.success(), "tidy failed: {}", stderr(&output));
 
     // The app source doesn't import the path deps directly (simplified for this test),
     // so tidy may report them as unused. Just verify tidy runs without error.
@@ -921,11 +909,7 @@ fn test_real_path_dep_sbom_includes_all() {
     run_cmod(&app_dir, &["resolve", "--untrusted"]);
 
     let output = run_cmod(&app_dir, &["sbom"]);
-    assert!(
-        output.status.success(),
-        "sbom failed: {}",
-        stderr(&output)
-    );
+    assert!(output.status.success(), "sbom failed: {}", stderr(&output));
 
     let out = stdout(&output);
     let parsed: serde_json::Value = serde_json::from_str(&out)
@@ -1045,12 +1029,13 @@ fn test_real_workspace_run_binary() {
                 if path.is_file() {
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                    if ext != "o" && ext != "pcm" && ext != "json" && ext != "a"
+                    if ext != "o"
+                        && ext != "pcm"
+                        && ext != "json"
+                        && ext != "a"
                         && (stem == "app" || stem == "main" || stem == "a.out")
                     {
-                        let status = Command::new(&path)
-                            .status()
-                            .expect("failed to run binary");
+                        let status = Command::new(&path).status().expect("failed to run binary");
                         assert!(
                             status.success(),
                             "workspace app binary failed with exit code: {:?}",
@@ -1119,11 +1104,7 @@ fn test_real_workspace_clean() {
 
     // Build first
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
-    assert!(
-        output.status.success(),
-        "build failed: {}",
-        stderr(&output)
-    );
+    assert!(output.status.success(), "build failed: {}", stderr(&output));
     assert!(
         tmp.path().join("build").exists(),
         "build dir should exist after build"
@@ -1131,11 +1112,7 @@ fn test_real_workspace_clean() {
 
     // Clean
     let output = run_cmod(tmp.path(), &["clean"]);
-    assert!(
-        output.status.success(),
-        "clean failed: {}",
-        stderr(&output)
-    );
+    assert!(output.status.success(), "clean failed: {}", stderr(&output));
     assert!(
         !tmp.path().join("build").exists(),
         "build dir should be removed after clean"
@@ -1407,12 +1384,17 @@ fn test_real_config_lto_build() {
     if !output.status.success() {
         let err = stderr(&output);
         assert!(
-            err.contains("link") || err.contains("lto") || err.contains("LTO")
-                || err.contains("summary") || err.contains("linker"),
+            err.contains("link")
+                || err.contains("lto")
+                || err.contains("LTO")
+                || err.contains("summary")
+                || err.contains("linker"),
             "LTO failure should be a linker issue, got unexpected error: {}",
             err
         );
-        eprintln!("Note: LTO build failed due to LLVM version incompatibility (expected on some setups)");
+        eprintln!(
+            "Note: LTO build failed due to LLVM version incompatibility (expected on some setups)"
+        );
     }
 }
 
@@ -1909,7 +1891,10 @@ fn test_real_github_fmtlib_resolve() {
     );
 
     let lockfile = fs::read_to_string(tmp.path().join("cmod.lock")).unwrap();
-    assert!(lockfile.contains("fmt"), "lockfile should contain fmt entry");
+    assert!(
+        lockfile.contains("fmt"),
+        "lockfile should contain fmt entry"
+    );
 }
 
 #[test]

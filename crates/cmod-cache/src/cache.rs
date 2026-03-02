@@ -84,11 +84,10 @@ impl ArtifactCache {
         fs::create_dir_all(&dir)?;
 
         // Write metadata
-        let meta_json = serde_json::to_string_pretty(metadata).map_err(|e| {
-            CmodError::CacheError {
+        let meta_json =
+            serde_json::to_string_pretty(metadata).map_err(|e| CmodError::CacheError {
                 reason: format!("failed to serialize metadata: {}", e),
-            }
-        })?;
+            })?;
         fs::write(dir.join("metadata.json"), meta_json)?;
 
         // Copy artifact files
@@ -286,7 +285,8 @@ impl ArtifactCache {
                     continue;
                 }
 
-                let modified = meta_path.metadata()
+                let modified = meta_path
+                    .metadata()
                     .and_then(|m| m.modified())
                     .unwrap_or(SystemTime::UNIX_EPOCH);
 
@@ -335,7 +335,8 @@ impl ArtifactCache {
                 }
 
                 let meta_path = key_entry.path().join("metadata.json");
-                let modified = meta_path.metadata()
+                let modified = meta_path
+                    .metadata()
                     .and_then(|m| m.modified())
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 let size = dir_size(&key_entry.path());
@@ -475,7 +476,12 @@ mod tests {
         };
 
         cache
-            .store("test.module", &key, &metadata, &[("test.o", &artifact_path)])
+            .store(
+                "test.module",
+                &key,
+                &metadata,
+                &[("test.o", &artifact_path)],
+            )
             .unwrap();
 
         assert!(cache.has("test.module", &key));
@@ -558,8 +564,12 @@ mod tests {
             artifacts: vec![],
         };
 
-        cache.store("alpha", &key, &meta, &[("x.o", &artifact)]).unwrap();
-        cache.store("beta", &key, &meta, &[("x.o", &artifact)]).unwrap();
+        cache
+            .store("alpha", &key, &meta, &[("x.o", &artifact)])
+            .unwrap();
+        cache
+            .store("beta", &key, &meta, &[("x.o", &artifact)])
+            .unwrap();
 
         let modules = cache.list_modules().unwrap();
         assert_eq!(modules, vec!["alpha", "beta"]);
@@ -583,7 +593,9 @@ mod tests {
             artifacts: vec![],
         };
 
-        cache.store("m", &key, &meta, &[("data.o", &artifact)]).unwrap();
+        cache
+            .store("m", &key, &meta, &[("data.o", &artifact)])
+            .unwrap();
 
         let size = cache.total_size().unwrap();
         assert!(size > 0, "cache size should be > 0 after storing artifacts");
@@ -608,9 +620,15 @@ mod tests {
             artifacts: vec![],
         };
 
-        cache.store("target_mod", &key1, &meta, &[("x.o", &artifact)]).unwrap();
-        cache.store("target_mod", &key2, &meta, &[("x.o", &artifact)]).unwrap();
-        cache.store("other_mod", &key1, &meta, &[("x.o", &artifact)]).unwrap();
+        cache
+            .store("target_mod", &key1, &meta, &[("x.o", &artifact)])
+            .unwrap();
+        cache
+            .store("target_mod", &key2, &meta, &[("x.o", &artifact)])
+            .unwrap();
+        cache
+            .store("other_mod", &key1, &meta, &[("x.o", &artifact)])
+            .unwrap();
 
         // Evict all entries for target_mod
         cache.evict_module("target_mod").unwrap();
@@ -654,7 +672,9 @@ mod tests {
             }],
         };
 
-        cache.store("m", &key, &meta, &[("verified.o", &artifact)]).unwrap();
+        cache
+            .store("m", &key, &meta, &[("verified.o", &artifact)])
+            .unwrap();
 
         // Verification should pass
         assert!(cache.verify_artifact("m", &key, "verified.o").unwrap());
@@ -682,7 +702,9 @@ mod tests {
             }],
         };
 
-        cache.store("m", &key, &meta, &[("corrupt.o", &artifact)]).unwrap();
+        cache
+            .store("m", &key, &meta, &[("corrupt.o", &artifact)])
+            .unwrap();
 
         // Verification should fail (hash mismatch)
         assert!(!cache.verify_artifact("m", &key, "corrupt.o").unwrap());
@@ -743,8 +765,12 @@ mod tests {
             artifacts: vec![],
         };
 
-        cache.store("m", &key1, &meta, &[("data.o", &artifact)]).unwrap();
-        cache.store("m", &key2, &meta, &[("data.o", &artifact)]).unwrap();
+        cache
+            .store("m", &key1, &meta, &[("data.o", &artifact)])
+            .unwrap();
+        cache
+            .store("m", &key2, &meta, &[("data.o", &artifact)])
+            .unwrap();
 
         let size_before = cache.total_size().unwrap();
         assert!(size_before > 0);

@@ -93,10 +93,9 @@ fn vendor_git_dep(
 
         // Checkout the specific commit
         if let Some(ref commit_hash) = pkg.commit {
-            let oid =
-                git2::Oid::from_str(commit_hash).map_err(|e| CmodError::GitError {
-                    reason: format!("invalid commit hash: {}", e),
-                })?;
+            let oid = git2::Oid::from_str(commit_hash).map_err(|e| CmodError::GitError {
+                reason: format!("invalid commit hash: {}", e),
+            })?;
             let commit = repo.find_commit(oid).map_err(|e| CmodError::GitError {
                 reason: format!("commit not found: {}", e),
             })?;

@@ -85,9 +85,8 @@ impl BuildState {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let content = serde_json::to_string_pretty(self).map_err(|e| CmodError::Other(
-            format!("failed to serialize build state: {}", e),
-        ))?;
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| CmodError::Other(format!("failed to serialize build state: {}", e)))?;
         std::fs::write(&path, content)?;
         Ok(())
     }
@@ -100,11 +99,7 @@ impl BuildState {
     ///
     /// Returns `None` if the node is up-to-date, or `Some(reason)` if it
     /// needs to be rebuilt.
-    pub fn needs_rebuild(
-        &self,
-        node: &BuildNode,
-        flags_hash: &str,
-    ) -> Option<RebuildReason> {
+    pub fn needs_rebuild(&self, node: &BuildNode, flags_hash: &str) -> Option<RebuildReason> {
         let prev = match self.nodes.get(&node.id) {
             Some(s) => s,
             None => return Some(RebuildReason::NoPreviousState),
@@ -147,11 +142,7 @@ impl BuildState {
     }
 
     /// Record the state of a successfully built node.
-    pub fn record_node(
-        &mut self,
-        node: &BuildNode,
-        flags_hash: &str,
-    ) {
+    pub fn record_node(&mut self, node: &BuildNode, flags_hash: &str) {
         let source_hash = node
             .source
             .as_ref()
@@ -369,7 +360,10 @@ mod tests {
 
     #[test]
     fn test_rebuild_reason_display() {
-        assert_eq!(format!("{}", RebuildReason::SourceChanged), "source file changed");
+        assert_eq!(
+            format!("{}", RebuildReason::SourceChanged),
+            "source file changed"
+        );
         assert_eq!(format!("{}", RebuildReason::Forced), "forced rebuild");
     }
 }

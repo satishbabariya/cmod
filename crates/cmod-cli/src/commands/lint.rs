@@ -125,9 +125,7 @@ fn lint_source(filename: &str, content: &str) -> Vec<LintWarning> {
 
 /// Check if a filename represents a C++ module file.
 fn is_module_file(filename: &str) -> bool {
-    filename.ends_with(".cppm")
-        || filename.ends_with(".ixx")
-        || filename.ends_with(".mpp")
+    filename.ends_with(".cppm") || filename.ends_with(".ixx") || filename.ends_with(".mpp")
 }
 
 /// Simple heuristic for C-style casts: (int), (float), (char*), etc.
@@ -139,7 +137,9 @@ fn has_c_style_cast(line: &str) -> bool {
     }
 
     // Look for patterns like (int), (double), (char*) that aren't function calls
-    let cast_types = ["int", "float", "double", "char", "long", "short", "unsigned", "void"];
+    let cast_types = [
+        "int", "float", "double", "char", "long", "short", "unsigned", "void",
+    ];
     for cast_type in &cast_types {
         let pattern = format!("({})", cast_type);
         if trimmed.contains(&pattern) {
@@ -168,7 +168,9 @@ mod tests {
     fn test_lint_trailing_whitespace() {
         let content = "int x = 1;  \n";
         let warnings = lint_source("test.cpp", content);
-        assert!(warnings.iter().any(|w| w.message.contains("trailing whitespace")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.message.contains("trailing whitespace")));
     }
 
     #[test]
@@ -203,7 +205,9 @@ mod tests {
     fn test_lint_using_namespace_std() {
         let content = "using namespace std;\nint main() {}\n";
         let warnings = lint_source("test.cpp", content);
-        assert!(warnings.iter().any(|w| w.message.contains("using namespace std")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.message.contains("using namespace std")));
     }
 
     #[test]

@@ -69,7 +69,11 @@ pub struct SbomComponent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// External references (repo URL, etc.).
-    #[serde(rename = "externalReferences", skip_serializing_if = "Vec::is_empty", default)]
+    #[serde(
+        rename = "externalReferences",
+        skip_serializing_if = "Vec::is_empty",
+        default
+    )]
     pub external_references: Vec<SbomExternalRef>,
     /// Content hashes.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -149,9 +153,10 @@ pub fn generate_sbom(manifest: &Manifest, lockfile: &Lockfile) -> Result<Sbom, C
             });
         }
 
-        let purl = pkg.repo.as_ref().map(|repo| {
-            format!("pkg:cmod/{}@{}?vcs_url={}", pkg.name, pkg.version, repo)
-        });
+        let purl = pkg
+            .repo
+            .as_ref()
+            .map(|repo| format!("pkg:cmod/{}@{}?vcs_url={}", pkg.name, pkg.version, repo));
 
         components.push(SbomComponent {
             component_type: "library".to_string(),
@@ -184,7 +189,10 @@ pub fn generate_sbom(manifest: &Manifest, lockfile: &Lockfile) -> Result<Sbom, C
         });
     }
 
-    let serial = format!("urn:uuid:{}", simple_uuid(&timestamp, &manifest.package.name));
+    let serial = format!(
+        "urn:uuid:{}",
+        simple_uuid(&timestamp, &manifest.package.name)
+    );
 
     Ok(Sbom {
         bom_format: "CycloneDX".to_string(),
@@ -207,9 +215,8 @@ pub fn generate_sbom(manifest: &Manifest, lockfile: &Lockfile) -> Result<Sbom, C
 
 /// Serialize the SBOM to a JSON string.
 pub fn sbom_to_json(sbom: &Sbom) -> Result<String, CmodError> {
-    serde_json::to_string_pretty(sbom).map_err(|e| CmodError::Other(
-        format!("failed to serialize SBOM: {}", e),
-    ))
+    serde_json::to_string_pretty(sbom)
+        .map_err(|e| CmodError::Other(format!("failed to serialize SBOM: {}", e)))
 }
 
 /// Generate an ISO 8601 UTC timestamp string from system time.
@@ -290,7 +297,11 @@ mod tests {
     #[test]
     fn test_generate_sbom_empty() {
         let manifest = cmod_core::manifest::default_manifest("myapp");
-        let lockfile = Lockfile { version: 1, integrity: None, packages: vec![] };
+        let lockfile = Lockfile {
+            version: 1,
+            integrity: None,
+            packages: vec![],
+        };
 
         let sbom = generate_sbom(&manifest, &lockfile).unwrap();
         assert_eq!(sbom.bom_format, "CycloneDX");
@@ -316,7 +327,11 @@ mod tests {
         assert_eq!(sbom.components[1].name, "spdlog");
 
         // Check purl
-        assert!(sbom.components[0].purl.as_ref().unwrap().contains("pkg:cmod/fmt@10.2.0"));
+        assert!(sbom.components[0]
+            .purl
+            .as_ref()
+            .unwrap()
+            .contains("pkg:cmod/fmt@10.2.0"));
 
         // Check hashes
         assert_eq!(sbom.components[0].hashes.len(), 1);
@@ -326,7 +341,11 @@ mod tests {
     #[test]
     fn test_sbom_to_json() {
         let manifest = cmod_core::manifest::default_manifest("myapp");
-        let lockfile = Lockfile { version: 1, integrity: None, packages: vec![] };
+        let lockfile = Lockfile {
+            version: 1,
+            integrity: None,
+            packages: vec![],
+        };
         let sbom = generate_sbom(&manifest, &lockfile).unwrap();
         let json = sbom_to_json(&sbom).unwrap();
 
@@ -361,7 +380,11 @@ mod tests {
         // Root should have its own dep entry
         assert!(sbom.dependencies.iter().any(|d| d.reference == "myapp"));
         // fmt should depend on base
-        let fmt_dep = sbom.dependencies.iter().find(|d| d.reference == "fmt").unwrap();
+        let fmt_dep = sbom
+            .dependencies
+            .iter()
+            .find(|d| d.reference == "fmt")
+            .unwrap();
         assert!(fmt_dep.depends_on.contains(&"base".to_string()));
     }
 }
