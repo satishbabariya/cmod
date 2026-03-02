@@ -4,7 +4,7 @@
 
 **cmod** is a Cargo-inspired, Git-native package and build tool for modern C++20+ modules. It provides dependency resolution, build orchestration, workspace management, and caching — all without a central package registry.
 
-**Status:** Initial Rust implementation (Phase 0-2). The Cargo workspace compiles and has 48 passing unit tests. The 21 RFCs and design documents under `docs/` remain the canonical specification.
+**Status:** Initial Rust implementation (Phase 0-2). The Cargo workspace compiles and has 270+ passing tests. The 21 RFCs and design documents under `docs/` remain the canonical specification.
 
 **Implementation language:** Rust (with LLVM/Clang C++ APIs for build hooks).
 
@@ -15,8 +15,23 @@ cmod/
 ├── Cargo.toml                             # Workspace root
 ├── Cargo.lock                             # Rust dependency lockfile
 ├── CLAUDE.md                              # This file
-├── todo.txt                               # Project-level TODO notes
-├── .gitignore                             # Ignore rules (C++, Rust, IDE artifacts)
+├── README.md                              # Project page
+├── LICENSE                                # Apache-2.0
+├── CONTRIBUTING.md                        # Contributor guide
+├── SECURITY.md                            # Security policy
+├── CHANGELOG.md                           # Release notes
+├── rust-toolchain.toml                    # Pinned Rust toolchain
+├── rustfmt.toml                           # Formatter config
+├── clippy.toml                            # Linter config
+├── .gitignore                             # Ignore rules
+├── .github/                               # GitHub configuration
+│   ├── workflows/
+│   │   ├── ci.yml                         # CI: fmt, clippy, test, msrv
+│   │   └── release.yml                    # Binary release on tag push
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml
+│   │   └── feature_request.yml
+│   └── pull_request_template.md
 ├── crates/                                # Rust implementation
 │   ├── cmod-cli/                          # CLI binary (cmod command)
 │   │   └── src/
@@ -28,10 +43,28 @@ cmod/
 │   │           ├── resolve.rs             # cmod resolve
 │   │           ├── build.rs               # cmod build
 │   │           ├── test.rs                # cmod test
+│   │           ├── run.rs                 # cmod run
+│   │           ├── clean.rs               # cmod clean
 │   │           ├── update.rs              # cmod update
 │   │           ├── deps.rs                # cmod deps
-│   │           ├── cache.rs               # cmod cache status/clean
-│   │           └── verify.rs              # cmod verify
+│   │           ├── cache.rs               # cmod cache
+│   │           ├── verify.rs              # cmod verify
+│   │           ├── graph.rs               # cmod graph
+│   │           ├── audit.rs               # cmod audit
+│   │           ├── status.rs              # cmod status
+│   │           ├── explain.rs             # cmod explain
+│   │           ├── toolchain.rs           # cmod toolchain
+│   │           ├── vendor.rs              # cmod vendor
+│   │           ├── lint.rs                # cmod lint
+│   │           ├── fmt.rs                 # cmod fmt
+│   │           ├── search.rs              # cmod search
+│   │           ├── workspace.rs           # cmod workspace
+│   │           ├── sbom.rs                # cmod sbom
+│   │           ├── publish.rs             # cmod publish
+│   │           ├── compile_commands.rs    # cmod compile-commands
+│   │           ├── tidy.rs                # cmod tidy
+│   │           ├── check.rs              # cmod check
+│   │           └── plugin.rs              # cmod plugin
 │   ├── cmod-core/                         # Core types and config
 │   │   └── src/
 │   │       ├── lib.rs
@@ -58,10 +91,16 @@ cmod/
 │   │       ├── lib.rs
 │   │       ├── cache.rs                   # ArtifactCache (store/get/evict/clean)
 │   │       └── key.rs                     # CacheKey computation (SHA-256)
-│   └── cmod-workspace/                    # Workspace management
+│   ├── cmod-workspace/                    # Workspace management
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       └── workspace.rs               # WorkspaceManager (load/validate/add member)
+│   └── cmod-security/                     # Supply-chain integrity
 │       └── src/
 │           ├── lib.rs
-│           └── workspace.rs               # WorkspaceManager (load/validate/add member)
+│           ├── trust.rs                   # TOFU trust model
+│           ├── verify.rs                  # Hash/signature verification
+│           └── policy.rs                  # Security policy enforcement
 ├── docs/                                  # Design specifications
 │   ├── cmod_readme_vision.md
 │   ├── cmod_architecture_diagram.md
@@ -71,17 +110,19 @@ cmod/
 │   ├── cmod_vs_existing_tools.md
 │   ├── why_cmod_exists_pitch_doc.md
 │   └── rfc/                               # 21 RFCs (see RFC Tiers below)
-└── tests/                                 # Integration tests (future)
+└── tests/                                 # Integration tests
 ```
 
 ## Build & Test Commands
 
 ```bash
-cargo check              # Type-check all crates
-cargo build              # Compile all crates
-cargo test               # Run all 48 unit tests
-cargo build --release    # Release build
-cargo run -- <subcommand>  # Run the CLI (e.g., cargo run -- init)
+cargo check                                       # Type-check all crates
+cargo build                                        # Compile all crates
+cargo test                                         # Run all tests
+cargo clippy --all-targets -- -D warnings          # Lint all code
+cargo fmt --all --check                            # Check formatting
+cargo build --release                              # Release build
+cargo run -- <subcommand>                          # Run the CLI
 ```
 
 ## Key Design Decisions
@@ -115,25 +156,72 @@ Key data flows:
 | `cmod-build` | `ModuleGraph`, `BuildPlan`, `BuildRunner`, `ClangBackend` | DAG construction, Clang invocation, build execution |
 | `cmod-cache` | `ArtifactCache`, `CacheKey` | Content-addressed caching, SHA-256 keys |
 | `cmod-workspace` | `WorkspaceManager`, `WorkspaceMember` | Monorepo loading, unified deps, member management |
+| `cmod-security` | `TrustStore`, `Verifier`, `SecurityPolicy` | TOFU trust, hash/signature verification, policy enforcement |
 
 ## CLI Commands
 
-| Command | Description | Implementation |
-|---|---|---|
-| `cmod init [--workspace]` | Initialize a new module or workspace | `commands/init.rs` |
-| `cmod add <dep>[@version]` | Add a dependency | `commands/add.rs` |
-| `cmod remove <name>` | Remove a dependency | `commands/remove.rs` |
-| `cmod resolve` | Resolve deps → lockfile | `commands/resolve.rs` |
-| `cmod build [--release]` | Build module/workspace | `commands/build.rs` |
-| `cmod test [--release]` | Build and run tests | `commands/test.rs` |
-| `cmod update [name]` | Update dependencies | `commands/update.rs` |
-| `cmod deps [--tree]` | Inspect dependency graph | `commands/deps.rs` |
-| `cmod cache status\|clean` | Manage build cache | `commands/cache.rs` |
-| `cmod verify` | Verify integrity | `commands/verify.rs` |
+### Core Workflow
 
-Global flags: `--locked`, `--offline`, `--verbose`, `--target <triple>`
+| Command | Description |
+|---|---|
+| `cmod init [--workspace]` | Initialize a new module or workspace |
+| `cmod build [--release] [--jobs N]` | Build the current module or workspace |
+| `cmod test [--release]` | Build and run tests |
+| `cmod run [--release] [-- args]` | Build and run the project binary |
+| `cmod clean` | Remove build artifacts |
 
-Exit codes: `0` success, `1` build failure, `2` resolution error, `3` security violation.
+### Dependency Management
+
+| Command | Description |
+|---|---|
+| `cmod add <dep>[@version]` | Add a dependency |
+| `cmod remove <name>` | Remove a dependency |
+| `cmod resolve` | Resolve dependencies and generate/update lockfile |
+| `cmod update [name] [--patch]` | Update dependencies |
+| `cmod deps [--tree] [--why <name>]` | Inspect the dependency graph |
+| `cmod tidy [--apply]` | Remove unused dependencies |
+| `cmod vendor [--sync]` | Vendor dependencies for offline builds |
+| `cmod search <query>` | Search for modules by name |
+
+### Build Tools
+
+| Command | Description |
+|---|---|
+| `cmod graph [--format dot\|json]` | Visualize the module dependency graph |
+| `cmod explain <module>` | Explain why a module would be rebuilt |
+| `cmod plan` | Output the build plan as JSON |
+| `cmod compile-commands` | Generate `compile_commands.json` for IDE integration |
+| `cmod emit-cmake` | Export a `CMakeLists.txt` for CMake interop |
+| `cmod lint` | Lint C++ source files |
+| `cmod fmt [--check]` | Format C++ source files via clang-format |
+
+### Cache, Security & Packaging
+
+| Command | Description |
+|---|---|
+| `cmod cache status\|clean\|gc\|push\|pull` | Manage the build cache |
+| `cmod verify [--signatures]` | Verify integrity and security |
+| `cmod audit` | Audit dependencies for security issues |
+| `cmod sbom [--output <file>]` | Generate a Software Bill of Materials |
+| `cmod publish [--dry-run]` | Publish a release (create a Git tag) |
+
+### Workspace & Project
+
+| Command | Description |
+|---|---|
+| `cmod workspace list\|add\|remove` | Manage workspace members |
+| `cmod status` | Show project status overview |
+| `cmod check` | Validate module naming and structure |
+| `cmod toolchain show\|check` | Manage the active toolchain |
+| `cmod plugin list\|run` | Manage plugins |
+
+### Global Flags
+
+`--locked`, `--offline`, `--verbose`, `--target <triple>`, `--features <list>`, `--no-default-features`, `--no-cache`, `--untrusted`
+
+### Exit Codes
+
+`0` success, `1` build failure, `2` resolution error, `3` security violation.
 
 ## Configuration Format
 
@@ -177,10 +265,12 @@ RFCs are organized by priority tier. When contributing, respect this ordering:
 - The implementation is in Rust, organized as a Cargo workspace under `crates/`.
 - Follow Cargo-idiomatic Rust conventions (snake_case, standard module layout).
 - Each crate has a focused responsibility — do not merge or split crates without updating this doc.
-- All cross-crate dependencies flow downward: `cli → {resolver, build, cache, workspace} → core`.
+- All cross-crate dependencies flow downward: `cli → {resolver, build, cache, workspace, security} → core`.
 - `cmod-core` has no internal crate dependencies and is the foundation.
-- Run `cargo test` after making changes. All 48 tests must pass.
+- Run `cargo test` after making changes. All tests must pass.
 - Run `cargo check` before committing to catch compilation errors early.
+- Run `cargo clippy --all-targets -- -D warnings` to catch lint issues.
+- Run `cargo fmt --all --check` to verify formatting.
 
 ### Working with documentation
 - All design specifications live under `docs/`. Do not create specifications elsewhere.
@@ -193,4 +283,3 @@ RFCs are organized by priority tier. When contributing, respect this ordering:
 - Maintain consistency between the roadmap, RFCs, architecture docs, and implementation.
 - The `.gitignore` covers C++, Rust, IDE, and build artifacts — update it when adding new tooling.
 - Prefer extending existing modules over creating new files.
-- `cmod-security` crate is planned but not yet created — create it when implementing Phase 4.
