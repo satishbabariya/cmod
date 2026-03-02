@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use cmod_core::error::CmodError;
@@ -207,6 +207,41 @@ impl WorkspaceManager {
         }
 
         Ok(order.iter().map(|&i| &self.members[i]).collect())
+    }
+
+    /// Get the transitive set of workspace member names that the given member depends on.
+    ///
+    /// Returns all members (direct + transitive) that must be built before this member.
+    /// This is useful for propagating PCMs/objects from upstream members.
+    pub fn transitive_member_deps(&self, member_name: &str) -> HashSet<String> {
+        let member_names: HashSet<&str> = self.members.iter().map(|m| m.name.as_str()).collect();
+        let mut result = HashSet::new();
+        let mut queue = VecDeque::new();
+
+        // Seed with direct dependencies
+        if let Some(member) = self.find_member(member_name) {
+            for (dep_name, dep) in &member.manifest.dependencies {
+                if dep.is_path() && member_names.contains(dep_name.as_str()) {
+                    queue.push_back(dep_name.clone());
+                }
+            }
+        }
+
+        // BFS for transitives
+        while let Some(name) = queue.pop_front() {
+            if !result.insert(name.clone()) {
+                continue;
+            }
+            if let Some(dep_member) = self.find_member(&name) {
+                for (trans_name, trans_dep) in &dep_member.manifest.dependencies {
+                    if trans_dep.is_path() && member_names.contains(trans_name.as_str()) {
+                        queue.push_back(trans_name.clone());
+                    }
+                }
+            }
+        }
+
+        result
     }
 
     /// Get the workspace-level version, if set.
@@ -582,6 +617,79 @@ members = []
 
         let ws = WorkspaceManager::load(root).unwrap();
         assert_eq!(ws.workspace_version(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn test_transitive_member_deps() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // A → B → C (app depends on lib, lib depends on core)
+        let root_toml = r#"
+[package]
+name = "transitive-workspace"
+version = "0.1.0"
+
+[workspace]
+members = ["core", "lib", "app"]
+"#;
+        std::fs::write(root.join("cmod.toml"), root_toml).unwrap();
+
+        // core: no deps
+        let core_dir = root.join("core");
+        std::fs::create_dir_all(core_dir.join("src")).unwrap();
+        std::fs::write(
+            core_dir.join("cmod.toml"),
+            "[package]\nname = \"core\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // lib depends on core
+        let lib_dir = root.join("lib");
+        std::fs::create_dir_all(lib_dir.join("src")).unwrap();
+        let lib_toml = r#"
+[package]
+name = "lib"
+version = "0.1.0"
+
+[dependencies]
+core = { path = "./core" }
+"#;
+        std::fs::write(lib_dir.join("cmod.toml"), lib_toml).unwrap();
+
+        // app depends on lib
+        let app_dir = root.join("app");
+        std::fs::create_dir_all(app_dir.join("src")).unwrap();
+        let app_toml = r#"
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+lib = { path = "./lib" }
+"#;
+        std::fs::write(app_dir.join("cmod.toml"), app_toml).unwrap();
+
+        let ws = WorkspaceManager::load(root).unwrap();
+
+        // core has no transitive deps
+        let core_deps = ws.transitive_member_deps("core");
+        assert!(core_deps.is_empty());
+
+        // lib depends on core
+        let lib_deps = ws.transitive_member_deps("lib");
+        assert_eq!(lib_deps.len(), 1);
+        assert!(lib_deps.contains("core"));
+
+        // app transitively depends on both lib and core
+        let app_deps = ws.transitive_member_deps("app");
+        assert_eq!(app_deps.len(), 2);
+        assert!(app_deps.contains("lib"));
+        assert!(app_deps.contains("core"));
+
+        // non-existent member returns empty
+        let unknown_deps = ws.transitive_member_deps("nonexistent");
+        assert!(unknown_deps.is_empty());
     }
 
     #[test]

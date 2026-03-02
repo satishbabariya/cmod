@@ -2,6 +2,7 @@ use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
 use cmod_core::types::ModuleId;
+use cmod_security::hash::verify_content_hash;
 use cmod_security::verify::{verify_all_packages, SignatureStatus};
 
 /// Run `cmod verify` — verify integrity and correctness.
@@ -195,6 +196,59 @@ fn validate_lockfile(
                     "lockfile version {} is unexpected (expected 1)",
                     lockfile.version
                 ));
+            }
+
+            // Verify lockfile integrity hash
+            if let Err(e) = lockfile.verify_integrity() {
+                errors.push(format!("lockfile integrity check failed: {}", e));
+            } else if verbose {
+                eprintln!("    Lockfile integrity hash verified.");
+            }
+
+            // Verify content hashes of checked-out dependencies
+            let deps_dir = config.deps_dir();
+            for pkg in &lockfile.packages {
+                if pkg.hash.is_none() {
+                    if pkg.source.as_deref() == Some("git") {
+                        warnings.push(format!(
+                            "package '{}' has no content hash; re-run `cmod resolve`",
+                            pkg.name
+                        ));
+                    }
+                    continue;
+                }
+
+                let repo_path = deps_dir.join(&pkg.name);
+                if !repo_path.exists() {
+                    // Dep not checked out — skip (could be offline)
+                    if verbose {
+                        eprintln!("    {} — not checked out, skipping hash check", pkg.name);
+                    }
+                    continue;
+                }
+
+                match verify_content_hash(pkg, &repo_path) {
+                    Ok(result) => {
+                        if result.valid {
+                            if verbose {
+                                eprintln!("    {} — content hash verified", pkg.name);
+                            }
+                        } else {
+                            errors.push(format!(
+                                "package '{}' content hash mismatch: expected {}, got {}",
+                                pkg.name,
+                                result.expected_hash,
+                                result.actual_hash.unwrap_or_else(|| "none".to_string()),
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        warnings.push(format!(
+                            "could not verify content hash for '{}': {}",
+                            pkg.name, e
+                        ));
+                    }
+                }
             }
 
             if verbose {

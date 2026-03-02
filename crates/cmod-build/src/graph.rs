@@ -7,8 +7,15 @@ use cmod_core::error::CmodError;
 use cmod_core::types::ModuleUnitKind;
 
 /// A node in the module dependency graph.
+///
+/// Each node represents a single translation unit (source file). Multiple nodes
+/// can belong to the same logical module — e.g., an interface unit and one or
+/// more implementation units for `local.math`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleNode {
+    /// Unique node ID — typically the source file path (or a synthetic key for
+    /// backward-compatible callers that use module-name keys).
+    pub id: String,
     /// Module name (e.g., `github.fmtlib.fmt`).
     pub name: String,
     /// Kind of module unit.
@@ -17,14 +24,20 @@ pub struct ModuleNode {
     pub source: PathBuf,
     /// Package that this module belongs to.
     pub package: String,
-    /// Modules that this node imports.
+    /// Modules that this node imports (logical module names, not node IDs).
     pub imports: Vec<String>,
+    /// For partition units, the owning module name (e.g., `local.math` for `local.math:ops`).
+    pub partition_of: Option<String>,
 }
 
 /// The module dependency graph (DAG).
+///
+/// Nodes are keyed by unique node ID (source path), not by module name.
+/// This allows multiple translation units per logical module (interface +
+/// implementation, partitions, etc.).
 #[derive(Debug, Clone)]
 pub struct ModuleGraph {
-    /// All nodes, keyed by module name.
+    /// All nodes, keyed by unique node ID.
     pub nodes: BTreeMap<String, ModuleNode>,
 }
 
@@ -35,49 +48,92 @@ impl ModuleGraph {
         }
     }
 
-    /// Add a module node to the graph.
+    /// Add a module node to the graph using the node's `id` as the key.
     pub fn add_node(&mut self, node: ModuleNode) {
+        self.nodes.insert(node.id.clone(), node);
+    }
+
+    /// Add a module node keyed by module name (backward-compatible helper).
+    ///
+    /// The node's `id` field is set to `name` automatically. This works for
+    /// graphs where each module has exactly one TU (the legacy layout).
+    pub fn add_node_by_name(&mut self, mut node: ModuleNode) {
+        node.id = node.name.clone();
         self.nodes.insert(node.name.clone(), node);
+    }
+
+    /// Get the interface node for a logical module name, if any.
+    pub fn interface_for(&self, module_name: &str) -> Option<&ModuleNode> {
+        self.nodes.values().find(|n| {
+            n.name == module_name
+                && (n.kind == ModuleUnitKind::InterfaceUnit
+                    || n.kind == ModuleUnitKind::PartitionUnit)
+        })
+    }
+
+    /// Get all implementation units for a logical module name.
+    pub fn implementations_for(&self, module_name: &str) -> Vec<&ModuleNode> {
+        self.nodes
+            .values()
+            .filter(|n| n.name == module_name && n.kind == ModuleUnitKind::ImplementationUnit)
+            .collect()
+    }
+
+    /// Get all partition nodes that belong to the given owning module.
+    pub fn partitions_of(&self, owning_module: &str) -> Vec<&ModuleNode> {
+        self.nodes
+            .values()
+            .filter(|n| n.partition_of.as_deref() == Some(owning_module))
+            .collect()
+    }
+
+    /// Collect all unique logical module names in the graph.
+    pub fn module_names(&self) -> BTreeSet<String> {
+        self.nodes.values().map(|n| n.name.clone()).collect()
     }
 
     /// Validate the graph: no cycles, all imports resolve, module unit constraints.
     pub fn validate(&self) -> Result<(), CmodError> {
-        // Check that all imports reference existing nodes
-        for (name, node) in &self.nodes {
+        // Build the set of known logical module names for import validation
+        let known_modules = self.module_names();
+
+        for (node_id, node) in &self.nodes {
             for import in &node.imports {
-                if !self.nodes.contains_key(import) {
+                if !known_modules.contains(import) {
                     return Err(CmodError::ModuleScanFailed {
                         reason: format!(
-                            "module '{}' imports '{}', which is not in the graph",
-                            name, import
+                            "module '{}' (node '{}') imports '{}', which is not in the graph",
+                            node.name, node_id, import
                         ),
                     });
                 }
             }
 
-            // Self-imports are invalid
-            if node.imports.contains(&node.name) {
+            // Self-imports are invalid (a node importing its own module name is only
+            // valid for implementation units importing the interface)
+            if node.imports.contains(&node.name) && node.kind != ModuleUnitKind::ImplementationUnit
+            {
                 return Err(CmodError::ModuleScanFailed {
-                    reason: format!("module '{}' imports itself", name,),
+                    reason: format!("module '{}' imports itself", node.name),
                 });
             }
         }
 
-        // Check that each interface unit is unique per module name
+        // Check that each logical module has at most one interface unit
         let mut interfaces: BTreeMap<&str, &str> = BTreeMap::new();
-        for (name, node) in &self.nodes {
+        for node in self.nodes.values() {
             if node.kind == ModuleUnitKind::InterfaceUnit {
-                if let Some(prev_source) = interfaces.get(name.as_str()) {
+                if let Some(prev_id) = interfaces.get(node.name.as_str()) {
                     return Err(CmodError::ModuleScanFailed {
                         reason: format!(
-                            "duplicate interface unit '{}': found in {} and {}",
-                            name,
-                            prev_source,
+                            "duplicate interface unit for module '{}': found in '{}' and '{}'",
+                            node.name,
+                            prev_id,
                             node.source.display()
                         ),
                     });
                 }
-                interfaces.insert(name, name);
+                interfaces.insert(&node.name, &node.id);
             }
         }
 
@@ -89,45 +145,56 @@ impl ModuleGraph {
 
     /// Compute a topological ordering of the graph.
     ///
-    /// Returns modules in dependency order (dependencies first).
+    /// Returns node IDs in dependency order (dependencies first).
     /// Errors if the graph contains a cycle.
+    ///
+    /// Implementation units are placed right after their interface unit to ensure
+    /// correct PCM availability.
     pub fn topological_order(&self) -> Result<Vec<String>, CmodError> {
-        let mut in_degree: BTreeMap<&str, usize> = BTreeMap::new();
-        let mut reverse_deps: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        // Build a module-level dependency graph first, then expand to nodes.
+        // This ensures that all TUs of a depended-upon module come before
+        // any TU that depends on it.
 
-        // Initialize
-        for name in self.nodes.keys() {
-            in_degree.entry(name.as_str()).or_insert(0);
-            reverse_deps.entry(name.as_str()).or_default();
+        let module_names = self.module_names();
+        let mut mod_in_degree: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut mod_reverse_deps: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+
+        for name in &module_names {
+            mod_in_degree.entry(name.as_str()).or_insert(0);
+            mod_reverse_deps.entry(name.as_str()).or_default();
         }
 
-        // Compute in-degrees and reverse dep map
-        for (name, node) in &self.nodes {
+        // Compute module-level edges: module A depends on module B if any
+        // TU of A imports B (excluding self-imports from impl→interface).
+        for node in self.nodes.values() {
             for import in &node.imports {
-                *in_degree.entry(import.as_str()).or_insert(0) += 0; // ensure exists
-                *in_degree.entry(name.as_str()).or_insert(0) += 1;
-                reverse_deps
-                    .entry(import.as_str())
-                    .or_default()
-                    .push(name.as_str());
+                if import != &node.name
+                    && module_names.contains(import)
+                    && mod_reverse_deps
+                        .entry(import.as_str())
+                        .or_default()
+                        .insert(node.name.as_str())
+                {
+                    *mod_in_degree.entry(node.name.as_str()).or_insert(0) += 1;
+                }
             }
         }
 
-        // Kahn's algorithm
-        let mut queue: VecDeque<&str> = in_degree
+        // Kahn's algorithm on module-level graph
+        let mut queue: VecDeque<&str> = mod_in_degree
             .iter()
             .filter(|(_, &deg)| deg == 0)
             .map(|(&name, _)| name)
             .collect();
 
-        let mut order = Vec::new();
+        let mut mod_order = Vec::new();
 
-        while let Some(node) = queue.pop_front() {
-            order.push(node.to_string());
+        while let Some(module) = queue.pop_front() {
+            mod_order.push(module);
 
-            if let Some(dependents) = reverse_deps.get(node) {
+            if let Some(dependents) = mod_reverse_deps.get(module) {
                 for &dep in dependents {
-                    if let Some(deg) = in_degree.get_mut(dep) {
+                    if let Some(deg) = mod_in_degree.get_mut(dep) {
                         *deg -= 1;
                         if *deg == 0 {
                             queue.push_back(dep);
@@ -137,12 +204,10 @@ impl ModuleGraph {
             }
         }
 
-        if order.len() != self.nodes.len() {
-            // Find the cycle for error reporting
-            let remaining: Vec<String> = self
-                .nodes
-                .keys()
-                .filter(|n| !order.contains(n))
+        if mod_order.len() != module_names.len() {
+            let remaining: Vec<String> = module_names
+                .iter()
+                .filter(|n| !mod_order.contains(&n.as_str()))
                 .cloned()
                 .collect();
             return Err(CmodError::CircularDependency {
@@ -150,30 +215,64 @@ impl ModuleGraph {
             });
         }
 
+        // Expand module order to node IDs:
+        // For each module, emit partition units first, then interface, then impls.
+        let mut order = Vec::new();
+        for module_name in &mod_order {
+            let mut partitions = Vec::new();
+            let mut interface = Vec::new();
+            let mut impls = Vec::new();
+            let mut legacy = Vec::new();
+
+            for node in self.nodes.values() {
+                if node.name.as_str() != *module_name {
+                    continue;
+                }
+                match node.kind {
+                    ModuleUnitKind::PartitionUnit => partitions.push(node.id.clone()),
+                    ModuleUnitKind::InterfaceUnit => interface.push(node.id.clone()),
+                    ModuleUnitKind::ImplementationUnit => impls.push(node.id.clone()),
+                    ModuleUnitKind::LegacyUnit => legacy.push(node.id.clone()),
+                }
+            }
+
+            // Sort within each category for determinism
+            partitions.sort();
+            interface.sort();
+            impls.sort();
+            legacy.sort();
+
+            // Partitions → Interface → Implementations → Legacy
+            order.extend(partitions);
+            order.extend(interface);
+            order.extend(impls);
+            order.extend(legacy);
+        }
+
         Ok(order)
     }
 
-    /// Get modules that have no imports (roots of the build).
+    /// Get node IDs that have no imports (roots of the build).
     pub fn roots(&self) -> Vec<&str> {
         self.nodes
             .iter()
             .filter(|(_, node)| node.imports.is_empty())
-            .map(|(name, _)| name.as_str())
+            .map(|(id, _)| id.as_str())
             .collect()
     }
 
-    /// Get all modules that depend on the given module.
+    /// Get all node IDs that depend on the given module name.
     pub fn dependents(&self, module_name: &str) -> Vec<&str> {
         self.nodes
             .iter()
             .filter(|(_, node)| node.imports.iter().any(|i| i == module_name))
-            .map(|(name, _)| name.as_str())
+            .map(|(id, _)| id.as_str())
             .collect()
     }
 
     /// Compute the critical path through the graph using node timings.
     ///
-    /// Returns the sequence of module names forming the longest path
+    /// Returns the sequence of node IDs forming the longest path
     /// (by total compile time), which determines the minimum build time.
     pub fn critical_path(&self, timings: &BTreeMap<String, u64>) -> Vec<String> {
         let order = match self.topological_order() {
@@ -181,31 +280,36 @@ impl ModuleGraph {
             Err(_) => return vec![],
         };
 
-        // dp[node] = (longest_path_time_to_this_node, predecessor)
+        // dp[node_id] = (longest_path_time_to_this_node, predecessor)
         let mut dp: BTreeMap<&str, (u64, Option<&str>)> = BTreeMap::new();
 
-        for name in &order {
-            let node_time = timings.get(name.as_str()).copied().unwrap_or(0);
-            let node = match self.nodes.get(name.as_str()) {
+        for node_id in &order {
+            let node_time = timings.get(node_id.as_str()).copied().unwrap_or(0);
+            let node = match self.nodes.get(node_id.as_str()) {
                 Some(n) => n,
                 None => continue,
             };
 
-            // Find max incoming path
-            let (best_time, best_pred) = node
-                .imports
-                .iter()
-                .filter_map(|imp| dp.get(imp.as_str()).map(|(t, _)| (*t, imp.as_str())))
-                .max_by_key(|(t, _)| *t)
-                .unwrap_or((0, ""));
+            // Find max incoming path — imports are module names, find all node IDs
+            // for those modules and pick the best predecessor.
+            let mut best_time = 0u64;
+            let mut best_pred: Option<&str> = None;
+            for import in &node.imports {
+                // Find the last node emitted for the imported module
+                for (id, n) in &self.nodes {
+                    if n.name == *import {
+                        if let Some(&(t, _)) = dp.get(id.as_str()) {
+                            if t > best_time {
+                                best_time = t;
+                                best_pred = Some(id.as_str());
+                            }
+                        }
+                    }
+                }
+            }
 
             let total = best_time + node_time;
-            let pred = if best_pred.is_empty() {
-                None
-            } else {
-                Some(best_pred)
-            };
-            dp.insert(name.as_str(), (total, pred));
+            dp.insert(node_id.as_str(), (total, best_pred));
         }
 
         // Find the endpoint with the longest path
@@ -233,7 +337,10 @@ impl ModuleGraph {
         while let Some(name) = queue.pop_front() {
             if set.insert(name.clone()) {
                 for dep in self.dependents(&name) {
-                    queue.push_back(dep.to_string());
+                    // Use the module name, not the node ID
+                    if let Some(dep_node) = self.nodes.get(dep) {
+                        queue.push_back(dep_node.name.clone());
+                    }
                 }
             }
         }
@@ -252,13 +359,16 @@ impl Default for ModuleGraph {
 mod tests {
     use super::*;
 
+    /// Helper: create a node keyed by module name (single-TU-per-module style).
     fn make_node(name: &str, imports: &[&str]) -> ModuleNode {
         ModuleNode {
+            id: name.to_string(),
             name: name.to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from(format!("src/{}.cppm", name)),
             package: "test".to_string(),
             imports: imports.iter().map(|s| s.to_string()).collect(),
+            partition_of: None,
         }
     }
 
@@ -419,9 +529,7 @@ mod tests {
     #[test]
     fn test_validate_self_import() {
         let mut graph = ModuleGraph::new();
-        let mut node = make_node("a", &["a"]);
-        node.imports = vec!["a".to_string()];
-        graph.add_node(node);
+        graph.add_node(make_node("a", &["a"]));
 
         let result = graph.validate();
         assert!(result.is_err());
@@ -434,16 +542,15 @@ mod tests {
     fn test_validate_duplicate_interface_units() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "src/a.cppm".to_string(),
             name: "mymod".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/a.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
-        // Adding same name again replaces in BTreeMap, so we test via validate
-        // The duplicate check is actually at the graph level - the BTreeMap prevents
-        // true duplicates, but the interface check ensures the graph is well-formed.
-        // Here we verify that a single interface validates OK.
+        // Single interface validates OK.
         assert!(graph.validate().is_ok());
     }
 
@@ -463,5 +570,165 @@ mod tests {
     fn test_default() {
         let graph = ModuleGraph::default();
         assert!(graph.nodes.is_empty());
+    }
+
+    // ── Multi-TU tests (new for Phase 1.5) ─────────────────────
+
+    #[test]
+    fn test_multi_tu_interface_and_impl() {
+        let mut graph = ModuleGraph::new();
+
+        // Interface unit
+        graph.add_node(ModuleNode {
+            id: "src/lib.cppm".to_string(),
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/lib.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+            partition_of: None,
+        });
+
+        // Implementation unit (imports its own interface)
+        graph.add_node(ModuleNode {
+            id: "src/lib.cpp".to_string(),
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::ImplementationUnit,
+            source: PathBuf::from("src/lib.cpp"),
+            package: "test".to_string(),
+            imports: vec!["mymod".to_string()],
+            partition_of: None,
+        });
+
+        // Both nodes should exist (no collision)
+        assert_eq!(graph.nodes.len(), 2);
+        assert!(graph.validate().is_ok());
+
+        let order = graph.topological_order().unwrap();
+        assert_eq!(order.len(), 2);
+        // Interface should come before implementation
+        let iface_pos = order.iter().position(|n| n == "src/lib.cppm").unwrap();
+        let impl_pos = order.iter().position(|n| n == "src/lib.cpp").unwrap();
+        assert!(iface_pos < impl_pos);
+    }
+
+    #[test]
+    fn test_duplicate_interface_detected() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            id: "src/a.cppm".to_string(),
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/a.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+            partition_of: None,
+        });
+        graph.add_node(ModuleNode {
+            id: "src/b.cppm".to_string(),
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/b.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+            partition_of: None,
+        });
+
+        let result = graph.validate();
+        assert!(result.is_err());
+        if let Err(CmodError::ModuleScanFailed { reason }) = result {
+            assert!(reason.contains("duplicate interface unit"));
+        }
+    }
+
+    #[test]
+    fn test_partitions_with_owning_module() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            id: "src/ops.cppm".to_string(),
+            name: "math:ops".to_string(),
+            kind: ModuleUnitKind::PartitionUnit,
+            source: PathBuf::from("src/ops.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+            partition_of: Some("math".to_string()),
+        });
+        graph.add_node(ModuleNode {
+            id: "src/math.cppm".to_string(),
+            name: "math".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/math.cppm"),
+            package: "test".to_string(),
+            imports: vec!["math:ops".to_string()],
+            partition_of: None,
+        });
+
+        assert!(graph.validate().is_ok());
+
+        let partitions = graph.partitions_of("math");
+        assert_eq!(partitions.len(), 1);
+        assert_eq!(partitions[0].name, "math:ops");
+    }
+
+    #[test]
+    fn test_interface_for_and_implementations_for() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            id: "src/lib.cppm".to_string(),
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/lib.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+            partition_of: None,
+        });
+        graph.add_node(ModuleNode {
+            id: "src/impl1.cpp".to_string(),
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::ImplementationUnit,
+            source: PathBuf::from("src/impl1.cpp"),
+            package: "test".to_string(),
+            imports: vec!["mymod".to_string()],
+            partition_of: None,
+        });
+        graph.add_node(ModuleNode {
+            id: "src/impl2.cpp".to_string(),
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::ImplementationUnit,
+            source: PathBuf::from("src/impl2.cpp"),
+            package: "test".to_string(),
+            imports: vec!["mymod".to_string()],
+            partition_of: None,
+        });
+
+        assert!(graph.interface_for("mymod").is_some());
+        assert_eq!(graph.implementations_for("mymod").len(), 2);
+    }
+
+    #[test]
+    fn test_module_names() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            id: "src/lib.cppm".to_string(),
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/lib.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+            partition_of: None,
+        });
+        graph.add_node(ModuleNode {
+            id: "src/lib.cpp".to_string(),
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::ImplementationUnit,
+            source: PathBuf::from("src/lib.cpp"),
+            package: "test".to_string(),
+            imports: vec!["mymod".to_string()],
+            partition_of: None,
+        });
+
+        let names = graph.module_names();
+        assert_eq!(names.len(), 1);
+        assert!(names.contains("mymod"));
     }
 }

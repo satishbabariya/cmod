@@ -171,6 +171,14 @@ impl Dependency {
         matches!(self, Dependency::Detailed(d) if d.path.is_some())
     }
 
+    /// Extract the local path, if this is a path dependency.
+    pub fn path(&self) -> Option<&std::path::Path> {
+        match self {
+            Dependency::Detailed(d) => d.path.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Check whether this is a workspace dependency reference.
     pub fn is_workspace(&self) -> bool {
         matches!(self, Dependency::Detailed(d) if d.workspace)

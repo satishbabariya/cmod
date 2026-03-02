@@ -21,11 +21,13 @@ pub fn run(module_name: String, verbose: bool) -> Result<(), CmodError> {
             if name == module_name {
                 let kind = runner::classify_source(source)?;
                 found_node = Some(ModuleNode {
+                    id: name.clone(),
                     name: name.clone(),
                     kind,
                     source: source.clone(),
                     package: config.manifest.package.name.clone(),
                     imports: vec![],
+                    partition_of: None,
                 });
                 break;
             }
@@ -35,11 +37,13 @@ pub fn run(module_name: String, verbose: bool) -> Result<(), CmodError> {
             if stem == module_name {
                 let kind = runner::classify_source(source)?;
                 found_node = Some(ModuleNode {
+                    id: module_name.clone(),
                     name: module_name.clone(),
                     kind,
                     source: source.clone(),
                     package: config.manifest.package.name.clone(),
                     imports: vec![],
+                    partition_of: None,
                 });
                 break;
             }

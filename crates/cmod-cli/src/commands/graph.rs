@@ -352,16 +352,21 @@ fn build_module_graph(
 
         let imports = extract_imports(source)?;
 
+        let partition_of = runner::extract_partition_owner(source)?;
+        let node_id = source.display().to_string();
+
         graph.add_node(ModuleNode {
+            id: node_id,
             name: module_name,
             kind,
             source: source.clone(),
             package: package_name.to_string(),
             imports,
+            partition_of,
         });
     }
 
-    let known: BTreeSet<String> = graph.nodes.keys().cloned().collect();
+    let known = graph.module_names();
     for node in graph.nodes.values_mut() {
         node.imports.retain(|imp| known.contains(imp));
     }
@@ -400,18 +405,22 @@ mod tests {
     fn make_graph() -> ModuleGraph {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "base".to_string(),
             name: "base".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/base.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
         graph.add_node(ModuleNode {
+            id: "app".to_string(),
             name: "app".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/app.cppm"),
             package: "test".to_string(),
             imports: vec!["base".to_string()],
+            partition_of: None,
         });
         graph
     }

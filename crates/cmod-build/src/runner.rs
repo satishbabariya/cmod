@@ -876,20 +876,62 @@ pub fn discover_sources(src_dir: &Path) -> Result<Vec<PathBuf>, CmodError> {
 
 /// Classify a source file as a module interface or implementation based on content.
 ///
-/// Scans the first few lines for `export module` declaration.
+/// Scans the entire file for module declarations, skipping comments and
+/// preprocessor blocks. Handles the global module fragment (`module;`).
 pub fn classify_source(path: &Path) -> Result<cmod_core::types::ModuleUnitKind, CmodError> {
     let content = fs::read_to_string(path)?;
 
-    for line in content.lines().take(50) {
+    let mut in_block_comment = false;
+
+    for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("export module") {
-            if trimmed.contains(':') {
-                return Ok(cmod_core::types::ModuleUnitKind::PartitionUnit);
+
+        // Handle block comments
+        if in_block_comment {
+            if let Some(pos) = trimmed.find("*/") {
+                // Rest of the line after the block comment end
+                let rest = trimmed[pos + 2..].trim();
+                in_block_comment = false;
+                if rest.is_empty() {
+                    continue;
+                }
+                // Process the rest below
+                return classify_line(rest);
             }
-            return Ok(cmod_core::types::ModuleUnitKind::InterfaceUnit);
+            continue;
         }
-        if trimmed.starts_with("module") && !trimmed.starts_with("module;") {
-            return Ok(cmod_core::types::ModuleUnitKind::ImplementationUnit);
+
+        // Skip empty lines
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Skip line comments
+        if trimmed.starts_with("//") {
+            continue;
+        }
+
+        // Start of block comment
+        if trimmed.starts_with("/*") {
+            if !trimmed.contains("*/") {
+                in_block_comment = true;
+            }
+            continue;
+        }
+
+        // Skip preprocessor directives
+        if trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Global module fragment: `module;` is NOT a module declaration —
+        // it's the start of a global module fragment. Continue scanning.
+        if trimmed == "module;" {
+            continue;
+        }
+
+        if let Ok(kind) = classify_line(trimmed) {
+            return Ok(kind);
         }
     }
 
@@ -897,14 +939,64 @@ pub fn classify_source(path: &Path) -> Result<cmod_core::types::ModuleUnitKind, 
     Ok(cmod_core::types::ModuleUnitKind::LegacyUnit)
 }
 
-/// Extract the module name from an `export module ...;` declaration.
+/// Classify a single non-comment, non-empty line.
+fn classify_line(trimmed: &str) -> Result<cmod_core::types::ModuleUnitKind, CmodError> {
+    if trimmed.starts_with("export module") {
+        if trimmed.contains(':') {
+            return Ok(cmod_core::types::ModuleUnitKind::PartitionUnit);
+        }
+        return Ok(cmod_core::types::ModuleUnitKind::InterfaceUnit);
+    }
+    // `module foo;` — implementation unit (but not `module;` which is global module fragment)
+    if trimmed.starts_with("module ") {
+        let rest = trimmed.strip_prefix("module").unwrap().trim();
+        if !rest.is_empty() && rest.ends_with(';') {
+            return Ok(cmod_core::types::ModuleUnitKind::ImplementationUnit);
+        }
+    }
+    Err(CmodError::Other("not a module declaration".to_string()))
+}
+
+/// Extract the module name from an `export module ...;` or `module ...;` declaration.
+///
+/// Skips comments and the global module fragment (`module;`).
 pub fn extract_module_name(path: &Path) -> Result<Option<String>, CmodError> {
     let content = fs::read_to_string(path)?;
+    extract_module_name_from_content(&content)
+}
+
+/// Extract module name from source content (testable without filesystem).
+pub fn extract_module_name_from_content(content: &str) -> Result<Option<String>, CmodError> {
+    let mut in_block_comment = false;
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("export module") || trimmed.starts_with("module") {
-            // Parse: `export module foo.bar;` or `export module foo:partition;`
+
+        // Handle block comments
+        if in_block_comment {
+            if trimmed.contains("*/") {
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if trimmed.starts_with("/*") {
+            if !trimmed.contains("*/") {
+                in_block_comment = true;
+            }
+            continue;
+        }
+
+        // Skip global module fragment
+        if trimmed == "module;" {
+            continue;
+        }
+
+        if trimmed.starts_with("export module") || trimmed.starts_with("module ") {
             let decl = trimmed
                 .trim_start_matches("export")
                 .trim()
@@ -918,6 +1010,21 @@ pub fn extract_module_name(path: &Path) -> Result<Option<String>, CmodError> {
         }
     }
 
+    Ok(None)
+}
+
+/// Extract the owning module for a partition declaration.
+///
+/// For `export module foo:bar;`, returns `Some("foo")`.
+/// For `export module foo;` or non-partition TUs, returns `None`.
+pub fn extract_partition_owner(path: &Path) -> Result<Option<String>, CmodError> {
+    let content = fs::read_to_string(path)?;
+    if let Some(module_name) = extract_module_name_from_content(&content)? {
+        if module_name.contains(':') {
+            // "foo:bar" → owner is "foo"
+            return Ok(module_name.split(':').next().map(|s| s.to_string()));
+        }
+    }
     Ok(None)
 }
 
@@ -1109,5 +1216,105 @@ mod tests {
 
         let kind = classify_source(&file).unwrap();
         assert_eq!(kind, cmod_core::types::ModuleUnitKind::InterfaceUnit);
+    }
+
+    // ── Phase 1.5: Robust classification tests ─────────────────
+
+    #[test]
+    fn test_classify_after_block_comment() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.cppm");
+        fs::write(
+            &file,
+            "/* This is a long\n * multi-line comment\n * that goes on\n */\nexport module mymod;\n",
+        )
+        .unwrap();
+
+        let kind = classify_source(&file).unwrap();
+        assert_eq!(kind, cmod_core::types::ModuleUnitKind::InterfaceUnit);
+    }
+
+    #[test]
+    fn test_classify_global_module_fragment() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.cppm");
+        // Global module fragment pattern: `module;` followed by `export module`
+        fs::write(&file, "module;\n#include <cassert>\nexport module mymod;\n").unwrap();
+
+        let kind = classify_source(&file).unwrap();
+        assert_eq!(kind, cmod_core::types::ModuleUnitKind::InterfaceUnit);
+    }
+
+    #[test]
+    fn test_classify_after_preprocessor_blocks() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.cppm");
+        fs::write(
+            &file,
+            "#pragma once\n#ifdef __linux__\n#endif\nexport module mymod;\n",
+        )
+        .unwrap();
+
+        let kind = classify_source(&file).unwrap();
+        assert_eq!(kind, cmod_core::types::ModuleUnitKind::InterfaceUnit);
+    }
+
+    #[test]
+    fn test_classify_module_after_many_comment_lines() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("test.cppm");
+        // 100 comment lines followed by the module declaration
+        let mut content = String::new();
+        for i in 0..100 {
+            content.push_str(&format!("// Comment line {}\n", i));
+        }
+        content.push_str("export module mymod;\n");
+        fs::write(&file, &content).unwrap();
+
+        let kind = classify_source(&file).unwrap();
+        assert_eq!(kind, cmod_core::types::ModuleUnitKind::InterfaceUnit);
+    }
+
+    #[test]
+    fn test_extract_partition_owner() {
+        let tmp = TempDir::new().unwrap();
+
+        // Partition
+        let file = tmp.path().join("ops.cppm");
+        fs::write(&file, "export module math:ops;\n").unwrap();
+        let owner = extract_partition_owner(&file).unwrap();
+        assert_eq!(owner, Some("math".to_string()));
+
+        // Non-partition
+        let file2 = tmp.path().join("math.cppm");
+        fs::write(&file2, "export module math;\n").unwrap();
+        let owner2 = extract_partition_owner(&file2).unwrap();
+        assert_eq!(owner2, None);
+
+        // Legacy
+        let file3 = tmp.path().join("main.cpp");
+        fs::write(&file3, "int main() {}\n").unwrap();
+        let owner3 = extract_partition_owner(&file3).unwrap();
+        assert_eq!(owner3, None);
+    }
+
+    #[test]
+    fn test_extract_module_name_from_content() {
+        assert_eq!(
+            extract_module_name_from_content("export module foo.bar;\n").unwrap(),
+            Some("foo.bar".to_string())
+        );
+        assert_eq!(
+            extract_module_name_from_content("module impl_mod;\nvoid f() {}\n").unwrap(),
+            Some("impl_mod".to_string())
+        );
+        assert_eq!(
+            extract_module_name_from_content("// comment\nmodule;\nexport module real;\n").unwrap(),
+            Some("real".to_string())
+        );
+        assert_eq!(
+            extract_module_name_from_content("int main() {}\n").unwrap(),
+            None
+        );
     }
 }
