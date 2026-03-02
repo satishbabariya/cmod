@@ -1,0 +1,52 @@
+name: Bug Report
+description: Report a bug in cmod
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Run `cmod init`
+        2. Run `cmod add ...`
+        3. Run `cmod build`
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Your system details.
+      placeholder: |
+        - OS: macOS 14.0 / Ubuntu 22.04 / etc.
+        - cmod version: 0.1.0
+        - Rust version: 1.74
+        - Clang version: 17.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Error Output
+      description: Paste any relevant output from `cmod --verbose`.
+      render: shell
