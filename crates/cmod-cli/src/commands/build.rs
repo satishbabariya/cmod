@@ -10,6 +10,7 @@ use cmod_resolver::Resolver;
 use cmod_workspace::WorkspaceManager;
 
 /// Run `cmod build` — build the current module or workspace.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     release: bool,
     locked: bool,
@@ -165,6 +166,7 @@ fn make_remote_cache(
 }
 
 /// Build a single module project.
+#[allow(clippy::too_many_arguments)]
 fn build_module(
     config: &Config,
     verbose: bool,
@@ -324,10 +326,7 @@ fn build_workspace(
                 if pcm_dir.exists() {
                     for source in &sources {
                         if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
-                            let sanitized = mod_name
-                                .replace('.', "_")
-                                .replace(':', "_")
-                                .replace('/', "_");
+                            let sanitized = mod_name.replace(['.', ':', '/'], "_");
                             let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
                             if pcm_path.exists() {
                                 workspace_pcm_paths.insert(mod_name, pcm_path);

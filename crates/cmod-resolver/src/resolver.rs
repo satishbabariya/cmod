@@ -113,6 +113,7 @@ impl Resolver {
     }
 
     /// Resolve all dependencies with feature flags and target-specific filtering.
+    #[allow(clippy::too_many_arguments)]
     pub fn resolve_with_target(
         &mut self,
         manifest: &Manifest,
@@ -426,7 +427,7 @@ impl Resolver {
         for (name, dep) in &manifest.dependencies {
             let locked = lockfile
                 .find_package(name)
-                .ok_or_else(|| CmodError::LockfileOutdated)?;
+                .ok_or(CmodError::LockfileOutdated)?;
 
             if let Some(req_str) = dep.version_req() {
                 let req = version::parse_version_req(req_str)?;
@@ -443,7 +444,7 @@ impl Resolver {
     /// Compute the local directory for a dependency's repo clone.
     fn dep_repo_dir(&self, name: &str) -> PathBuf {
         // Sanitize the name for filesystem use
-        let sanitized = name.replace('/', "_").replace('\\', "_");
+        let sanitized = name.replace(['/', '\\'], "_");
         self.deps_dir.join(sanitized)
     }
 
@@ -605,7 +606,7 @@ impl Resolver {
         }
 
         // Check for mixed ABI (itanium + msvc) in the dependency graph
-        if let Some(ref compat) = project_compat {
+        if let Some(compat) = project_compat {
             if let Some(ref project_abi_variant) = compat.abi {
                 let project_abi_str = format!("{:?}", project_abi_variant).to_lowercase();
                 for pkg in &lockfile.packages {

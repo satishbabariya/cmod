@@ -131,10 +131,7 @@ pub fn run(
         if let Ok(sources) = cmod_build::runner::discover_sources(&src_dir) {
             for source in &sources {
                 if let Ok(Some(mod_name)) = cmod_build::runner::extract_module_name(source) {
-                    let sanitized = mod_name
-                        .replace('.', "_")
-                        .replace(':', "_")
-                        .replace('/', "_");
+                    let sanitized = mod_name.replace(['.', ':', '/'], "_");
                     name_map.insert(sanitized, mod_name);
                 }
             }

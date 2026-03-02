@@ -173,8 +173,7 @@ impl BuildRunner {
         graph.validate()?;
 
         // Generate the build plan
-        let plan =
-            BuildPlan::from_graph(graph, &build_dir.to_path_buf(), target, profile, build_type)?;
+        let plan = BuildPlan::from_graph(graph, build_dir, target, profile, build_type)?;
 
         // Ensure output directories exist
         fs::create_dir_all(build_dir.join("pcm"))?;
@@ -195,8 +194,7 @@ impl BuildRunner {
         build_type: BuildType,
     ) -> Result<(PathBuf, BuildStats), CmodError> {
         graph.validate()?;
-        let plan =
-            BuildPlan::from_graph(graph, &build_dir.to_path_buf(), target, profile, build_type)?;
+        let plan = BuildPlan::from_graph(graph, build_dir, target, profile, build_type)?;
         fs::create_dir_all(build_dir.join("pcm"))?;
         fs::create_dir_all(build_dir.join("obj"))?;
         self.execute_plan(&plan)
@@ -864,13 +862,10 @@ pub fn discover_sources(src_dir: &Path) -> Result<Vec<PathBuf>, CmodError> {
     {
         let path = entry.path();
         if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                match ext {
-                    "cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx" => {
-                        sources.push(path.to_path_buf());
-                    }
-                    _ => {}
-                }
+            if let Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx") =
+                path.extension().and_then(|e| e.to_str())
+            {
+                sources.push(path.to_path_buf());
             }
         }
     }

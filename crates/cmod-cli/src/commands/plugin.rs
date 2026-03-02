@@ -26,6 +26,7 @@ pub struct PluginRequest {
 
 /// A response from a plugin via stdout.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct PluginResponse {
     pub status: String,
     #[serde(default)]
@@ -107,15 +108,13 @@ pub fn run_plugin(name: &str, verbose: bool) -> Result<(), CmodError> {
     // Read response
     if let Some(stdout) = child.stdout.take() {
         let reader = std::io::BufReader::new(stdout);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(resp) = serde_json::from_str::<PluginResponse>(&line) {
-                    if let Some(msg) = resp.message {
-                        eprintln!("  [{}] {}", plugin.name, msg);
-                    }
-                } else {
-                    eprintln!("  [{}] {}", plugin.name, line);
+        for line in reader.lines().map_while(Result::ok) {
+            if let Ok(resp) = serde_json::from_str::<PluginResponse>(&line) {
+                if let Some(msg) = resp.message {
+                    eprintln!("  [{}] {}", plugin.name, msg);
                 }
+            } else {
+                eprintln!("  [{}] {}", plugin.name, line);
             }
         }
     }

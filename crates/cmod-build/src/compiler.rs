@@ -137,7 +137,7 @@ impl CompilerBackend for ClangBackend {
         let output = Command::new(&self.scan_deps_path)
             .arg("--format=p1689")
             .arg("--")
-            .args(&self.common_flags())
+            .args(self.common_flags())
             .arg(source)
             .output()
             .map_err(|e| CmodError::ModuleScanFailed {
@@ -167,7 +167,7 @@ impl CompilerBackend for ClangBackend {
         dep_pcms: &[(&str, &Path)],
     ) -> Result<(), CmodError> {
         let mut cmd = Command::new(&self.clang_path);
-        cmd.args(&self.common_flags());
+        cmd.args(self.common_flags());
 
         // Add dependency PCM references
         for (name, pcm_path) in dep_pcms {
@@ -176,7 +176,7 @@ impl CompilerBackend for ClangBackend {
 
         // First pass: compile to PCM
         let pcm_status = Command::new(&self.clang_path)
-            .args(&self.common_flags())
+            .args(self.common_flags())
             .args(
                 dep_pcms
                     .iter()
@@ -200,7 +200,7 @@ impl CompilerBackend for ClangBackend {
         // Second pass: PCM to object file
         // Dependency PCMs are still needed for modules that import other modules
         let obj_status = Command::new(&self.clang_path)
-            .args(&self.common_flags())
+            .args(self.common_flags())
             .args(
                 dep_pcms
                     .iter()
@@ -231,7 +231,7 @@ impl CompilerBackend for ClangBackend {
         dep_pcms: &[(&str, &Path)],
     ) -> Result<(), CmodError> {
         let status = Command::new(&self.clang_path)
-            .args(&self.common_flags())
+            .args(self.common_flags())
             .args(
                 dep_pcms
                     .iter()
@@ -257,7 +257,7 @@ impl CompilerBackend for ClangBackend {
 
     fn link(&self, objects: &[&Path], output: &Path, artifact: &Artifact) -> Result<(), CmodError> {
         let mut cmd = Command::new(&self.clang_path);
-        cmd.args(&self.common_flags());
+        cmd.args(self.common_flags());
 
         match artifact {
             Artifact::StaticLib { .. } => {

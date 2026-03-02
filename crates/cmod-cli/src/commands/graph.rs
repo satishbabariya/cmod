@@ -193,6 +193,7 @@ fn print_ascii(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_ascii_node(
     graph: &ModuleGraph,
     name: &str,

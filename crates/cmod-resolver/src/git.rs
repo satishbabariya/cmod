@@ -133,8 +133,7 @@ pub fn commit_date(repo: &Repository, oid: Oid) -> Result<String, CmodError> {
 
     let time = commit.time();
     let secs = time.seconds();
-    let dt =
-        chrono::DateTime::from_timestamp(secs, 0).unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
+    let dt = chrono::DateTime::from_timestamp(secs, 0).unwrap_or(chrono::DateTime::UNIX_EPOCH);
     Ok(dt.format("%Y%m%d").to_string())
 }
 

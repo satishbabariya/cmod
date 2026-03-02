@@ -95,6 +95,7 @@ impl Lockfile {
     }
 
     /// Parse a lockfile from a TOML string.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(content: &str) -> Result<Self, CmodError> {
         toml::from_str(content).map_err(|e| CmodError::LockfileIntegrity {
             reason: e.to_string(),

@@ -87,6 +87,7 @@ pub fn run(
 }
 
 /// Resolve dependencies for a workspace (all members share one lockfile).
+#[allow(clippy::too_many_arguments)]
 fn resolve_workspace(
     config: &Config,
     locked: bool,

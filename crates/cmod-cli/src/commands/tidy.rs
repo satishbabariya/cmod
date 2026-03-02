@@ -78,25 +78,22 @@ fn collect_all_imports(src_dir: &Path) -> Result<BTreeSet<String>, CmodError> {
         if !path.is_file() {
             continue;
         }
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            match ext {
-                "cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx" => {
-                    let content = fs::read_to_string(path)?;
-                    for line in content.lines() {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with("import ") && trimmed.ends_with(';') {
-                            let module_name = trimmed
-                                .trim_start_matches("import ")
-                                .trim_end_matches(';')
-                                .trim();
-                            // Skip header unit imports
-                            if !module_name.starts_with('<') && !module_name.starts_with('"') {
-                                imports.insert(module_name.to_string());
-                            }
-                        }
+        if let Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx") =
+            path.extension().and_then(|e| e.to_str())
+        {
+            let content = fs::read_to_string(path)?;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("import ") && trimmed.ends_with(';') {
+                    let module_name = trimmed
+                        .trim_start_matches("import ")
+                        .trim_end_matches(';')
+                        .trim();
+                    // Skip header unit imports
+                    if !module_name.starts_with('<') && !module_name.starts_with('"') {
+                        imports.insert(module_name.to_string());
                     }
                 }
-                _ => {}
             }
         }
     }

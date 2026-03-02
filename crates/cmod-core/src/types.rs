@@ -40,7 +40,7 @@ impl ModuleId {
         let rest: Vec<&str> = parts[1..].to_vec();
 
         let module_name = std::iter::once(host)
-            .chain(rest.into_iter())
+            .chain(rest)
             .collect::<Vec<&str>>()
             .join(".");
 
@@ -82,49 +82,34 @@ pub enum ModuleUnitKind {
 }
 
 /// Build output type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BuildType {
+    #[default]
     Binary,
     StaticLib,
     SharedLib,
 }
 
-impl Default for BuildType {
-    fn default() -> Self {
-        BuildType::Binary
-    }
-}
-
 /// Build optimization profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OptimizationLevel {
+    #[default]
     Debug,
     Release,
     Size,
     Speed,
 }
 
-impl Default for OptimizationLevel {
-    fn default() -> Self {
-        OptimizationLevel::Debug
-    }
-}
-
 /// Supported compiler backends.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Compiler {
+    #[default]
     Clang,
     Gcc,
     Msvc,
-}
-
-impl Default for Compiler {
-    fn default() -> Self {
-        Compiler::Clang
-    }
 }
 
 impl fmt::Display for Compiler {
@@ -183,17 +168,12 @@ pub enum NodeKind {
 }
 
 /// Build profile (debug/release).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Profile {
+    #[default]
     Debug,
     Release,
-}
-
-impl Default for Profile {
-    fn default() -> Self {
-        Profile::Debug
-    }
 }
 
 /// Resolved toolchain specification for build orchestration.

@@ -46,6 +46,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::enum_variant_names)]
 enum Commands {
     /// Initialize a new module or workspace
     Init {

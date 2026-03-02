@@ -400,6 +400,7 @@ impl Manifest {
     }
 
     /// Parse a manifest from a TOML string.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(content: &str) -> Result<Self, CmodError> {
         toml::from_str(content).map_err(|e| CmodError::InvalidManifest {
             reason: e.to_string(),

@@ -409,14 +409,14 @@ pub fn parse_ttl(ttl: &str) -> Option<Duration> {
         return None;
     }
 
-    let (num_str, suffix) = if ttl.ends_with('d') {
-        (&ttl[..ttl.len() - 1], "d")
-    } else if ttl.ends_with('h') {
-        (&ttl[..ttl.len() - 1], "h")
-    } else if ttl.ends_with('m') {
-        (&ttl[..ttl.len() - 1], "m")
-    } else if ttl.ends_with('s') {
-        (&ttl[..ttl.len() - 1], "s")
+    let (num_str, suffix) = if let Some(s) = ttl.strip_suffix('d') {
+        (s, "d")
+    } else if let Some(s) = ttl.strip_suffix('h') {
+        (s, "h")
+    } else if let Some(s) = ttl.strip_suffix('m') {
+        (s, "m")
+    } else if let Some(s) = ttl.strip_suffix('s') {
+        (s, "s")
     } else {
         // Default to seconds
         (ttl, "s")

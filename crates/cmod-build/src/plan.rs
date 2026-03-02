@@ -45,7 +45,7 @@ impl BuildPlan {
     /// Generate a build plan from a module graph and configuration.
     pub fn from_graph(
         graph: &ModuleGraph,
-        build_dir: &PathBuf,
+        build_dir: &Path,
         target: &str,
         profile: Profile,
         build_type: BuildType,
@@ -169,7 +169,7 @@ impl BuildPlan {
             profile,
             build_type,
             nodes,
-            build_dir: build_dir.clone(),
+            build_dir: build_dir.to_path_buf(),
         })
     }
 
@@ -295,7 +295,7 @@ pub struct CompileCommand {
 
 /// Sanitize a module name for use as a filename.
 fn sanitize_name(name: &str) -> String {
-    name.replace('.', "_").replace(':', "_").replace('/', "_")
+    name.replace(['.', ':', '/'], "_")
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use cmod_core::manifest::{Dependency, DetailedDependency};
 use cmod_resolver::Resolver;
 
 /// Run `cmod add <dep>` — add a dependency.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     dep: String,
     git: Option<String>,
