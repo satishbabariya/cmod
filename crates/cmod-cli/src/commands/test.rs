@@ -154,6 +154,26 @@ pub fn run(
         }
     }
 
+    // Build a set of object file names to skip — these are entry-point sources
+    // whose `main()` would conflict with the test's own `main()`.
+    // Object files can be named by module name ("main.o") or by sanitized
+    // source path ("_path_to_src_main_cpp.o"), so we check both.
+    let mut main_obj_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
+    main_obj_stems.insert("main".to_string());
+    {
+        let src_dir = config.src_dir();
+        if let Ok(sources) = cmod_build::runner::discover_sources(&src_dir) {
+            for source in &sources {
+                let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if stem == "main" {
+                    // Sanitized full-path name used by multi-TU build plan
+                    let sanitized = source.display().to_string().replace(['.', ':', '/'], "_");
+                    main_obj_stems.insert(sanitized);
+                }
+            }
+        }
+    }
+
     if obj_dir.exists() {
         if let Ok(entries) = std::fs::read_dir(&obj_dir) {
             for entry in entries.flatten() {
@@ -161,7 +181,8 @@ pub fn run(
                 if path.extension().and_then(|e| e.to_str()) == Some("o") {
                     // Skip the main entry point object file to avoid
                     // "multiple definition of main" when linking tests
-                    if path.file_stem().and_then(|s| s.to_str()) == Some("main") {
+                    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                    if main_obj_stems.contains(stem) {
                         continue;
                     }
                     obj_files.push(path.display().to_string());
