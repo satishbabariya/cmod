@@ -86,6 +86,21 @@ fn network_tests_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Build a `file://` URL from a local path.
+///
+/// On Windows, `Path::display()` emits backslashes, giving an invalid URL
+/// like `file://C:\foo`. Git and libgit2 require forward slashes and a
+/// three-slash authority: `file:///C:/foo`.
+fn local_file_url(path: &Path) -> String {
+    let s = path.to_string_lossy().replace('\\', "/");
+    if s.starts_with('/') {
+        format!("file://{}", s)
+    } else {
+        // Windows absolute path like "C:/..." needs an extra slash
+        format!("file:///{}", s)
+    }
+}
+
 /// Create a local Git repository with files and tagged commits.
 ///
 /// `tags` is a list of (tag_name, files_to_add_or_modify) pairs.
@@ -1600,7 +1615,7 @@ fn test_real_git_local_repo_semver_resolve() {
     assert!(output.status.success());
 
     // Add the local repo as a dependency using file:// URL with semver constraint
-    let dep_url = format!("file://{}", dep_dir.display());
+    let dep_url = local_file_url(&dep_dir);
     let output = run_cmod(
         &proj_dir,
         &["add", "mymath@^1.0", "--git", &dep_url, "--untrusted"],
@@ -1690,7 +1705,7 @@ fn test_real_git_local_repo_branch_resolve() {
     let output = run_cmod(&proj_dir, &["init", "--name", "branchclient"]);
     assert!(output.status.success());
 
-    let dep_url = format!("file://{}", dep_dir.display());
+    let dep_url = local_file_url(&dep_dir);
     let output = run_cmod(
         &proj_dir,
         &[
@@ -1755,7 +1770,7 @@ fn test_real_git_local_repo_rev_resolve() {
     let output = run_cmod(&proj_dir, &["init", "--name", "revclient"]);
     assert!(output.status.success());
 
-    let dep_url = format!("file://{}", dep_dir.display());
+    let dep_url = local_file_url(&dep_dir);
     let output = run_cmod(
         &proj_dir,
         &[
@@ -1817,7 +1832,7 @@ fn test_real_git_update_resolves_new_tags() {
     let output = run_cmod(&proj_dir, &["init", "--name", "updclient"]);
     assert!(output.status.success());
 
-    let dep_url = format!("file://{}", dep_dir.display());
+    let dep_url = local_file_url(&dep_dir);
     run_cmod(
         &proj_dir,
         &["add", "updlib", "--git", &dep_url, "--untrusted"],
