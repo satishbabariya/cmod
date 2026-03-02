@@ -59,9 +59,9 @@ jobs:
         run: |
           brew install llvm
           echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
-      - name: Install LLVM (Windows)
+      - name: Verify LLVM (Windows)
         if: runner.os == 'Windows'
-        run: choco install llvm --version=${{ env.LLVM_VERSION }}.0.6
+        run: clang++ --version
       - run: cargo test --all
 
   # Run integration and E2E tests that exercise real C++ compilation.
