@@ -64,8 +64,12 @@ impl ClangBackend {
     /// Create a new Clang backend with default paths.
     pub fn new(cxx_standard: &str, profile: Profile) -> Self {
         ClangBackend {
-            clang_path: std::env::var_os("CXX").map(PathBuf::from).unwrap_or_else(|| find_executable("clang++")),
-            scan_deps_path: std::env::var_os("SCAN_DEPS").map(PathBuf::from).unwrap_or_else(|| find_executable("clang-scan-deps")),
+            clang_path: std::env::var_os("CXX")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| find_executable("clang++")),
+            scan_deps_path: std::env::var_os("SCAN_DEPS")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| find_executable("clang-scan-deps")),
             cxx_standard: cxx_standard.to_string(),
             stdlib: None,
             target: None,

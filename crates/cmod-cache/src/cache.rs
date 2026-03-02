@@ -182,9 +182,7 @@ impl ArtifactCache {
                     Ok(()) => {}
                     // ENOTEMPTY (66 on macOS, 39 on Linux): transient race
                     // with OS file-system services — safe to ignore.
-                    Err(ref e)
-                        if e.raw_os_error() == Some(66)
-                            || e.raw_os_error() == Some(39) => {}
+                    Err(ref e) if e.raw_os_error() == Some(66) || e.raw_os_error() == Some(39) => {}
                     Err(e) => return Err(e.into()),
                 }
             }
