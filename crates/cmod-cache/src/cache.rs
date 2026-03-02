@@ -165,8 +165,19 @@ impl ArtifactCache {
     /// Clear the entire cache.
     pub fn clean(&self) -> Result<(), CmodError> {
         if self.root.exists() {
-            fs::remove_dir_all(&self.root)?;
-            fs::create_dir_all(&self.root)?;
+            // Remove contents rather than the root directory itself.
+            // Removing and recreating the root can fail on macOS when
+            // Spotlight or other services create files (e.g. .DS_Store)
+            // between the recursive delete and the final rmdir.
+            for entry in fs::read_dir(&self.root)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    fs::remove_dir_all(&path)?;
+                } else {
+                    fs::remove_file(&path)?;
+                }
+            }
         }
         Ok(())
     }
