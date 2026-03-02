@@ -24,6 +24,7 @@ pub fn run(
     timings: bool,
     features: &[String],
     no_default_features: bool,
+    no_cache: bool,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
@@ -56,7 +57,7 @@ pub fn run(
 
     // Check if this is a workspace build
     if config.manifest.is_workspace() {
-        return build_workspace(&config, verbose, jobs, force, &effective_remote_url, timings);
+        return build_workspace(&config, verbose, jobs, force, &effective_remote_url, timings, no_cache);
     }
 
     eprintln!(
@@ -101,7 +102,7 @@ pub fn run(
     let activated_features = resolve_build_features(&config.manifest, features, no_default_features);
 
     // Step 3: Build the single module
-    let result = build_module(&config, verbose, jobs, force, &effective_remote_url, timings, &activated_features);
+    let result = build_module(&config, verbose, jobs, force, &effective_remote_url, timings, &activated_features, no_cache);
 
     // Step 4: Run post-build hook (only on success)
     if result.is_ok() && !no_hooks {
@@ -121,7 +122,7 @@ fn make_remote_cache(url: &Option<String>, verbose: bool) -> Option<Box<dyn cmod
 }
 
 /// Build a single module project.
-fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>, timings: bool, activated_features: &[String]) -> Result<(), CmodError> {
+fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>, timings: bool, activated_features: &[String], no_cache: bool) -> Result<(), CmodError> {
     // Discover source files
     let src_dir = config.src_dir();
     let sources = runner::discover_sources(&src_dir)?;
@@ -167,7 +168,8 @@ fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote
 
     let mut runner = BuildRunner::new(backend, Some(cache))
         .with_jobs(jobs)
-        .with_force(force);
+        .with_force(force)
+        .with_no_cache(no_cache);
 
     if let Some(remote) = make_remote_cache(remote_url, verbose) {
         runner = runner.with_remote_cache(remote);
@@ -185,7 +187,7 @@ fn build_module(config: &Config, verbose: bool, jobs: usize, force: bool, remote
 }
 
 /// Build all members of a workspace.
-fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>, timings: bool) -> Result<(), CmodError> {
+fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, remote_url: &Option<String>, timings: bool, no_cache: bool) -> Result<(), CmodError> {
     let ws = WorkspaceManager::load(&config.root)?;
 
     eprintln!(
@@ -241,6 +243,7 @@ fn build_workspace(config: &Config, verbose: bool, jobs: usize, force: bool, rem
         let mut runner_instance = BuildRunner::new(backend, Some(cache))
             .with_jobs(jobs)
             .with_force(force)
+            .with_no_cache(no_cache)
             .with_extra_pcm_paths(workspace_pcm_paths.clone())
             .with_extra_obj_paths(workspace_obj_paths.clone());
         if let Some(remote) = make_remote_cache(remote_url, verbose) {

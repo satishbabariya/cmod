@@ -382,10 +382,10 @@ fn main() {
             cli.untrusted,
         ),
         Commands::Build { release, jobs, force, remote_cache, no_hooks, verify, timings } => {
-            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache, no_hooks, verify, timings, &cli.features, cli.no_default_features)
+            commands::build::run(release, cli.locked, cli.offline, cli.verbose, cli.target, jobs, force, remote_cache, no_hooks, verify, timings, &cli.features, cli.no_default_features, cli.no_cache)
         }
         Commands::Test { release } => {
-            commands::test::run(release, cli.locked, cli.offline, cli.verbose, cli.target)
+            commands::test::run(release, cli.locked, cli.offline, cli.verbose, cli.target, cli.no_cache)
         }
         Commands::Update { name, patch } => commands::update::run(name, patch, cli.verbose),
         Commands::Deps { tree, why, conflicts } => commands::deps::run(tree, why, conflicts),
@@ -411,7 +411,7 @@ fn main() {
         Commands::Lint => commands::lint::run(cli.verbose),
         Commands::Fmt { check } => commands::fmt::run(check, cli.verbose),
         Commands::Search { query } => commands::search::run(&query, cli.verbose),
-        Commands::Run { release, args } => commands::run::run(release, args, cli.verbose),
+        Commands::Run { release, args } => commands::run::run(release, args, cli.verbose, cli.no_cache),
         Commands::Clean => commands::clean::run(cli.verbose),
         Commands::Workspace { action } => match action {
             WorkspaceAction::List => commands::workspace::list(cli.verbose),

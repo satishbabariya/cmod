@@ -100,6 +100,12 @@ impl BuildRunner {
         self
     }
 
+    /// Disable cache lookups and stores.
+    pub fn with_no_cache(mut self, no_cache: bool) -> Self {
+        self.no_cache = no_cache;
+        self
+    }
+
     /// Enable force rebuild (ignore incremental state).
     pub fn with_force(mut self, force: bool) -> Self {
         self.force_rebuild = force;

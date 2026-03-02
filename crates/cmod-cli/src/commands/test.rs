@@ -9,9 +9,10 @@ pub fn run(
     offline: bool,
     verbose: bool,
     target: Option<String>,
+    no_cache: bool,
 ) -> Result<(), CmodError> {
     // First, build the project
-    super::build::run(release, locked, offline, verbose, target, 0, false, None, false, false, false, &[], false)?;
+    super::build::run(release, locked, offline, verbose, target, 0, false, None, false, false, false, &[], false, no_cache)?;
 
     eprintln!("  Running tests...");
 

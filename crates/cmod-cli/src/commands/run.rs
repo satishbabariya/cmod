@@ -6,12 +6,13 @@ pub fn run(
     release: bool,
     args: Vec<String>,
     verbose: bool,
+    no_cache: bool,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
     // Build first
-    super::build::run(release, false, false, verbose, None, 0, false, None, false, false, false, &[], false)?;
+    super::build::run(release, false, false, verbose, None, 0, false, None, false, false, false, &[], false, no_cache)?;
 
     // Find the built binary
     let build_dir = config.build_dir();
