@@ -1,0 +1,23 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2023"
+description = "Application binary for the workspace example"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
+
+[module]
+name = "local.app"
+root = "src/lib.cppm"
+
+[dependencies]
+core = { path = "../core" }
+utils = { path = "../utils" }
+"github.com/satishbabariya/fmt-cmod" = { workspace = true }
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "binary"

@@ -63,6 +63,18 @@ cmod test
 cmod build --release
 ```
 
+### Examples
+
+See the [examples/](examples/) directory for complete working projects:
+
+| Example | Description |
+|---|---|
+| [hello](examples/hello/) | Minimal binary, no dependencies |
+| [library](examples/library/) | Static library with module partitions |
+| [with-deps](examples/with-deps/) | Git dependencies (fmt + json) |
+| [workspace](examples/workspace/) | Multi-member monorepo |
+| [path-deps](examples/path-deps/) | Local path dependencies |
+
 ## Configuration
 
 `cmod.toml` is your project manifest:

@@ -1,0 +1,21 @@
+[package]
+name = "utils"
+version = "0.1.0"
+edition = "2023"
+description = "Utility functions for the workspace example"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
+
+[module]
+name = "local.utils"
+root = "src/lib.cppm"
+
+[dependencies]
+core = { path = "../core" }
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "static-lib"

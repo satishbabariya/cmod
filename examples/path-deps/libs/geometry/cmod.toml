@@ -1,0 +1,18 @@
+[package]
+name = "geometry"
+version = "0.1.0"
+edition = "2023"
+description = "2D geometry library with Vec2 and operations"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
+
+[module]
+name = "local.geometry"
+root = "src/lib.cppm"
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "static-lib"

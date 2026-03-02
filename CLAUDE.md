@@ -101,6 +101,13 @@ cmod/
 │           ├── trust.rs                   # TOFU trust model
 │           ├── verify.rs                  # Hash/signature verification
 │           └── policy.rs                  # Security policy enforcement
+├── examples/                              # Example C++ projects
+│   ├── README.md                          # Index of all examples
+│   ├── hello/                             # Minimal binary, no deps
+│   ├── library/                           # Static lib with module partitions
+│   ├── with-deps/                         # Git dependencies (fmt + json)
+│   ├── workspace/                         # Multi-member monorepo
+│   └── path-deps/                         # Local path dependencies
 ├── docs/                                  # Design specifications
 │   ├── cmod_readme_vision.md
 │   ├── cmod_architecture_diagram.md
