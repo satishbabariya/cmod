@@ -29,7 +29,7 @@ pub fn run(
         no_cache,
     )?;
 
-    eprintln!("  Running tests...");
+    eprintln!("{:>12} tests", "Running");
 
     // Look for test files
     let cwd = std::env::current_dir()?;
@@ -58,13 +58,13 @@ pub fn run(
     let test_dir = cwd.join("tests");
 
     if !test_dir.exists() {
-        eprintln!("  No tests directory found, skipping.");
+        eprintln!("{:>12} no tests directory found", "Warning");
         return Ok(());
     }
 
     let test_sources = cmod_build::runner::discover_sources(&test_dir)?;
     if test_sources.is_empty() {
-        eprintln!("  No test sources found.");
+        eprintln!("{:>12} no test sources found", "Warning");
         return Ok(());
     }
 
@@ -75,7 +75,10 @@ pub fn run(
         .collect();
 
     if filtered_sources.is_empty() {
-        eprintln!("  No test sources match the configured patterns.");
+        eprintln!(
+            "{:>12} no test sources match configured patterns",
+            "Warning"
+        );
         return Ok(());
     }
 
@@ -197,7 +200,7 @@ pub fn run(
             .and_then(|s| s.to_str())
             .unwrap_or("test");
 
-        eprintln!("  Running test: {}", test_name);
+        eprintln!("{:>12} test {}", "Running", test_name);
 
         // Compile the test with module precompiled paths
         let test_binary = build_dir.join(format!("test_{}", test_name));
@@ -247,7 +250,7 @@ pub fn run(
             });
         }
 
-        eprintln!("  Test '{}' passed.", test_name);
+        eprintln!("{:>12} test {}", "Passed", test_name);
     }
 
     // Run post-test hook
@@ -261,7 +264,7 @@ pub fn run(
             .and_then(|h| h.post_test.as_deref()),
     )?;
 
-    eprintln!("  All tests passed.");
+    eprintln!("{:>12} all tests passed", "Finished");
     Ok(())
 }
 

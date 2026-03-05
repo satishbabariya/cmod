@@ -19,7 +19,7 @@ pub fn run(dry_run: bool, push: bool, verbose: bool) -> Result<(), CmodError> {
     let version = &config.manifest.package.version;
     let tag = format!("v{}", version);
 
-    eprintln!("  Publishing {} v{}", name, version);
+    eprintln!("{:>12} {} v{}", "Publishing", name, version);
 
     // Step 1: Validate manifest for publishing
     validate_for_publish(&config)?;
@@ -59,30 +59,30 @@ pub fn run(dry_run: bool, push: bool, verbose: bool) -> Result<(), CmodError> {
     )?;
 
     if dry_run {
-        eprintln!("  Dry run: would create tag '{}'", tag);
+        eprintln!("{:>12} would create tag '{}'", "Dry run", tag);
         if push {
-            eprintln!("  Dry run: would push tag '{}' to origin", tag);
+            eprintln!("{:>12} would push tag '{}' to origin", "Dry run", tag);
         }
-        eprintln!("  Publish dry run complete.");
+        eprintln!("{:>12} publish dry run", "Finished");
         return Ok(());
     }
 
     // Step 5: Create the tag
     create_tag(&tag, &format!("Release {} v{}", name, version))?;
-    eprintln!("  Created tag: {}", tag);
+    eprintln!("{:>12} tag {}", "Created", tag);
 
     // Step 6: Push if requested
     if push {
         push_tag(&tag)?;
-        eprintln!("  Pushed tag '{}' to origin", tag);
+        eprintln!("{:>12} tag '{}' to origin", "Pushed", tag);
     } else {
         eprintln!(
-            "  Tag created locally. Run `git push origin {}` to publish.",
+            "    Tag created locally. Run `git push origin {}` to publish.",
             tag
         );
     }
 
-    eprintln!("  Published {} v{}", name, version);
+    eprintln!("{:>12} {} v{}", "Published", name, version);
     Ok(())
 }
 
@@ -95,12 +95,12 @@ fn validate_for_publish(config: &Config) -> Result<(), CmodError> {
 
     // Description is recommended
     if manifest.package.description.is_none() {
-        eprintln!("  Warning: package.description is not set");
+        eprintln!("{:>12} package.description is not set", "Warning");
     }
 
     // License is recommended
     if manifest.package.license.is_none() {
-        eprintln!("  Warning: package.license is not set");
+        eprintln!("{:>12} package.license is not set", "Warning");
     }
 
     // Check lockfile exists

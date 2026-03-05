@@ -7,13 +7,13 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    eprintln!("  Linting {}", config.manifest.package.name);
+    eprintln!("{:>12} {}", "Linting", config.manifest.package.name);
 
     let src_dir = config.src_dir();
     let sources = runner::discover_sources(&src_dir)?;
 
     if sources.is_empty() {
-        eprintln!("  No source files found.");
+        eprintln!("{:>12} no source files found", "Warning");
         return Ok(());
     }
 
@@ -29,17 +29,22 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
         let file_warnings = lint_source(filename, &content);
         for w in &file_warnings {
             if verbose {
-                eprintln!("  warning: {}:{}: {}", filename, w.line, w.message);
+                eprintln!("{:>12} {}:{}: {}", "warning", filename, w.line, w.message);
             }
         }
         warnings.extend(file_warnings);
     }
 
     if warnings.is_empty() {
-        eprintln!("  No warnings found ({} files checked).", sources.len());
+        eprintln!(
+            "{:>12} no warnings ({} files checked)",
+            "Finished",
+            sources.len()
+        );
     } else {
         eprintln!(
-            "  {} warning(s) in {} file(s).",
+            "{:>12} {} warning(s) in {} file(s)",
+            "Finished",
             warnings.len(),
             sources.len()
         );

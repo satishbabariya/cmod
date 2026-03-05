@@ -14,8 +14,8 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     let mut errors = Vec::new();
 
     eprintln!(
-        "  Checking {} v{}",
-        config.manifest.package.name, config.manifest.package.version
+        "{:>12} {} v{}",
+        "Checking", config.manifest.package.name, config.manifest.package.version
     );
 
     // 1. Check module name matches export declaration
@@ -113,14 +113,18 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
 
     // Report
     for w in &warnings {
-        eprintln!("  warning: {}", w);
+        eprintln!("{:>12} {}", "warning", w);
     }
     for e in &errors {
-        eprintln!("  error: {}", e);
+        eprintln!("{:>12} {}", "error", e);
     }
 
     if errors.is_empty() {
-        eprintln!("  All checks passed ({} warnings).", warnings.len());
+        eprintln!(
+            "{:>12} all checks passed ({} warnings)",
+            "Finished",
+            warnings.len()
+        );
         Ok(())
     } else {
         Err(CmodError::BuildFailed {
@@ -147,7 +151,7 @@ fn validate_module_graph(
     }
 
     if verbose {
-        eprintln!("  Building module graph for semantic validation...");
+        eprintln!("{:>12} module graph for validation", "Building");
     }
 
     // Discover and classify sources

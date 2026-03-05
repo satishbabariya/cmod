@@ -1072,6 +1072,7 @@ fn test_tidy_command() {
         stderr.contains("unused")
             || stderr.contains("No dependencies")
             || stderr.contains("0 unused")
+            || stderr.contains("all dependencies are used")
             || stderr.contains("All dependencies are used"),
         "expected tidy output, got: {}",
         stderr

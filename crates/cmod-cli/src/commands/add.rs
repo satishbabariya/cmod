@@ -39,7 +39,8 @@ pub fn run(
 
         if new_version.is_some() && new_version != existing_version {
             eprintln!(
-                "  warning: dependency '{}' already exists with version '{}', updating to '{}'",
+                "{:>12} dependency '{}' already exists ({}), updating to '{}'",
+                "Warning",
                 dep_key,
                 existing_version.unwrap_or("*"),
                 new_version.unwrap_or("*")
@@ -48,7 +49,8 @@ pub fn run(
             config.manifest.dependencies.remove(&dep_key);
         } else {
             eprintln!(
-                "  Dependency '{}' already exists (version: {})",
+                "{:>12} dependency '{}' already exists ({})",
+                "Unchanged",
                 dep_key,
                 existing_version.unwrap_or("*")
             );
@@ -104,9 +106,9 @@ pub fn run(
     lockfile.save(&config.lockfile_path)?;
 
     if let Some(pkg) = lockfile.find_package(&dep_key) {
-        eprintln!("  Added dependency '{}' v{}", dep_key, pkg.version);
+        eprintln!("{:>12} {} v{}", "Adding", dep_key, pkg.version);
     } else {
-        eprintln!("  Added dependency '{}'", dep_key);
+        eprintln!("{:>12} {}", "Adding", dep_key);
     }
 
     Ok(())

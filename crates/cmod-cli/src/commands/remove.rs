@@ -20,7 +20,7 @@ pub fn run(name: String) -> Result<(), CmodError> {
     // Save updated manifest
     config.manifest.save(&config.manifest_path)?;
 
-    eprintln!("  Removed dependency '{}'", name);
+    eprintln!("{:>12} {}", "Removing", name);
 
     Ok(())
 }

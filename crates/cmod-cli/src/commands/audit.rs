@@ -8,12 +8,12 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    eprintln!("  Auditing dependencies...");
+    eprintln!("{:>12} dependencies", "Auditing");
 
     let lockfile = if config.lockfile_path.exists() {
         Lockfile::load(&config.lockfile_path)?
     } else if config.manifest.dependencies.is_empty() {
-        eprintln!("  No dependencies to audit.");
+        eprintln!("{:>12} no dependencies to audit", "Finished");
         return Ok(());
     } else {
         return Err(CmodError::LockfileNotFound);
@@ -23,7 +23,8 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
 
     if report.findings.is_empty() {
         eprintln!(
-            "  No issues found. {} dependencies audited.",
+            "{:>12} no issues found ({} dependencies audited)",
+            "Finished",
             lockfile.packages.len()
         );
         return Ok(());

@@ -58,11 +58,11 @@ pub fn run(apply: bool, verbose: bool) -> Result<(), CmodError> {
     }
 
     if unused.is_empty() {
-        eprintln!("  All dependencies are used.");
+        eprintln!("{:>12} all dependencies are used", "Finished");
         return Ok(());
     }
 
-    eprintln!("  Unused dependencies ({}):", unused.len());
+    eprintln!("{:>12} {} unused dependencies:", "Found", unused.len());
     for (name, source) in &unused {
         eprintln!("    - {}{}", name, source);
     }
@@ -76,11 +76,12 @@ pub fn run(apply: bool, verbose: bool) -> Result<(), CmodError> {
         }
         manifest.save(&manifest_path)?;
         eprintln!(
-            "  Removed {} unused dependencies from cmod.toml",
+            "{:>12} {} unused dependencies from cmod.toml",
+            "Removed",
             unused.len()
         );
     } else {
-        eprintln!("  Run `cmod tidy --apply` to remove them.");
+        eprintln!("    Run `cmod tidy --apply` to remove them.");
     }
 
     Ok(())

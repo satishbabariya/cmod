@@ -111,11 +111,11 @@ fn init_module(dir: &Path, name: &str) -> Result<(), CmodError> {
         ),
     )?;
 
-    eprintln!("  Created module '{}' in {}", name, dir.display());
-    eprintln!("  - cmod.toml");
-    eprintln!("  - src/lib.cppm");
-    eprintln!("  - src/main.cpp");
-    eprintln!("  - tests/main.cpp");
+    eprintln!("{:>12} module '{}' in {}", "Created", name, dir.display());
+    eprintln!("      cmod.toml");
+    eprintln!("      src/lib.cppm");
+    eprintln!("      src/main.cpp");
+    eprintln!("      tests/main.cpp");
 
     Ok(())
 }
@@ -125,10 +125,15 @@ fn init_workspace(dir: &Path, name: &str) -> Result<(), CmodError> {
     let m = manifest::default_workspace_manifest(name);
     m.save(&dir.join("cmod.toml"))?;
 
-    eprintln!("  Created workspace '{}' in {}", name, dir.display());
-    eprintln!("  - cmod.toml (workspace)");
+    eprintln!(
+        "{:>12} workspace '{}' in {}",
+        "Created",
+        name,
+        dir.display()
+    );
+    eprintln!("      cmod.toml (workspace)");
     eprintln!();
-    eprintln!("  Add members with `cmod init --name <member>` in subdirectories.");
+    eprintln!("    Add members with `cmod init --name <member>` in subdirectories.");
 
     Ok(())
 }

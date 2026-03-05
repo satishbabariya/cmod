@@ -17,6 +17,17 @@ use crate::graph::ModuleGraph;
 use crate::incremental::BuildState;
 use crate::plan::{BuildNode, BuildPlan};
 
+/// Display a path relative to the current working directory for cleaner output.
+/// Falls back to the full path if relativization fails.
+fn display_path(path: &Path) -> String {
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(rel) = path.strip_prefix(&cwd) {
+            return rel.display().to_string();
+        }
+    }
+    path.display().to_string()
+}
+
 /// Statistics from a build execution.
 #[derive(Debug, Clone, Default)]
 pub struct BuildStats {
@@ -401,7 +412,7 @@ impl BuildRunner {
                 if !self.force_rebuild {
                     if let Some(state) = build_state {
                         if state.needs_rebuild(node, flags_hash).is_none() {
-                            eprintln!("  Up-to-date: {}", source.display());
+                            eprintln!("{:>12} {}", "Fresh", display_path(source));
                             return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
                         }
                     }
@@ -410,7 +421,7 @@ impl BuildRunner {
                 // Try cache next
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     if self.try_cache_restore(&module_id, &key, node) {
-                        eprintln!("  Cached interface: {}", source.display());
+                        eprintln!("{:>12} {}", "Cached", display_path(source));
                         return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
                     }
                 }
@@ -436,7 +447,7 @@ impl BuildRunner {
                     self.cache_store(&module_id, &key, node);
                 }
 
-                eprintln!("  Compiled interface: {}", source.display());
+                eprintln!("{:>12} {}", "Compiling", display_path(source));
                 Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
             }
 
@@ -447,7 +458,7 @@ impl BuildRunner {
                 if !self.force_rebuild {
                     if let Some(state) = build_state {
                         if state.needs_rebuild(node, flags_hash).is_none() {
-                            eprintln!("  Up-to-date: {}", source.display());
+                            eprintln!("{:>12} {}", "Fresh", display_path(source));
                             return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
                         }
                     }
@@ -455,7 +466,7 @@ impl BuildRunner {
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     if self.try_cache_restore(&module_id, &key, node) {
-                        eprintln!("  Cached impl: {}", source.display());
+                        eprintln!("{:>12} {}", "Cached", display_path(source));
                         return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
                     }
                 }
@@ -477,7 +488,7 @@ impl BuildRunner {
                     self.cache_store(&module_id, &key, node);
                 }
 
-                eprintln!("  Compiled impl: {}", source.display());
+                eprintln!("{:>12} {}", "Compiling", display_path(source));
                 Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
             }
 
@@ -488,7 +499,7 @@ impl BuildRunner {
                 if !self.force_rebuild {
                     if let Some(state) = build_state {
                         if state.needs_rebuild(node, flags_hash).is_none() {
-                            eprintln!("  Up-to-date: {}", source.display());
+                            eprintln!("{:>12} {}", "Fresh", display_path(source));
                             return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
                         }
                     }
@@ -496,7 +507,7 @@ impl BuildRunner {
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     if self.try_cache_restore(&module_id, &key, node) {
-                        eprintln!("  Cached: {}", source.display());
+                        eprintln!("{:>12} {}", "Cached", display_path(source));
                         return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
                     }
                 }
@@ -518,7 +529,7 @@ impl BuildRunner {
                     self.cache_store(&module_id, &key, node);
                 }
 
-                eprintln!("  Compiled: {}", source.display());
+                eprintln!("{:>12} {}", "Compiling", display_path(source));
                 Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
             }
 
@@ -546,7 +557,7 @@ impl BuildRunner {
 
                 self.backend.link(&obj_refs, output, &artifact)?;
 
-                eprintln!("  Linked: {}", output.display());
+                eprintln!("{:>12} {}", "Linking", display_path(output));
                 Ok(NodeOutcome::Linked(start.elapsed().as_millis() as u64))
             }
         }

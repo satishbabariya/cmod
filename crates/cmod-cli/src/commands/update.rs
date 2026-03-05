@@ -9,9 +9,9 @@ pub fn run(name: Option<String>, patch_only: bool, verbose: bool) -> Result<(), 
     let config = Config::load(&cwd)?;
 
     if patch_only {
-        eprintln!("  Updating dependencies (patch-level only)...");
+        eprintln!("{:>12} dependencies (patch-level only)", "Updating");
     } else {
-        eprintln!("  Updating dependencies...");
+        eprintln!("{:>12} dependencies", "Updating");
     }
 
     let mut resolver = Resolver::new(config.deps_dir());
@@ -49,7 +49,7 @@ pub fn run(name: Option<String>, patch_only: bool, verbose: bool) -> Result<(), 
         lockfile.save(&config.lockfile_path)?;
 
         if let Some(pkg) = lockfile.find_package(dep_name) {
-            eprintln!("  Updated {} to v{}", dep_name, pkg.version);
+            eprintln!("{:>12} {} to v{}", "Updated", dep_name, pkg.version);
         }
     } else {
         // Full re-resolve (ignore existing lockfile)
@@ -79,7 +79,7 @@ pub fn run(name: Option<String>, patch_only: bool, verbose: bool) -> Result<(), 
 
         lockfile.save(&config.lockfile_path)?;
 
-        eprintln!("  Updated {} dependencies", lockfile.packages.len());
+        eprintln!("{:>12} {} dependencies", "Updated", lockfile.packages.len());
         if verbose {
             for pkg in &lockfile.packages {
                 eprintln!("    {} v{}", pkg.name, pkg.version);

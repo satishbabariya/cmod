@@ -11,7 +11,7 @@ pub fn run(check: bool, verbose: bool) -> Result<(), CmodError> {
     let sources = runner::discover_sources(&src_dir)?;
 
     if sources.is_empty() {
-        eprintln!("  No source files found to format.");
+        eprintln!("{:>12} no source files found", "Warning");
         return Ok(());
     }
 
@@ -23,7 +23,7 @@ pub fn run(check: bool, verbose: bool) -> Result<(), CmodError> {
     }
 
     eprintln!(
-        "  {} {} source files",
+        "{:>12} {} source files",
         if check { "Checking" } else { "Formatting" },
         sources.len()
     );
@@ -77,7 +77,7 @@ pub fn run(check: bool, verbose: bool) -> Result<(), CmodError> {
 
     if check {
         if unformatted.is_empty() {
-            eprintln!("  All files are properly formatted.");
+            eprintln!("{:>12} all files properly formatted", "Finished");
         } else {
             return Err(CmodError::BuildFailed {
                 reason: format!(
@@ -88,7 +88,7 @@ pub fn run(check: bool, verbose: bool) -> Result<(), CmodError> {
             });
         }
     } else {
-        eprintln!("  Formatted {} files.", sources.len());
+        eprintln!("{:>12} {} files", "Formatted", sources.len());
     }
 
     Ok(())

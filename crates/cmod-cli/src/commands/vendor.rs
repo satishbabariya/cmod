@@ -14,7 +14,7 @@ pub fn run(sync: bool, verbose: bool) -> Result<(), CmodError> {
     let vendor_dir = config.root.join("vendor");
 
     if sync {
-        eprintln!("  Re-synchronizing vendor directory...");
+        eprintln!("{:>12} vendor directory", "Syncing");
         // Remove stale entries
         if vendor_dir.exists() {
             remove_stale_entries(&vendor_dir, &lockfile)?;
@@ -59,7 +59,8 @@ pub fn run(sync: bool, verbose: bool) -> Result<(), CmodError> {
     generate_vendor_config(&vendor_dir, &lockfile)?;
 
     eprintln!(
-        "  Vendored {} dependencies into {}",
+        "{:>12} {} dependencies into {}",
+        "Vendored",
         vendored,
         vendor_dir.display()
     );

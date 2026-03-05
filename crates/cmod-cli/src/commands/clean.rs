@@ -18,7 +18,7 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    eprintln!("  Cleaning {}", config.manifest.package.name);
+    eprintln!("{:>12} {}", "Cleaning", config.manifest.package.name);
 
     let build_root = config.root.join("build");
     let mut total_freed: u64 = 0;
@@ -45,7 +45,7 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
         }
     }
 
-    eprintln!("  Cleaned, freed {}", format_bytes(total_freed));
+    eprintln!("{:>12} freed {}", "Cleaned", format_bytes(total_freed));
     Ok(())
 }
 

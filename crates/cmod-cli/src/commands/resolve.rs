@@ -29,7 +29,7 @@ pub fn run(
             .and_then(|h| h.pre_resolve.as_deref()),
     )?;
 
-    eprintln!("  Resolving dependencies...");
+    eprintln!("{:>12} dependencies", "Resolving");
 
     // Check if this is a workspace
     if config.manifest.is_workspace() {
@@ -71,7 +71,11 @@ pub fn run(
     lockfile.compute_integrity();
     lockfile.save(&config.lockfile_path)?;
 
-    eprintln!("  Resolved {} dependencies", lockfile.packages.len());
+    eprintln!(
+        "{:>12} {} dependencies",
+        "Resolved",
+        lockfile.packages.len()
+    );
     if verbose {
         for pkg in &lockfile.packages {
             eprintln!(
@@ -131,7 +135,8 @@ fn resolve_workspace(
     lockfile.save(&ws.lockfile_path())?;
 
     eprintln!(
-        "  Resolved {} dependencies for workspace ({} members)",
+        "{:>12} {} dependencies for workspace ({} members)",
+        "Resolved",
         lockfile.packages.len(),
         ws.members.len()
     );

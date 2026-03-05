@@ -70,8 +70,8 @@ pub fn run(
     }
 
     eprintln!(
-        "  Building {} ({})",
-        config.manifest.package.name, profile_name
+        "{:>12} {} v{} ({})",
+        "Compiling", config.manifest.package.name, config.manifest.package.version, profile_name
     );
 
     // Step 1: Ensure dependencies are resolved (with target-specific filtering)
@@ -79,7 +79,7 @@ pub fn run(
 
     // Step 1.5: Verify lockfile integrity if --verify is set
     if verify {
-        eprintln!("  Verifying lockfile integrity...");
+        eprintln!("{:>12} lockfile integrity...", "Verifying");
         lockfile.verify_integrity()?;
 
         // Verify all package hashes are present
@@ -239,11 +239,10 @@ fn build_module(
         eprintln!("  Parallelism: {} jobs", runner.effective_jobs());
     }
 
-    let (output, stats) =
+    let (_output, stats) =
         runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type)?;
 
     print_build_stats(&stats, verbose, timings);
-    eprintln!("  Build complete: {}", output.display());
     Ok(())
 }
 
@@ -280,11 +279,7 @@ fn build_path_dependencies(
         }
 
         if verbose {
-            eprintln!(
-                "  Building path dependency: {} ({})",
-                dep_name,
-                dep_path.display()
-            );
+            eprintln!("{:>12} path dep {}", "Compiling", dep_name);
         }
 
         // Load the dependency's config
@@ -368,7 +363,8 @@ fn build_workspace(
     let ws = WorkspaceManager::load(&config.root)?;
 
     eprintln!(
-        "  Building workspace ({} members, {})",
+        "{:>12} workspace ({} members, {})",
+        "Compiling",
         ws.members.len(),
         match config.profile {
             Profile::Debug => "debug",
@@ -394,7 +390,7 @@ fn build_workspace(
     let mut failed = Vec::new();
 
     for member in &ordered_members {
-        eprintln!("  Building member: {}", member.name);
+        eprintln!("{:>12} member {}", "Compiling", member.name);
 
         let member_src = member.path.join("src");
         let sources = runner::discover_sources(&member_src)?;
@@ -467,7 +463,9 @@ fn build_workspace(
         ) {
             Ok((output, stats)) => {
                 print_build_stats(&stats, verbose, timings);
-                eprintln!("    Built: {}", output.display());
+                if verbose {
+                    eprintln!("{:>12} {}", "Built", output.display());
+                }
 
                 // Collect PCM files from this member for downstream members
                 let mut this_pcms: std::collections::HashMap<String, std::path::PathBuf> =
@@ -502,7 +500,7 @@ fn build_workspace(
                 member_obj_paths.insert(member.name.clone(), this_objs);
             }
             Err(e) => {
-                eprintln!("    Failed: {}", e);
+                eprintln!("{:>12} member {}: {}", "Failed", member.name, e);
                 failed.push(member.name.clone());
             }
         }
@@ -514,7 +512,7 @@ fn build_workspace(
         });
     }
 
-    eprintln!("  Workspace build complete.");
+    eprintln!("{:>12} workspace build", "Finished");
     Ok(())
 }
 
@@ -737,7 +735,7 @@ fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
     let is_vendored = vendor_dir.exists() && vendor_config.exists();
 
     if is_vendored && config.offline {
-        eprintln!("  Using vendored dependencies (offline mode)");
+        eprintln!("{:>12} vendored dependencies (offline)", "Using");
     }
 
     if config.lockfile_path.exists() {
@@ -748,7 +746,7 @@ fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
         Err(CmodError::LockfileNotFound)
     } else {
         // Auto-resolve with target-specific dependency filtering
-        eprintln!("  No lockfile found, resolving dependencies...");
+        eprintln!("{:>12} dependencies...", "Resolving");
         // Use vendor dir as deps dir if vendored deps exist
         let deps_dir = if is_vendored {
             vendor_dir
@@ -881,7 +879,8 @@ fn print_build_stats(stats: &BuildStats, verbose: bool, timings: bool) {
     }
 
     eprintln!(
-        "  {} modules ({}), {:.1}s",
+        "{:>12} {} modules ({}), {:.1}s",
+        "Finished",
         total_nodes,
         parts.join(", "),
         stats.wall_time_ms as f64 / 1000.0,
@@ -919,7 +918,7 @@ pub fn run_hook(config: &Config, hook_name: &str, command: Option<&str>) -> Resu
         None => return Ok(()),
     };
 
-    eprintln!("  Running {} hook: {}", hook_name, cmd);
+    eprintln!("{:>12} {} hook: {}", "Running", hook_name, cmd);
 
     let status = std::process::Command::new("sh")
         .arg("-c")
@@ -1119,7 +1118,7 @@ pub fn emit_cmake(verbose: bool) -> Result<(), CmodError> {
     let content = lines.join("\n") + "\n";
     std::fs::write(&cmake_path, &content)?;
 
-    eprintln!("  Generated {}", cmake_path.display());
+    eprintln!("{:>12} {}", "Generated", cmake_path.display());
     if verbose {
         eprintln!("  {} source file(s)", source_files.len());
     }

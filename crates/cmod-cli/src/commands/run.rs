@@ -63,7 +63,7 @@ pub fn run(
     let binary_path = find_binary(&build_dir, binary_name)?;
 
     if verbose {
-        eprintln!("  Running: {} {}", binary_path.display(), args.join(" "));
+        eprintln!("{:>12} {}", "Running", binary_path.display());
     }
 
     // Execute the binary, forwarding args
@@ -159,7 +159,7 @@ fn run_workspace_member(
     let binary_path = find_binary(&member_build_dir, &member_name)?;
 
     if verbose {
-        eprintln!("  Running: {} {}", binary_path.display(), args.join(" "));
+        eprintln!("{:>12} {}", "Running", binary_path.display());
     }
 
     let status = std::process::Command::new(&binary_path)
