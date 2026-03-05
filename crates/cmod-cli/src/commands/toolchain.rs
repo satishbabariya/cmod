@@ -1,9 +1,10 @@
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 use cmod_core::types::ToolchainSpec;
 
 /// Run `cmod toolchain show` — display the active toolchain configuration.
-pub fn show(verbose: bool) -> Result<(), CmodError> {
+pub fn show(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
 
     let spec = if let Ok(config) = Config::load(&cwd) {
@@ -12,7 +13,7 @@ pub fn show(verbose: bool) -> Result<(), CmodError> {
         ToolchainSpec::default()
     };
 
-    eprintln!("  Active toolchain:");
+    shell.status("Toolchain", "active configuration");
     eprintln!("    Compiler:  {}", spec.compiler);
     if let Some(ref ver) = spec.compiler_version {
         eprintln!("    Version:   {}", ver);
@@ -30,9 +31,7 @@ pub fn show(verbose: bool) -> Result<(), CmodError> {
         eprintln!("    Sysroot:   {}", sysroot.display());
     }
 
-    if verbose {
-        eprintln!("    Cache key: {}", spec.cache_key_tuple());
-    }
+    shell.verbose("Cache key", spec.cache_key_tuple());
 
     Ok(())
 }
@@ -94,7 +93,6 @@ fn from_manifest(config: &Config) -> ToolchainSpec {
         }
     }
 
-    // CLI target override
     if let Some(ref target) = config.target {
         spec.target = target.clone();
     }

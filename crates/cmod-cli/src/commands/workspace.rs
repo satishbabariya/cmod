@@ -1,9 +1,10 @@
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 use cmod_workspace::WorkspaceManager;
 
 /// Run `cmod workspace list` — list workspace members.
-pub fn list(verbose: bool) -> Result<(), CmodError> {
+pub fn list(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -15,36 +16,36 @@ pub fn list(verbose: bool) -> Result<(), CmodError> {
 
     let ws = WorkspaceManager::load(&config.root)?;
 
-    eprintln!("  Workspace: {}", config.manifest.package.name);
+    shell.status("Workspace", &config.manifest.package.name);
     if let Some(ver) = ws.workspace_version() {
-        eprintln!("  Version: {}", ver);
+        eprintln!("    Version: {}", ver);
     }
-    eprintln!("  Members ({}):", ws.members.len());
+    eprintln!("    Members ({}):", ws.members.len());
 
     for member in &ws.members {
-        if verbose {
-            let dep_count = member.manifest.dependencies.len();
-            eprintln!(
-                "    {} ({}, {} deps)",
+        let dep_count = member.manifest.dependencies.len();
+        shell.verbose(
+            "Member",
+            format!(
+                "{} ({}, {} deps)",
                 member.name,
                 member.path.display(),
-                dep_count,
-            );
-        } else {
-            eprintln!("    {}", member.name);
+                dep_count
+            ),
+        );
+        if shell.verbosity() != cmod_core::shell::Verbosity::Verbose {
+            eprintln!("      {}", member.name);
         }
     }
 
     // Show build order if verbose
-    if verbose {
-        match ws.build_order() {
-            Ok(order) => {
-                let names: Vec<&str> = order.iter().map(|m| m.name.as_str()).collect();
-                eprintln!("  Build order: {}", names.join(" → "));
-            }
-            Err(e) => {
-                eprintln!("  Build order: error: {}", e);
-            }
+    match ws.build_order() {
+        Ok(order) => {
+            let names: Vec<&str> = order.iter().map(|m| m.name.as_str()).collect();
+            shell.verbose("Build order", names.join(" -> "));
+        }
+        Err(e) => {
+            shell.verbose("Build order", format!("error: {}", e));
         }
     }
 
@@ -52,7 +53,7 @@ pub fn list(verbose: bool) -> Result<(), CmodError> {
 }
 
 /// Run `cmod workspace add <name>` — add a new member to the workspace.
-pub fn add(name: &str, verbose: bool) -> Result<(), CmodError> {
+pub fn add(name: &str, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -64,21 +65,19 @@ pub fn add(name: &str, verbose: bool) -> Result<(), CmodError> {
 
     let mut ws = WorkspaceManager::load(&config.root)?;
 
-    if verbose {
-        eprintln!("  Adding member '{}' to workspace", name);
-    }
+    shell.verbose("Adding", format!("member '{}' to workspace", name));
 
     ws.add_member(name)?;
 
-    eprintln!("  Added member '{}' to workspace", name);
-    eprintln!("  Created {}/src/lib.cppm", name);
-    eprintln!("  Created {}/cmod.toml", name);
+    shell.status("Added", format!("member '{}' to workspace", name));
+    shell.verbose("Created", format!("{}/src/lib.cppm", name));
+    shell.verbose("Created", format!("{}/cmod.toml", name));
 
     Ok(())
 }
 
 /// Run `cmod workspace remove <name>` — remove a member from the workspace.
-pub fn remove(name: &str, verbose: bool) -> Result<(), CmodError> {
+pub fn remove(name: &str, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -107,12 +106,13 @@ pub fn remove(name: &str, verbose: bool) -> Result<(), CmodError> {
     // Remove from in-memory list
     ws.members.retain(|m| m.name != name);
 
-    if verbose {
-        eprintln!("  Removed member '{}' from workspace manifest", name);
-        eprintln!("  Note: member directory was NOT deleted. Remove manually if desired.");
-    }
+    shell.verbose(
+        "Removed",
+        format!("member '{}' from workspace manifest", name),
+    );
+    shell.note("member directory was NOT deleted; remove manually if desired");
 
-    eprintln!("  Removed '{}' from workspace", name);
+    shell.status("Removed", format!("'{}' from workspace", name));
     Ok(())
 }
 

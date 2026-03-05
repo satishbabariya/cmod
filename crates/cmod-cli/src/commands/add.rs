@@ -4,6 +4,7 @@ use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
 use cmod_core::manifest::{Dependency, DetailedDependency, Manifest};
+use cmod_core::shell::Shell;
 use cmod_resolver::Resolver;
 
 /// Run `cmod add <dep>` — add a dependency.
@@ -17,6 +18,7 @@ pub fn run(
     features: Vec<String>,
     _locked: bool,
     offline: bool,
+    shell: &Shell,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
@@ -38,19 +40,22 @@ pub fn run(
         let existing_version = existing.version_req();
 
         if new_version.is_some() && new_version != existing_version {
-            eprintln!(
-                "  warning: dependency '{}' already exists with version '{}', updating to '{}'",
+            shell.warn(format!(
+                "dependency '{}' already exists with version '{}', updating to '{}'",
                 dep_key,
                 existing_version.unwrap_or("*"),
                 new_version.unwrap_or("*")
-            );
+            ));
             // Remove the old entry so resolver can re-add
             config.manifest.dependencies.remove(&dep_key);
         } else {
-            eprintln!(
-                "  Dependency '{}' already exists (version: {})",
-                dep_key,
-                existing_version.unwrap_or("*")
+            shell.status(
+                "Unchanged",
+                format!(
+                    "dependency '{}' (version: {})",
+                    dep_key,
+                    existing_version.unwrap_or("*")
+                ),
             );
             return Ok(());
         }
@@ -90,7 +95,7 @@ pub fn run(
     // Load existing lockfile if present
     let existing_lock = Lockfile::load(&config.lockfile_path).ok();
 
-    // Add dependency and resolve
+    // Resolve activated features for compiler defines
     let mut resolver = Resolver::new(config.deps_dir());
     let lockfile = resolver.add_dependency(
         &mut config.manifest,
@@ -104,9 +109,9 @@ pub fn run(
     lockfile.save(&config.lockfile_path)?;
 
     if let Some(pkg) = lockfile.find_package(&dep_key) {
-        eprintln!("  Added dependency '{}' v{}", dep_key, pkg.version);
+        shell.status("Adding", format!("'{}' v{}", dep_key, pkg.version));
     } else {
-        eprintln!("  Added dependency '{}'", dep_key);
+        shell.status("Adding", format!("'{}'", dep_key));
     }
 
     Ok(())

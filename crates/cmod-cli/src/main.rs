@@ -1,6 +1,9 @@
 mod commands;
 
+use std::sync::Arc;
+
 use clap::{Parser, Subcommand};
+use cmod_core::shell::{Shell, Verbosity};
 
 #[derive(Parser)]
 #[command(
@@ -21,8 +24,12 @@ struct Cli {
     offline: bool,
 
     /// Enable verbose output
-    #[arg(long, short, global = true)]
+    #[arg(long, short, global = true, conflicts_with = "quiet")]
     verbose: bool,
+
+    /// Suppress all status output
+    #[arg(long, short, global = true, conflicts_with = "verbose")]
+    quiet: bool,
 
     /// Override the target triple
     #[arg(long, global = true)]
@@ -43,6 +50,18 @@ struct Cli {
     /// Skip TOFU trust verification for dependencies
     #[arg(long, global = true)]
     untrusted: bool,
+}
+
+impl Cli {
+    fn verbosity(&self) -> Verbosity {
+        if self.quiet {
+            Verbosity::Quiet
+        } else if self.verbose {
+            Verbosity::Verbose
+        } else {
+            Verbosity::Normal
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -373,9 +392,10 @@ enum CacheAction {
 
 fn main() {
     let cli = Cli::parse();
+    let shell = Arc::new(Shell::new(cli.verbosity()));
 
     let result = match cli.command {
-        Commands::Init { workspace, name } => commands::init::run(workspace, name),
+        Commands::Init { workspace, name } => commands::init::run(workspace, name, &shell),
         Commands::Add {
             dep,
             git,
@@ -392,12 +412,13 @@ fn main() {
             features,
             cli.locked,
             cli.offline,
+            &shell,
         ),
-        Commands::Remove { name } => commands::remove::run(name),
+        Commands::Remove { name } => commands::remove::run(name, &shell),
         Commands::Resolve => commands::resolve::run(
             cli.locked,
             cli.offline,
-            cli.verbose,
+            &shell,
             &cli.features,
             cli.no_default_features,
             cli.target.clone(),
@@ -415,7 +436,7 @@ fn main() {
             release,
             cli.locked,
             cli.offline,
-            cli.verbose,
+            &shell,
             cli.target,
             jobs,
             force,
@@ -431,11 +452,11 @@ fn main() {
             release,
             cli.locked,
             cli.offline,
-            cli.verbose,
+            &shell,
             cli.target,
             cli.no_cache,
         ),
-        Commands::Update { name, patch } => commands::update::run(name, patch, cli.verbose),
+        Commands::Update { name, patch } => commands::update::run(name, patch, &shell),
         Commands::Deps {
             tree,
             why,
@@ -443,69 +464,66 @@ fn main() {
         } => commands::deps::run(tree, why, conflicts),
         Commands::Cache { action } => match action {
             CacheAction::Status => commands::cache::status(),
-            CacheAction::Clean => commands::cache::clean(),
-            CacheAction::Push => commands::cache::push(cli.verbose),
-            CacheAction::Pull => commands::cache::pull(cli.verbose),
-            CacheAction::Gc => commands::cache::gc(cli.verbose),
+            CacheAction::Clean => commands::cache::clean(&shell),
+            CacheAction::Push => commands::cache::push(&shell),
+            CacheAction::Pull => commands::cache::pull(&shell),
+            CacheAction::Gc => commands::cache::gc(&shell),
             CacheAction::Export {
                 module,
                 key,
                 output,
-            } => commands::cache::export_bmi(&module, &key, &output, cli.verbose),
-            CacheAction::Import { path } => commands::cache::import_bmi(&path, cli.verbose),
+            } => commands::cache::export_bmi(&module, &key, &output, &shell),
+            CacheAction::Import { path } => commands::cache::import_bmi(&path, &shell),
             CacheAction::StatusJson => commands::cache::status_json(),
             CacheAction::Inspect { module, key } => commands::cache::inspect(&module, &key),
         },
-        Commands::Verify { signatures } => commands::verify::run(cli.verbose, signatures),
+        Commands::Verify { signatures } => commands::verify::run(&shell, signatures),
         Commands::Graph {
             format,
             filter,
             status,
             critical_path,
         } => commands::graph::run(format, filter, status, critical_path),
-        Commands::Audit => commands::audit::run(cli.verbose),
-        Commands::Status => commands::status::run(cli.verbose),
-        Commands::Explain { module } => commands::explain::run(module, cli.verbose),
+        Commands::Audit => commands::audit::run(&shell),
+        Commands::Status => commands::status::run(&shell),
+        Commands::Explain { module } => commands::explain::run(module, &shell),
         Commands::Toolchain { action } => match action {
-            ToolchainAction::Show => commands::toolchain::show(cli.verbose),
+            ToolchainAction::Show => commands::toolchain::show(&shell),
             ToolchainAction::Check => commands::toolchain::check(),
         },
-        Commands::Vendor { sync } => commands::vendor::run(sync, cli.verbose),
-        Commands::Lint => commands::lint::run(cli.verbose),
-        Commands::Fmt { check } => commands::fmt::run(check, cli.verbose),
-        Commands::Search { query } => commands::search::run(&query, cli.verbose),
+        Commands::Vendor { sync } => commands::vendor::run(sync, &shell),
+        Commands::Lint => commands::lint::run(&shell),
+        Commands::Fmt { check } => commands::fmt::run(check, &shell),
+        Commands::Search { query } => commands::search::run(&query, &shell),
         Commands::Run {
             release,
             package,
             args,
-        } => commands::run::run(release, package, args, cli.verbose, cli.no_cache),
-        Commands::Clean => commands::clean::run(cli.verbose),
+        } => commands::run::run(release, package, args, &shell, cli.no_cache),
+        Commands::Clean => commands::clean::run(&shell),
         Commands::Workspace { action } => match action {
-            WorkspaceAction::List => commands::workspace::list(cli.verbose),
-            WorkspaceAction::Add { name } => commands::workspace::add(&name, cli.verbose),
-            WorkspaceAction::Remove { name } => commands::workspace::remove(&name, cli.verbose),
+            WorkspaceAction::List => commands::workspace::list(&shell),
+            WorkspaceAction::Add { name } => commands::workspace::add(&name, &shell),
+            WorkspaceAction::Remove { name } => commands::workspace::remove(&name, &shell),
         },
-        Commands::Sbom { output } => commands::sbom::run(output, cli.verbose),
-        Commands::Publish { dry_run, push } => commands::publish::run(dry_run, push, cli.verbose),
-        Commands::CompileCommands => {
-            commands::compile_commands::run(cli.verbose, cli.target.clone())
-        }
-        Commands::Tidy { apply } => commands::tidy::run(apply, cli.verbose),
-        Commands::Check => commands::check::run(cli.verbose),
+        Commands::Sbom { output } => commands::sbom::run(output, &shell),
+        Commands::Publish { dry_run, push } => commands::publish::run(dry_run, push, &shell),
+        Commands::CompileCommands => commands::compile_commands::run(&shell, cli.target.clone()),
+        Commands::Tidy { apply } => commands::tidy::run(apply, &shell),
+        Commands::Check => commands::check::run(&shell),
         Commands::Plugin { action } => match action {
-            PluginAction::List => commands::plugin::list(cli.verbose),
-            PluginAction::Run { name } => commands::plugin::run_plugin(&name, cli.verbose),
+            PluginAction::List => commands::plugin::list(&shell),
+            PluginAction::Run { name } => commands::plugin::run_plugin(&name, &shell),
         },
-        Commands::Plan => commands::build::plan(cli.verbose, cli.target.clone()),
-        Commands::EmitCmake => commands::build::emit_cmake(cli.verbose),
+        Commands::Plan => commands::build::plan(&shell, cli.target.clone()),
+        Commands::EmitCmake => commands::build::emit_cmake(&shell),
     };
 
     if let Err(e) = result {
-        eprintln!("error: {}", e);
+        shell.error(&e);
 
-        // Print helpful hints based on error type
         if let Some(hint) = error_hint(&e) {
-            eprintln!("  hint: {}", hint);
+            shell.note(hint);
         }
 
         std::process::exit(e.exit_code());

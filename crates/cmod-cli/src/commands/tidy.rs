@@ -6,9 +6,10 @@ use cmod_build::graph::{ModuleGraph, ModuleNode};
 use cmod_build::runner;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 
 /// Run `cmod tidy` — find and optionally remove unused dependencies.
-pub fn run(apply: bool, verbose: bool) -> Result<(), CmodError> {
+pub fn run(apply: bool, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -18,24 +19,24 @@ pub fn run(apply: bool, verbose: bool) -> Result<(), CmodError> {
     // Fall back to text-based scanning if graph construction fails.
     let imports = match build_import_set(&src_dir, &config.manifest.package.name) {
         Ok(imports) => {
-            if verbose {
-                eprintln!("  Using module graph for import analysis");
-            }
+            shell.verbose("Analysis", "using module graph for import analysis");
             imports
         }
         Err(_) => {
-            if verbose {
-                eprintln!("  Module graph unavailable, falling back to text-based import scanning");
-            }
+            shell.verbose(
+                "Analysis",
+                "module graph unavailable, falling back to text-based import scanning",
+            );
             collect_all_imports(&src_dir)?
         }
     };
 
-    if verbose {
-        eprintln!("  Found {} unique imports in source files", imports.len());
-        for imp in &imports {
-            eprintln!("    {}", imp);
-        }
+    shell.verbose(
+        "Imports",
+        format!("found {} unique imports in source files", imports.len()),
+    );
+    for imp in &imports {
+        shell.verbose("Import", imp);
     }
 
     // Compare against declared dependencies
@@ -58,11 +59,11 @@ pub fn run(apply: bool, verbose: bool) -> Result<(), CmodError> {
     }
 
     if unused.is_empty() {
-        eprintln!("  All dependencies are used.");
+        shell.status("Tidy", "all dependencies are used");
         return Ok(());
     }
 
-    eprintln!("  Unused dependencies ({}):", unused.len());
+    shell.status("Unused", format!("{} dependencies", unused.len()));
     for (name, source) in &unused {
         eprintln!("    - {}{}", name, source);
     }
@@ -75,12 +76,12 @@ pub fn run(apply: bool, verbose: bool) -> Result<(), CmodError> {
             manifest.dependencies.remove(name);
         }
         manifest.save(&manifest_path)?;
-        eprintln!(
-            "  Removed {} unused dependencies from cmod.toml",
-            unused.len()
+        shell.status(
+            "Removed",
+            format!("{} unused dependencies from cmod.toml", unused.len()),
         );
     } else {
-        eprintln!("  Run `cmod tidy --apply` to remove them.");
+        shell.note("run `cmod tidy --apply` to remove them");
     }
 
     Ok(())
@@ -287,7 +288,7 @@ mod tests {
             profile: cmod_core::types::Profile::Debug,
             locked: false,
             offline: false,
-            verbose: false,
+            verbosity: cmod_core::shell::Verbosity::Normal,
             target: None,
             enabled_features: vec![],
             no_default_features: false,

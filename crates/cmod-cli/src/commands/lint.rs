@@ -1,19 +1,20 @@
 use cmod_build::runner;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 
 /// Run `cmod lint` — static analysis and style checks on C++ module sources.
-pub fn run(verbose: bool) -> Result<(), CmodError> {
+pub fn run(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    eprintln!("  Linting {}", config.manifest.package.name);
+    shell.status("Linting", &config.manifest.package.name);
 
     let src_dir = config.src_dir();
     let sources = runner::discover_sources(&src_dir)?;
 
     if sources.is_empty() {
-        eprintln!("  No source files found.");
+        shell.warn("no source files found");
         return Ok(());
     }
 
@@ -28,20 +29,20 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
 
         let file_warnings = lint_source(filename, &content);
         for w in &file_warnings {
-            if verbose {
-                eprintln!("  warning: {}:{}: {}", filename, w.line, w.message);
-            }
+            shell.verbose("Warning", format!("{}:{}: {}", filename, w.line, w.message));
         }
         warnings.extend(file_warnings);
     }
 
     if warnings.is_empty() {
-        eprintln!("  No warnings found ({} files checked).", sources.len());
+        shell.status(
+            "Finished",
+            format!("no warnings ({} files checked)", sources.len()),
+        );
     } else {
-        eprintln!(
-            "  {} warning(s) in {} file(s).",
-            warnings.len(),
-            sources.len()
+        shell.status(
+            "Finished",
+            format!("{} warning(s) in {} file(s)", warnings.len(), sources.len()),
         );
     }
 

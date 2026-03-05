@@ -4,18 +4,23 @@ use cmod_build::graph::{ModuleGraph, ModuleNode};
 use cmod_build::runner;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::{Shell, Verbosity};
 use cmod_core::types::ModuleId;
 
 /// Run `cmod check` — validate module naming, identity, structure, and semantics.
-pub fn run(verbose: bool) -> Result<(), CmodError> {
+pub fn run(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
+    let verbose = shell.verbosity() == Verbosity::Verbose;
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
 
-    eprintln!(
-        "  Checking {} v{}",
-        config.manifest.package.name, config.manifest.package.version
+    shell.status(
+        "Checking",
+        format!(
+            "{} v{}",
+            config.manifest.package.name, config.manifest.package.version
+        ),
     );
 
     // 1. Check module name matches export declaration
@@ -113,14 +118,17 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
 
     // Report
     for w in &warnings {
-        eprintln!("  warning: {}", w);
+        shell.warn(w);
     }
     for e in &errors {
-        eprintln!("  error: {}", e);
+        shell.error(e);
     }
 
     if errors.is_empty() {
-        eprintln!("  All checks passed ({} warnings).", warnings.len());
+        shell.status(
+            "Finished",
+            format!("all checks passed ({} warnings)", warnings.len()),
+        );
         Ok(())
     } else {
         Err(CmodError::BuildFailed {

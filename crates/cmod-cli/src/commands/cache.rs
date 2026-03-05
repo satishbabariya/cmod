@@ -1,6 +1,7 @@
 use cmod_cache::{ArtifactCache, RemoteCache};
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::{format_bytes, Shell};
 
 /// Run `cmod cache status` — show cache info (human-readable or JSON).
 pub fn status_json() -> Result<(), CmodError> {
@@ -52,7 +53,7 @@ pub fn status() -> Result<(), CmodError> {
 }
 
 /// Run `cmod cache clean` — clear the local cache.
-pub fn clean() -> Result<(), CmodError> {
+pub fn clean(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -61,16 +62,16 @@ pub fn clean() -> Result<(), CmodError> {
 
     cache.clean()?;
 
-    eprintln!(
-        "  Cleared {} of cached artifacts",
-        format_bytes(size_before)
+    shell.status(
+        "Cleaned",
+        format!("{} of cached artifacts", format_bytes(size_before)),
     );
 
     Ok(())
 }
 
 /// Run `cmod cache push` — push local cache entries to a remote cache.
-pub fn push(verbose: bool) -> Result<(), CmodError> {
+pub fn push(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -91,17 +92,15 @@ pub fn push(verbose: bool) -> Result<(), CmodError> {
     let cache = ArtifactCache::new(config.cache_dir());
     let modules = cache.list_modules()?;
 
-    eprintln!("  Pushing {} modules to remote cache...", modules.len());
-    if verbose {
-        eprintln!("  Remote: {}", remote_url);
-    }
+    shell.status(
+        "Pushing",
+        format!("{} modules to remote cache...", modules.len()),
+    );
+    shell.verbose("Remote", remote_url);
 
     let mut pushed = 0;
     for module in &modules {
-        if verbose {
-            eprintln!("    Pushing: {}", module);
-        }
-        // Walk the module's cache entries
+        shell.verbose("Pushing", module);
         let module_dir = config.cache_dir().join(module);
         if module_dir.is_dir() {
             for entry in walkdir::WalkDir::new(&module_dir)
@@ -127,15 +126,12 @@ pub fn push(verbose: bool) -> Result<(), CmodError> {
         }
     }
 
-    eprintln!("  Pushed {} artifacts", pushed);
+    shell.status("Pushed", format!("{} artifacts", pushed));
     Ok(())
 }
 
 /// Run `cmod cache pull` — pull cache entries from a remote cache.
-///
-/// Uses the lockfile to determine module names and content hashes,
-/// then constructs cache keys and fetches available artifacts.
-pub fn pull(verbose: bool) -> Result<(), CmodError> {
+pub fn pull(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -153,16 +149,14 @@ pub fn pull(verbose: bool) -> Result<(), CmodError> {
     let remote =
         cmod_cache::HttpRemoteCache::new(remote_url, cmod_cache::RemoteCacheMode::ReadOnly);
 
-    if verbose {
-        eprintln!("  Remote: {}", remote_url);
-    }
+    shell.verbose("Remote", remote_url);
 
     // Load the lockfile to get module names and hashes
     let lockfile = cmod_core::lockfile::Lockfile::load(&config.lockfile_path)
         .map_err(|_| CmodError::Other("no lockfile found; run `cmod resolve` first".to_string()))?;
 
     if lockfile.packages.is_empty() {
-        eprintln!("  No dependencies in lockfile, nothing to pull.");
+        shell.status("Pulled", "no dependencies in lockfile");
         return Ok(());
     }
 
@@ -176,27 +170,20 @@ pub fn pull(verbose: bool) -> Result<(), CmodError> {
             continue;
         }
 
-        // Use content hash as cache key lookup
         let key = match cmod_cache::CacheKey::from_hex(hash) {
             Some(k) => k,
             None => continue,
         };
 
-        // Check if already cached locally
         if cache.has(&pkg.name, &key) {
-            if verbose {
-                eprintln!("    {} — already cached", pkg.name);
-            }
+            shell.verbose("Cached", format!("{} — already cached", pkg.name));
             skipped += 1;
             continue;
         }
 
-        // Check remote availability and pull
         match remote.has(&pkg.name, &key) {
             Ok(true) => {
-                if verbose {
-                    eprintln!("    {} — pulling from remote...", pkg.name);
-                }
+                shell.verbose("Pulling", format!("{} from remote...", pkg.name));
 
                 let dest_dir = cache.entry_dir(&pkg.name, &key);
                 std::fs::create_dir_all(&dest_dir)?;
@@ -205,46 +192,43 @@ pub fn pull(verbose: bool) -> Result<(), CmodError> {
                     let dest = dest_dir.join(artifact);
                     match remote.get(&pkg.name, &key, artifact, &dest) {
                         Ok(true) => {
-                            if verbose {
-                                eprintln!("      {} — downloaded", artifact);
-                            }
+                            shell.verbose("Downloaded", format!("{}/{}", pkg.name, artifact));
                         }
-                        Ok(false) => {} // Not available, skip
+                        Ok(false) => {}
                         Err(e) => {
-                            if verbose {
-                                eprintln!("      {} — failed: {}", artifact, e);
-                            }
+                            shell.verbose("Failed", format!("{}/{}: {}", pkg.name, artifact, e));
                         }
                     }
                 }
                 pulled += 1;
             }
             Ok(false) => {
-                if verbose {
-                    eprintln!("    {} — not in remote cache", pkg.name);
-                }
+                shell.verbose("Missing", format!("{} — not in remote cache", pkg.name));
             }
             Err(e) => {
-                if verbose {
-                    eprintln!("    {} — remote check failed: {}", pkg.name, e);
-                }
+                shell.verbose(
+                    "Error",
+                    format!("{} — remote check failed: {}", pkg.name, e),
+                );
             }
         }
     }
 
-    eprintln!("  Pulled {} entries ({} already cached)", pulled, skipped);
+    shell.status(
+        "Pulled",
+        format!("{} entries ({} already cached)", pulled, skipped),
+    );
     Ok(())
 }
 
 /// Run `cmod cache gc` — garbage collect old/oversized cache entries.
-pub fn gc(verbose: bool) -> Result<(), CmodError> {
+pub fn gc(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
     let cache = ArtifactCache::new(config.cache_dir());
     let size_before = cache.total_size()?;
 
-    // Parse TTL from manifest [cache].ttl
     let max_age = config
         .manifest
         .cache
@@ -252,7 +236,6 @@ pub fn gc(verbose: bool) -> Result<(), CmodError> {
         .and_then(|c| c.ttl.as_deref())
         .and_then(cmod_cache::parse_ttl);
 
-    // Parse max_size from manifest [cache].max_size
     let max_bytes = config
         .manifest
         .cache
@@ -261,29 +244,30 @@ pub fn gc(verbose: bool) -> Result<(), CmodError> {
         .and_then(parse_size);
 
     if max_age.is_none() && max_bytes.is_none() {
-        eprintln!("  No TTL or max_size configured in [cache]; nothing to evict.");
-        eprintln!("  Set [cache] ttl = \"7d\" or max_size = \"500M\" in cmod.toml.");
+        shell.warn("no TTL or max_size configured in [cache]; nothing to evict");
+        shell.note("set [cache] ttl = \"7d\" or max_size = \"500M\" in cmod.toml");
         return Ok(());
     }
 
-    if verbose {
-        if let Some(ref age) = max_age {
-            eprintln!("  TTL: {:?}", age);
-        }
-        if let Some(bytes) = max_bytes {
-            eprintln!("  Max size: {}", format_bytes(bytes));
-        }
+    if let Some(ref age) = max_age {
+        shell.verbose("TTL", format!("{:?}", age));
+    }
+    if let Some(bytes) = max_bytes {
+        shell.verbose("Max size", format_bytes(bytes));
     }
 
     let result = cache.auto_evict(max_age, max_bytes)?;
 
     let size_after = cache.total_size()?;
-    eprintln!(
-        "  GC complete: {} entries removed, {} freed ({} → {})",
-        result.entries_removed,
-        format_bytes(result.bytes_freed),
-        format_bytes(size_before),
-        format_bytes(size_after),
+    shell.status(
+        "GC",
+        format!(
+            "{} entries removed, {} freed ({} -> {})",
+            result.entries_removed,
+            format_bytes(result.bytes_freed),
+            format_bytes(size_before),
+            format_bytes(size_after),
+        ),
     );
 
     Ok(())
@@ -311,65 +295,52 @@ fn parse_size(s: &str) -> Option<u64> {
 }
 
 /// Run `cmod cache export` — export a cached module as a BMI package.
-pub fn export_bmi(module: &str, key: &str, output: &str, verbose: bool) -> Result<(), CmodError> {
+pub fn export_bmi(module: &str, key: &str, output: &str, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
     let output_path = std::path::PathBuf::from(output);
     let package = cmod_cache::export_bmi(&config.cache_dir(), module, key, &output_path)?;
 
-    eprintln!("  Exported BMI package for '{}' to {}", module, output);
-    eprintln!("  {} file(s) in package", package.files.len());
-
-    if verbose {
-        eprintln!("  Compatibility key: {}", package.metadata.compat_key());
-        for (name, hash) in &package.files {
-            eprintln!("    {} ({})", name, &hash[..12.min(hash.len())]);
-        }
+    shell.status(
+        "Exported",
+        format!("BMI package for '{}' to {}", module, output),
+    );
+    shell.verbose("Package", format!("{} file(s)", package.files.len()));
+    shell.verbose("Compat", package.metadata.compat_key());
+    for (name, hash) in &package.files {
+        shell.verbose(
+            "File",
+            format!("{} ({})", name, &hash[..12.min(hash.len())]),
+        );
     }
 
     Ok(())
 }
 
 /// Run `cmod cache import` — import a BMI package into the local cache.
-pub fn import_bmi(path: &str, verbose: bool) -> Result<(), CmodError> {
+pub fn import_bmi(path: &str, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
     let package_path = std::path::PathBuf::from(path);
     let metadata = cmod_cache::import_bmi(&config.cache_dir(), &package_path)?;
 
-    eprintln!(
-        "  Imported BMI for '{}' v{} ({})",
-        metadata.module_name,
-        metadata.version,
-        metadata.compat_key()
+    shell.status(
+        "Imported",
+        format!(
+            "BMI for '{}' v{} ({})",
+            metadata.module_name,
+            metadata.version,
+            metadata.compat_key()
+        ),
     );
-
-    if verbose {
-        eprintln!(
-            "  Compiler: {} {}",
-            metadata.compiler, metadata.compiler_version
-        );
-        eprintln!("  Target: {}", metadata.target);
-        eprintln!("  C++ standard: {}", metadata.cxx_standard);
-    }
+    shell.verbose(
+        "Compiler",
+        format!("{} {}", metadata.compiler, metadata.compiler_version),
+    );
+    shell.verbose("Target", &metadata.target);
+    shell.verbose("Standard", format!("C++{}", metadata.cxx_standard));
 
     Ok(())
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * KB;
-    const GB: u64 = 1024 * MB;
-
-    if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
 }

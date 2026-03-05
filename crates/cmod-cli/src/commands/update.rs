@@ -1,17 +1,18 @@
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
+use cmod_core::shell::Shell;
 use cmod_resolver::Resolver;
 
 /// Run `cmod update` — re-resolve dependencies to latest matching versions.
-pub fn run(name: Option<String>, patch_only: bool, verbose: bool) -> Result<(), CmodError> {
+pub fn run(name: Option<String>, patch_only: bool, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
     if patch_only {
-        eprintln!("  Updating dependencies (patch-level only)...");
+        shell.status("Updating", "dependencies (patch-level only)...");
     } else {
-        eprintln!("  Updating dependencies...");
+        shell.status("Updating", "dependencies...");
     }
 
     let mut resolver = Resolver::new(config.deps_dir());
@@ -49,7 +50,7 @@ pub fn run(name: Option<String>, patch_only: bool, verbose: bool) -> Result<(), 
         lockfile.save(&config.lockfile_path)?;
 
         if let Some(pkg) = lockfile.find_package(dep_name) {
-            eprintln!("  Updated {} to v{}", dep_name, pkg.version);
+            shell.status("Updated", format!("{} to v{}", dep_name, pkg.version));
         }
     } else {
         // Full re-resolve (ignore existing lockfile)
@@ -79,11 +80,12 @@ pub fn run(name: Option<String>, patch_only: bool, verbose: bool) -> Result<(), 
 
         lockfile.save(&config.lockfile_path)?;
 
-        eprintln!("  Updated {} dependencies", lockfile.packages.len());
-        if verbose {
-            for pkg in &lockfile.packages {
-                eprintln!("    {} v{}", pkg.name, pkg.version);
-            }
+        shell.status(
+            "Updated",
+            format!("{} dependencies", lockfile.packages.len()),
+        );
+        for pkg in &lockfile.packages {
+            shell.verbose("Updated", format!("{} v{}", pkg.name, pkg.version));
         }
     }
 

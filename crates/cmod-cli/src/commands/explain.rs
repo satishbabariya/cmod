@@ -4,12 +4,14 @@ use cmod_cache::key::{hash_file, CacheKey, CacheKeyInputs};
 use cmod_cache::ArtifactCache;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::{Shell, Verbosity};
 use cmod_core::types::Profile;
 
 /// Run `cmod explain <module>` — explain why a module would be rebuilt.
-pub fn run(module_name: String, verbose: bool) -> Result<(), CmodError> {
+pub fn run(module_name: String, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
+    let verbose = shell.verbosity() == Verbosity::Verbose;
 
     let src_dir = config.src_dir();
     let sources = runner::discover_sources(&src_dir)?;
@@ -166,20 +168,20 @@ pub fn run(module_name: String, verbose: bool) -> Result<(), CmodError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cmod_core::shell::Shell;
 
     #[test]
     fn test_explain_module_not_found() {
-        // In a temp dir with no sources, explain should fail gracefully
         let tmp = tempfile::TempDir::new().unwrap();
         let toml = "[package]\nname = \"test\"\nversion = \"0.1.0\"\n";
         std::fs::write(tmp.path().join("cmod.toml"), toml).unwrap();
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
 
-        // Set current dir for the test
         let original = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
-        let result = run("nonexistent_module".to_string(), false);
+        let shell = Shell::new(Verbosity::Normal);
+        let result = run("nonexistent_module".to_string(), &shell);
         assert!(result.is_err());
 
         std::env::set_current_dir(original).unwrap();

@@ -624,7 +624,7 @@ fn test_search_no_results() {
     assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("No modules matching"),
+        stderr.contains("no modules matching") || stderr.contains("No modules matching"),
         "search should report no results: {}",
         stderr
     );
@@ -1072,7 +1072,8 @@ fn test_tidy_command() {
         stderr.contains("unused")
             || stderr.contains("No dependencies")
             || stderr.contains("0 unused")
-            || stderr.contains("All dependencies are used"),
+            || stderr.contains("All dependencies are used")
+            || stderr.contains("all dependencies are used"),
         "expected tidy output, got: {}",
         stderr
     );

@@ -3,12 +3,14 @@ use cmod_cache::ArtifactCache;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
+use cmod_core::shell::{format_bytes, Shell, Verbosity};
 use cmod_workspace::WorkspaceManager;
 
 /// Run `cmod status` — show project state overview.
-pub fn run(verbose: bool) -> Result<(), CmodError> {
+pub fn run(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
+    let verbose = shell.verbosity() == Verbosity::Verbose;
 
     println!(
         "Project: {} v{}",
@@ -72,7 +74,7 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
             println!(
                 "  Cache: {} entries, {}",
                 status.entry_count,
-                format_size(status.total_size)
+                format_bytes(status.total_size)
             );
         }
         Err(_) => println!("  Cache: not initialized"),
@@ -97,26 +99,13 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     let build_dir = config.build_dir();
     if build_dir.exists() {
         let size = dir_size(&build_dir);
-        println!("  Build dir: {}", format_size(size));
+        println!("  Build dir: {}", format_bytes(size));
     } else {
         println!("  Build dir: not yet created");
     }
 
     println!();
     Ok(())
-}
-
-/// Format a byte count into human-readable form.
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    }
 }
 
 /// Calculate total size of a directory tree.
@@ -135,28 +124,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_format_size_bytes() {
-        assert_eq!(format_size(0), "0 B");
-        assert_eq!(format_size(512), "512 B");
-    }
-
-    #[test]
-    fn test_format_size_kb() {
-        assert_eq!(format_size(1024), "1.0 KB");
-        assert_eq!(format_size(2048), "2.0 KB");
-    }
-
-    #[test]
-    fn test_format_size_mb() {
-        assert_eq!(format_size(1024 * 1024), "1.0 MB");
-    }
-
-    #[test]
-    fn test_format_size_gb() {
-        assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
-    }
-
-    #[test]
     fn test_dir_size_nonexistent() {
         let size = dir_size(std::path::Path::new("/nonexistent_dir_xyz"));
         assert_eq!(size, 0);
@@ -168,6 +135,6 @@ mod tests {
         std::fs::write(tmp.path().join("a.txt"), "hello").unwrap();
         std::fs::write(tmp.path().join("b.txt"), "world!").unwrap();
         let size = dir_size(tmp.path());
-        assert_eq!(size, 11); // "hello" (5) + "world!" (6)
+        assert_eq!(size, 11);
     }
 }

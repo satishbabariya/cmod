@@ -1,6 +1,7 @@
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
+use cmod_core::shell::Shell;
 use cmod_resolver::Resolver;
 use cmod_security::trust::TrustDb;
 use cmod_workspace::WorkspaceManager;
@@ -9,7 +10,7 @@ use cmod_workspace::WorkspaceManager;
 pub fn run(
     locked: bool,
     offline: bool,
-    verbose: bool,
+    shell: &Shell,
     features: &[String],
     no_default_features: bool,
     target: Option<String>,
@@ -29,7 +30,7 @@ pub fn run(
             .and_then(|h| h.pre_resolve.as_deref()),
     )?;
 
-    eprintln!("  Resolving dependencies...");
+    shell.status("Resolving", "dependencies...");
 
     // Check if this is a workspace
     if config.manifest.is_workspace() {
@@ -37,7 +38,7 @@ pub fn run(
             &config,
             locked,
             offline,
-            verbose,
+            shell,
             features,
             no_default_features,
             &target,
@@ -71,16 +72,20 @@ pub fn run(
     lockfile.compute_integrity();
     lockfile.save(&config.lockfile_path)?;
 
-    eprintln!("  Resolved {} dependencies", lockfile.packages.len());
-    if verbose {
-        for pkg in &lockfile.packages {
-            eprintln!(
-                "    {} v{} ({})",
+    shell.status(
+        "Resolved",
+        format!("{} dependencies", lockfile.packages.len()),
+    );
+    for pkg in &lockfile.packages {
+        shell.verbose(
+            "Resolved",
+            format!(
+                "{} v{} ({})",
                 pkg.name,
                 pkg.version,
                 pkg.commit.as_deref().unwrap_or("local")
-            );
-        }
+            ),
+        );
     }
 
     Ok(())
@@ -92,7 +97,7 @@ fn resolve_workspace(
     config: &Config,
     locked: bool,
     offline: bool,
-    verbose: bool,
+    shell: &Shell,
     features: &[String],
     no_default_features: bool,
     target: &Option<String>,
@@ -130,20 +135,24 @@ fn resolve_workspace(
     lockfile.compute_integrity();
     lockfile.save(&ws.lockfile_path())?;
 
-    eprintln!(
-        "  Resolved {} dependencies for workspace ({} members)",
-        lockfile.packages.len(),
-        ws.members.len()
+    shell.status(
+        "Resolved",
+        format!(
+            "{} dependencies for workspace ({} members)",
+            lockfile.packages.len(),
+            ws.members.len()
+        ),
     );
-    if verbose {
-        for pkg in &lockfile.packages {
-            eprintln!(
-                "    {} v{} ({})",
+    for pkg in &lockfile.packages {
+        shell.verbose(
+            "Resolved",
+            format!(
+                "{} v{} ({})",
                 pkg.name,
                 pkg.version,
                 pkg.commit.as_deref().unwrap_or("local")
-            );
-        }
+            ),
+        );
     }
 
     Ok(())
