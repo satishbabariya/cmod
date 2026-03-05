@@ -311,8 +311,8 @@ fn expand_member_patterns(
                             let name = entry
                                 .strip_prefix(root)
                                 .unwrap_or(&entry)
-                                .display()
-                                .to_string();
+                                .to_string_lossy()
+                                .replace('\\', "/");
                             results.push((name, entry));
                         }
                     }
