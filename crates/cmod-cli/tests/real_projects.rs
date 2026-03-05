@@ -120,7 +120,12 @@ fn create_local_git_repo(
         .expect("git init failed");
 
     // Set up git config for the repo
-    for (key, value) in [("user.name", "test"), ("user.email", "test@test.com")] {
+    for (key, value) in [
+        ("user.name", "test"),
+        ("user.email", "test@test.com"),
+        ("commit.gpgsign", "false"),
+        ("tag.gpgsign", "false"),
+    ] {
         Command::new("git")
             .args(["config", key, value])
             .current_dir(dir)

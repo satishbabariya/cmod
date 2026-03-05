@@ -341,6 +341,11 @@ mod tests {
             .current_dir(repo_path)
             .output()
             .unwrap();
+        Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
 
         std::fs::write(repo_path.join("hello.txt"), "hello world").unwrap();
         Command::new("git")

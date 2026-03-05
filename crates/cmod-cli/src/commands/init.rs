@@ -22,11 +22,38 @@ pub fn run(workspace: bool, name: Option<String>) -> Result<(), CmodError> {
             .to_string()
     });
 
+    // Validate project name
+    validate_project_name(&project_name)?;
+
     if workspace {
         init_workspace(&cwd, &project_name)
     } else {
         init_module(&cwd, &project_name)
     }
+}
+
+/// Validate a project name for safety and correctness.
+fn validate_project_name(name: &str) -> Result<(), CmodError> {
+    if name.is_empty() {
+        return Err(CmodError::Other("project name cannot be empty".to_string()));
+    }
+
+    if name.contains('/') || name.contains('\\') || name.starts_with('.') {
+        return Err(CmodError::Other(format!(
+            "invalid project name '{}': must not contain path separators or start with '.'",
+            name
+        )));
+    }
+
+    if name.len() > 128 {
+        return Err(CmodError::Other(format!(
+            "project name '{}' is too long ({} chars, max 128)",
+            &name[..32],
+            name.len()
+        )));
+    }
+
+    Ok(())
 }
 
 /// Sanitize a name for use as a C++ identifier (module name, namespace).

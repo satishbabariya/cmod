@@ -43,7 +43,9 @@ pub fn run(apply: bool, verbose: bool) -> Result<(), CmodError> {
     for (dep_name, dep) in &config.manifest.dependencies {
         // A dep is "used" if any source file imports a module that matches
         // the dep name or a module that starts with the dep name.
-        let is_used = imports.iter().any(|imp| dep_matches_import(dep_name, imp));
+        let is_used = imports
+            .iter()
+            .any(|imp| dep_matches_import(dep_name, dep, &config, imp));
 
         if !is_used {
             let source_info = dep
@@ -234,15 +236,41 @@ fn collect_all_imports(src_dir: &Path) -> Result<BTreeSet<String>, CmodError> {
 ///
 /// A dep like "github.com/fmtlib/fmt" matches imports like "fmt", "fmt.core", etc.
 /// A dep like "mylib" matches imports like "mylib", "mylib.utils", etc.
-fn dep_matches_import(dep_name: &str, import_name: &str) -> bool {
+/// For path dependencies, also checks the module name declared in the dep's cmod.toml.
+fn dep_matches_import(
+    dep_name: &str,
+    dep: &cmod_core::manifest::Dependency,
+    config: &Config,
+    import_name: &str,
+) -> bool {
     // Extract the short name from a Git-style dep key
     let short_name = dep_name.rsplit('/').next().unwrap_or(dep_name);
 
-    // Module name could be the short dep name or start with it (partition)
-    import_name == short_name
+    // Direct match against dependency short name
+    if import_name == short_name
         || import_name.starts_with(&format!("{}.", short_name))
         || import_name.starts_with(&format!("{}:", short_name))
         || import_name == dep_name
+    {
+        return true;
+    }
+
+    // For path dependencies, check the module name declared in the dep's cmod.toml
+    if let Some(path) = dep.path() {
+        let dep_dir = config.root.join(path);
+        if let Ok(dep_config) = Config::load(&dep_dir) {
+            if let Some(ref module) = dep_config.manifest.module {
+                if import_name == module.name
+                    || import_name.starts_with(&format!("{}.", module.name))
+                    || import_name.starts_with(&format!("{}:", module.name))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -250,22 +278,55 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn dummy_config() -> Config {
+        Config {
+            root: std::path::PathBuf::from("/tmp/nonexistent"),
+            manifest_path: std::path::PathBuf::from("/tmp/nonexistent/cmod.toml"),
+            manifest: cmod_core::manifest::default_manifest("test"),
+            lockfile_path: std::path::PathBuf::from("/tmp/nonexistent/cmod.lock"),
+            profile: cmod_core::types::Profile::Debug,
+            locked: false,
+            offline: false,
+            verbose: false,
+            target: None,
+            enabled_features: vec![],
+            no_default_features: false,
+            no_cache: false,
+        }
+    }
+
     #[test]
     fn test_dep_matches_import_exact() {
-        assert!(dep_matches_import("fmt", "fmt"));
-        assert!(dep_matches_import("github.com/fmtlib/fmt", "fmt"));
+        let config = dummy_config();
+        let dep = cmod_core::manifest::Dependency::Simple("*".to_string());
+        assert!(dep_matches_import("fmt", &dep, &config, "fmt"));
+        assert!(dep_matches_import(
+            "github.com/fmtlib/fmt",
+            &dep,
+            &config,
+            "fmt"
+        ));
     }
 
     #[test]
     fn test_dep_matches_import_partition() {
-        assert!(dep_matches_import("fmt", "fmt.core"));
-        assert!(dep_matches_import("fmt", "fmt:detail"));
+        let config = dummy_config();
+        let dep = cmod_core::manifest::Dependency::Simple("*".to_string());
+        assert!(dep_matches_import("fmt", &dep, &config, "fmt.core"));
+        assert!(dep_matches_import("fmt", &dep, &config, "fmt:detail"));
     }
 
     #[test]
     fn test_dep_matches_import_no_match() {
-        assert!(!dep_matches_import("fmt", "spdlog"));
-        assert!(!dep_matches_import("github.com/fmtlib/fmt", "spdlog"));
+        let config = dummy_config();
+        let dep = cmod_core::manifest::Dependency::Simple("*".to_string());
+        assert!(!dep_matches_import("fmt", &dep, &config, "spdlog"));
+        assert!(!dep_matches_import(
+            "github.com/fmtlib/fmt",
+            &dep,
+            &config,
+            "spdlog"
+        ));
     }
 
     #[test]

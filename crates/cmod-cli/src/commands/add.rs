@@ -21,6 +21,14 @@ pub fn run(
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
 
+    // Validate the dependency specifier is not empty
+    let trimmed = dep.trim();
+    if trimmed.is_empty() || trimmed == "@" {
+        return Err(CmodError::Other(
+            "dependency specifier cannot be empty".to_string(),
+        ));
+    }
+
     // Parse the dep specifier: "github.com/fmtlib/fmt@^10.2" or "github.com/fmtlib/fmt"
     let (dep_key, version_constraint) = parse_dep_specifier(&dep);
 

@@ -236,6 +236,10 @@ enum Commands {
         #[arg(long)]
         release: bool,
 
+        /// Run a specific workspace member
+        #[arg(short, long)]
+        package: Option<String>,
+
         /// Arguments to pass to the binary
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -470,9 +474,11 @@ fn main() {
         Commands::Lint => commands::lint::run(cli.verbose),
         Commands::Fmt { check } => commands::fmt::run(check, cli.verbose),
         Commands::Search { query } => commands::search::run(&query, cli.verbose),
-        Commands::Run { release, args } => {
-            commands::run::run(release, args, cli.verbose, cli.no_cache)
-        }
+        Commands::Run {
+            release,
+            package,
+            args,
+        } => commands::run::run(release, package, args, cli.verbose, cli.no_cache),
         Commands::Clean => commands::clean::run(cli.verbose),
         Commands::Workspace { action } => match action {
             WorkspaceAction::List => commands::workspace::list(cli.verbose),

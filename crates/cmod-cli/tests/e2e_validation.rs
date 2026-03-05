@@ -1404,18 +1404,30 @@ fn test_e2e_publish_dry_run() {
         .current_dir(tmp.path())
         .output()
         .unwrap();
+    // Disable commit signing in this temp repo (may be enabled globally)
+    Command::new("git")
+        .args(["config", "commit.gpgsign", "false"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "test"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
     Command::new("git")
         .args(["add", "."])
         .current_dir(tmp.path())
         .output()
         .unwrap();
     Command::new("git")
-        .args(["commit", "-m", "init", "--allow-empty"])
+        .args(["commit", "-m", "init"])
         .current_dir(tmp.path())
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test.com")
         .output()
         .unwrap();
 
@@ -1459,6 +1471,17 @@ fn test_e2e_publish_creates_tag() {
     // Set up clean git repo with user identity (required on CI)
     Command::new("git")
         .args(["init"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    // Disable commit signing in this temp repo (may be enabled globally)
+    Command::new("git")
+        .args(["config", "commit.gpgsign", "false"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "tag.gpgsign", "false"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
