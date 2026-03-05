@@ -1,0 +1,32 @@
+version = 1
+integrity = "sha256:5be1d5361683406c42770b94188ae5e4b67fc6d3269b48f9cb7fbe699058e7fe"
+
+[[package]]
+name = "colors"
+version = "0.0.0"
+source = "git"
+repo = "path:libs/colors"
+commit = "local"
+hash = "local"
+deps = []
+features = []
+
+[package.toolchain]
+compiler = "clang"
+
+[package.targets]
+
+[[package]]
+name = "geometry"
+version = "0.0.0"
+source = "git"
+repo = "path:libs/geometry"
+commit = "local"
+hash = "local"
+deps = []
+features = []
+
+[package.toolchain]
+compiler = "clang"
+
+[package.targets]
