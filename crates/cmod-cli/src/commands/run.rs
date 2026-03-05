@@ -13,6 +13,27 @@ pub fn run(
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
+    // For workspace projects, validate the target member BEFORE building
+    if config.manifest.is_workspace() {
+        // Pre-validate the member so we don't waste time building if it doesn't exist
+        if let Some(ref name) = package {
+            let ws = WorkspaceManager::load(&config.root)?;
+            if !ws.members.iter().any(|m| m.name == *name) {
+                return Err(CmodError::BuildFailed {
+                    reason: format!(
+                        "workspace member '{}' not found. Available members: {}",
+                        name,
+                        ws.members
+                            .iter()
+                            .map(|m| m.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                });
+            }
+        }
+    }
+
     // Build first
     super::build::run(
         release,
