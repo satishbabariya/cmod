@@ -8,6 +8,7 @@
 //! - `PUT  /cache/<module_id>/<key>/<artifact>` — upload artifact
 
 use std::path::Path;
+use std::time::Duration;
 
 use cmod_core::error::CmodError;
 
@@ -66,21 +67,54 @@ pub trait RemoteCache: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// HTTP-based remote cache implementation.
+/// HTTP-based remote cache implementation using native HTTP (`ureq`).
 ///
-/// Uses a simple REST protocol for artifact storage and retrieval.
+/// Features:
+/// - `Authorization: Bearer <token>` support
+/// - Configurable timeout (default 30s)
+/// - Retry with exponential backoff (default 3 attempts)
 pub struct HttpRemoteCache {
     /// Base URL of the cache server (e.g., `https://cache.example.com`).
     base_url: String,
     /// Access mode.
     mode: RemoteCacheMode,
+    /// Optional bearer token for authentication.
+    auth_token: Option<String>,
+    /// HTTP timeout per request.
+    timeout: Duration,
+    /// Number of retry attempts.
+    max_retries: u32,
 }
 
 impl HttpRemoteCache {
     /// Create a new HTTP remote cache client.
     pub fn new(base_url: &str, mode: RemoteCacheMode) -> Self {
         let base_url = base_url.trim_end_matches('/').to_string();
-        HttpRemoteCache { base_url, mode }
+        HttpRemoteCache {
+            base_url,
+            mode,
+            auth_token: None,
+            timeout: Duration::from_secs(30),
+            max_retries: 3,
+        }
+    }
+
+    /// Set the bearer token for authentication.
+    pub fn with_auth_token(mut self, token: Option<String>) -> Self {
+        self.auth_token = token;
+        self
+    }
+
+    /// Set the HTTP timeout.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Set the maximum number of retry attempts.
+    pub fn with_retries(mut self, retries: u32) -> Self {
+        self.max_retries = retries;
+        self
     }
 
     /// Construct the URL for a cache entry.
@@ -100,6 +134,44 @@ impl HttpRemoteCache {
     pub fn can_read(&self) -> bool {
         self.mode != RemoteCacheMode::Off
     }
+
+    /// Execute a request with retry and exponential backoff.
+    fn with_retry<F, T>(&self, operation: &str, f: F) -> Result<T, CmodError>
+    where
+        F: Fn() -> Result<T, CmodError>,
+    {
+        let mut last_err = None;
+        for attempt in 0..self.max_retries {
+            match f() {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt + 1 < self.max_retries {
+                        // Exponential backoff: 100ms, 200ms, 400ms, ...
+                        let delay = Duration::from_millis(100 * (1 << attempt));
+                        std::thread::sleep(delay);
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            CmodError::Other(format!(
+                "remote cache {} failed after {} retries",
+                operation, self.max_retries
+            ))
+        }))
+    }
+
+    /// Build a ureq agent configured to NOT treat non-2xx as errors,
+    /// so we can handle 404/etc gracefully.
+    fn agent(&self) -> ureq::Agent {
+        ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(Some(self.timeout))
+                .http_status_as_error(false)
+                .build(),
+        )
+    }
 }
 
 impl RemoteCache for HttpRemoteCache {
@@ -110,23 +182,17 @@ impl RemoteCache for HttpRemoteCache {
 
         let url = self.cache_url(module_id, key, None);
 
-        // Use std::process::Command to call curl for HEAD request
-        // (avoids adding a heavy HTTP client dependency)
-        let output = std::process::Command::new("curl")
-            .args([
-                "-s",
-                "-o",
-                "/dev/null",
-                "-w",
-                "%{http_code}",
-                "--head",
-                &url,
-            ])
-            .output()
-            .map_err(|e| CmodError::Other(format!("curl not available: {}", e)))?;
-
-        let status = String::from_utf8_lossy(&output.stdout);
-        Ok(status.trim() == "200")
+        self.with_retry("HEAD", || {
+            let agent = self.agent();
+            let mut req = agent.head(&url);
+            if let Some(ref token) = self.auth_token {
+                req = req.header("Authorization", &format!("Bearer {}", token));
+            }
+            match req.call() {
+                Ok(resp) => Ok(resp.status().as_u16() == 200),
+                Err(e) => Err(CmodError::Other(format!("remote cache HEAD failed: {}", e))),
+            }
+        })
     }
 
     fn get(
@@ -146,31 +212,40 @@ impl RemoteCache for HttpRemoteCache {
             std::fs::create_dir_all(parent)?;
         }
 
-        let output = std::process::Command::new("curl")
-            .args([
-                "-s",
-                "-o",
-                &dest.display().to_string(),
-                "-w",
-                "%{http_code}",
-                "--fail",
-                &url,
-            ])
-            .output()
-            .map_err(|e| CmodError::Other(format!("curl not available: {}", e)))?;
-
-        let status = String::from_utf8_lossy(&output.stdout);
-        if status.trim() == "200" {
-            // Verify the download is not empty
-            let meta = std::fs::metadata(dest)?;
-            if meta.len() > 0 {
-                return Ok(true);
+        self.with_retry("GET", || {
+            let agent = self.agent();
+            let mut req = agent.get(&url);
+            if let Some(ref token) = self.auth_token {
+                req = req.header("Authorization", &format!("Bearer {}", token));
             }
-        }
+            match req.call() {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    if status == 200 {
+                        let data = resp.into_body().read_to_vec().map_err(|e| {
+                            CmodError::Other(format!("failed to read response body: {}", e))
+                        })?;
 
-        // Clean up failed download
-        let _ = std::fs::remove_file(dest);
-        Ok(false)
+                        if data.is_empty() {
+                            return Ok(false);
+                        }
+
+                        std::fs::write(dest, &data)?;
+                        Ok(true)
+                    } else if status == 404 {
+                        Ok(false)
+                    } else if status >= 500 {
+                        Err(CmodError::Other(format!(
+                            "remote cache GET returned server error {}",
+                            status
+                        )))
+                    } else {
+                        Ok(false)
+                    }
+                }
+                Err(e) => Err(CmodError::Other(format!("remote cache GET failed: {}", e))),
+            }
+        })
     }
 
     fn put(
@@ -185,33 +260,30 @@ impl RemoteCache for HttpRemoteCache {
         }
 
         let url = self.cache_url(module_id, key, Some(artifact_name));
+        let body = std::fs::read(source)?;
 
-        let status = std::process::Command::new("curl")
-            .args([
-                "-s",
-                "-o",
-                "/dev/null",
-                "-w",
-                "%{http_code}",
-                "-X",
-                "PUT",
-                "--data-binary",
-                &format!("@{}", source.display()),
-                &url,
-            ])
-            .output()
-            .map_err(|e| CmodError::Other(format!("curl not available: {}", e)))?;
-
-        let code = String::from_utf8_lossy(&status.stdout);
-        let code = code.trim();
-        if code.starts_with('2') {
-            Ok(())
-        } else {
-            Err(CmodError::Other(format!(
-                "remote cache upload failed with HTTP {}",
-                code
-            )))
-        }
+        self.with_retry("PUT", || {
+            let agent = self.agent();
+            let mut req = agent.put(&url);
+            if let Some(ref token) = self.auth_token {
+                req = req.header("Authorization", &format!("Bearer {}", token));
+            }
+            req = req.header("Content-Type", "application/octet-stream");
+            match req.send(&body[..]) {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    if (200..300).contains(&status) {
+                        Ok(())
+                    } else {
+                        Err(CmodError::Other(format!(
+                            "remote cache upload failed with HTTP {}",
+                            status
+                        )))
+                    }
+                }
+                Err(e) => Err(CmodError::Other(format!("remote cache PUT failed: {}", e))),
+            }
+        })
     }
 
     fn name(&self) -> &str {
@@ -224,12 +296,30 @@ impl RemoteCache for HttpRemoteCache {
 pub struct RemoteCacheConfig {
     pub url: String,
     pub mode: RemoteCacheMode,
+    pub auth_token: Option<String>,
+    pub timeout_secs: u64,
+    pub retries: u32,
 }
 
 impl RemoteCacheConfig {
     /// Create a remote cache client from this config.
     pub fn into_client(self) -> HttpRemoteCache {
         HttpRemoteCache::new(&self.url, self.mode)
+            .with_auth_token(self.auth_token)
+            .with_timeout(Duration::from_secs(self.timeout_secs))
+            .with_retries(self.retries)
+    }
+}
+
+impl Default for RemoteCacheConfig {
+    fn default() -> Self {
+        RemoteCacheConfig {
+            url: String::new(),
+            mode: RemoteCacheMode::Off,
+            auth_token: None,
+            timeout_secs: 30,
+            retries: 3,
+        }
     }
 }
 
@@ -321,9 +411,36 @@ mod tests {
         let config = RemoteCacheConfig {
             url: "https://cache.example.com".to_string(),
             mode: RemoteCacheMode::ReadWrite,
+            auth_token: Some("my-token".to_string()),
+            timeout_secs: 60,
+            retries: 5,
         };
         let client = config.into_client();
         assert_eq!(client.name(), "http");
         assert!(client.can_write());
+        assert_eq!(client.timeout, Duration::from_secs(60));
+        assert_eq!(client.max_retries, 5);
+        assert_eq!(client.auth_token.as_deref(), Some("my-token"));
+    }
+
+    #[test]
+    fn test_builder_methods() {
+        let cache = HttpRemoteCache::new("https://cache.example.com", RemoteCacheMode::ReadWrite)
+            .with_auth_token(Some("token123".to_string()))
+            .with_timeout(Duration::from_secs(60))
+            .with_retries(5);
+
+        assert_eq!(cache.auth_token.as_deref(), Some("token123"));
+        assert_eq!(cache.timeout, Duration::from_secs(60));
+        assert_eq!(cache.max_retries, 5);
+    }
+
+    #[test]
+    fn test_default_config() {
+        let config = RemoteCacheConfig::default();
+        assert_eq!(config.timeout_secs, 30);
+        assert_eq!(config.retries, 3);
+        assert_eq!(config.mode, RemoteCacheMode::Off);
+        assert!(config.auth_token.is_none());
     }
 }

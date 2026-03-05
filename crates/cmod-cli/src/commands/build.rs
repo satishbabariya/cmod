@@ -177,6 +177,10 @@ fn build_module(
     activated_features: &[String],
     no_cache: bool,
 ) -> Result<(), CmodError> {
+    // Build path dependencies first and collect their artifacts
+    let (dep_pcms, dep_objs) =
+        build_path_dependencies(config, verbose, jobs, force, remote_url, no_cache)?;
+
     // Discover source files
     let src_dir = config.src_dir();
     let sources = runner::discover_sources(&src_dir)?;
@@ -223,7 +227,9 @@ fn build_module(
     let mut runner = BuildRunner::new(backend, Some(cache))
         .with_jobs(jobs)
         .with_force(force)
-        .with_no_cache(no_cache);
+        .with_no_cache(no_cache)
+        .with_extra_pcm_paths(dep_pcms)
+        .with_extra_obj_paths(dep_objs);
 
     if let Some(remote) = make_remote_cache(remote_url, verbose) {
         runner = runner.with_remote_cache(remote);
@@ -239,6 +245,114 @@ fn build_module(
     print_build_stats(&stats, verbose, timings);
     eprintln!("  Build complete: {}", output.display());
     Ok(())
+}
+
+/// Build path dependencies and collect their PCMs and object files.
+///
+/// For each dependency with `path = "..."`, load its config, build it,
+/// and return the aggregated PCMs and objects for the parent project.
+fn build_path_dependencies(
+    config: &Config,
+    verbose: bool,
+    jobs: usize,
+    force: bool,
+    remote_url: &Option<String>,
+    no_cache: bool,
+) -> Result<
+    (
+        std::collections::HashMap<String, std::path::PathBuf>,
+        Vec<std::path::PathBuf>,
+    ),
+    CmodError,
+> {
+    let mut all_pcms: std::collections::HashMap<String, std::path::PathBuf> =
+        std::collections::HashMap::new();
+    let mut all_objs: Vec<std::path::PathBuf> = Vec::new();
+
+    for (dep_name, dep) in &config.manifest.dependencies {
+        let dep_path = match dep.path() {
+            Some(p) => config.root.join(p),
+            None => continue,
+        };
+
+        if !dep_path.join("cmod.toml").exists() {
+            continue;
+        }
+
+        if verbose {
+            eprintln!(
+                "  Building path dependency: {} ({})",
+                dep_name,
+                dep_path.display()
+            );
+        }
+
+        // Load the dependency's config
+        let dep_config = Config::load(&dep_path)?;
+
+        // Recursively build the dependency (handles nested path deps)
+        build_module(
+            &dep_config,
+            verbose,
+            jobs,
+            force,
+            remote_url,
+            false,
+            &[],
+            no_cache,
+        )?;
+
+        // Collect PCM files
+        let dep_build_dir = dep_config.build_dir();
+        let pcm_dir = dep_build_dir.join("pcm");
+        if pcm_dir.exists() {
+            let dep_sources = runner::discover_sources(&dep_config.src_dir())?;
+            for source in &dep_sources {
+                if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
+                    let sanitized = mod_name.replace(['.', ':', '/'], "_");
+                    let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
+                    if pcm_path.exists() {
+                        all_pcms.insert(mod_name, pcm_path);
+                    }
+                }
+            }
+        }
+
+        // Collect object files
+        let obj_dir = dep_build_dir.join("obj");
+        if obj_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&obj_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("o") {
+                        all_objs.push(path);
+                    }
+                }
+            }
+        }
+
+        // Also collect static library artifacts
+        if dep_build_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&dep_build_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("a") {
+                        all_objs.push(path);
+                    }
+                }
+            }
+        }
+    }
+
+    if verbose && (!all_pcms.is_empty() || !all_objs.is_empty()) {
+        eprintln!(
+            "  Path dependencies: {} PCMs, {} objects/libs",
+            all_pcms.len(),
+            all_objs.len(),
+        );
+    }
+
+    Ok((all_pcms, all_objs))
 }
 
 /// Build all members of a workspace.
@@ -268,10 +382,15 @@ fn build_workspace(
     // Build members in topological order so dependencies are built first
     let ordered_members = ws.build_order()?;
 
-    // Accumulate PCM and object files from built members for cross-member imports
-    let mut workspace_pcm_paths: std::collections::HashMap<String, std::path::PathBuf> =
+    // Per-member PCM and object paths, keyed by member name.
+    // This allows each member to receive only the artifacts from its
+    // transitive dependency chain, not from unrelated members.
+    let mut member_pcm_paths: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, std::path::PathBuf>,
+    > = std::collections::HashMap::new();
+    let mut member_obj_paths: std::collections::HashMap<String, Vec<std::path::PathBuf>> =
         std::collections::HashMap::new();
-    let mut workspace_obj_paths: Vec<std::path::PathBuf> = Vec::new();
     let mut failed = Vec::new();
 
     for member in &ordered_members {
@@ -301,12 +420,41 @@ fn build_workspace(
             .and_then(|b| b.build_type)
             .unwrap_or_default();
 
+        // Gather PCMs and objects from transitive workspace dependencies
+        let transitive_deps = ws.transitive_member_deps(&member.name);
+        let mut extra_pcms: std::collections::HashMap<String, std::path::PathBuf> =
+            std::collections::HashMap::new();
+        let mut extra_objs: Vec<std::path::PathBuf> = Vec::new();
+
+        for dep_name in &transitive_deps {
+            if let Some(dep_pcms) = member_pcm_paths.get(dep_name) {
+                extra_pcms.extend(dep_pcms.clone());
+            }
+            if let Some(dep_objs) = member_obj_paths.get(dep_name) {
+                extra_objs.extend(dep_objs.clone());
+            }
+        }
+
+        if verbose && !transitive_deps.is_empty() {
+            let dep_list: Vec<&String> = transitive_deps.iter().collect();
+            eprintln!(
+                "    Upstream deps: {} ({} PCMs, {} objects)",
+                dep_list
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                extra_pcms.len(),
+                extra_objs.len(),
+            );
+        }
+
         let mut runner_instance = BuildRunner::new(backend, Some(cache))
             .with_jobs(jobs)
             .with_force(force)
             .with_no_cache(no_cache)
-            .with_extra_pcm_paths(workspace_pcm_paths.clone())
-            .with_extra_obj_paths(workspace_obj_paths.clone());
+            .with_extra_pcm_paths(extra_pcms)
+            .with_extra_obj_paths(extra_objs);
         if let Some(remote) = make_remote_cache(remote_url, verbose) {
             runner_instance = runner_instance.with_remote_cache(remote);
         }
@@ -322,6 +470,8 @@ fn build_workspace(
                 eprintln!("    Built: {}", output.display());
 
                 // Collect PCM files from this member for downstream members
+                let mut this_pcms: std::collections::HashMap<String, std::path::PathBuf> =
+                    std::collections::HashMap::new();
                 let pcm_dir = build_dir.join("pcm");
                 if pcm_dir.exists() {
                     for source in &sources {
@@ -329,24 +479,27 @@ fn build_workspace(
                             let sanitized = mod_name.replace(['.', ':', '/'], "_");
                             let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
                             if pcm_path.exists() {
-                                workspace_pcm_paths.insert(mod_name, pcm_path);
+                                this_pcms.insert(mod_name, pcm_path);
                             }
                         }
                     }
                 }
+                member_pcm_paths.insert(member.name.clone(), this_pcms);
 
                 // Collect object files from this member for downstream linking
+                let mut this_objs: Vec<std::path::PathBuf> = Vec::new();
                 let obj_dir = build_dir.join("obj");
                 if obj_dir.exists() {
                     if let Ok(entries) = std::fs::read_dir(&obj_dir) {
                         for entry in entries.flatten() {
                             let path = entry.path();
                             if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                                workspace_obj_paths.push(path);
+                                this_objs.push(path);
                             }
                         }
                     }
                 }
+                member_obj_paths.insert(member.name.clone(), this_objs);
             }
             Err(e) => {
                 eprintln!("    Failed: {}", e);
@@ -397,17 +550,26 @@ fn build_module_graph(
             extract_imports_from_source(source)?
         };
 
+        // Extract partition ownership for partition units
+        let partition_of = runner::extract_partition_owner(source)?;
+
+        // Use source path as unique node ID to support multi-TU modules
+        let node_id = source.display().to_string();
+
         graph.add_node(ModuleNode {
+            id: node_id,
             name: module_name,
             kind,
             source: source.clone(),
             package: package_name.to_string(),
             imports,
+            partition_of,
         });
     }
 
-    // Filter imports to only include modules that exist in the graph
-    let known_modules: std::collections::BTreeSet<String> = graph.nodes.keys().cloned().collect();
+    // Filter imports to only include modules that exist in the graph.
+    // Use logical module names (not node IDs) for the filter.
+    let known_modules = graph.module_names();
     for node in graph.nodes.values_mut() {
         node.imports.retain(|imp| known_modules.contains(imp));
     }
@@ -1063,8 +1225,9 @@ mod tests {
         let graph = build_module_graph(&sources, "test_pkg").unwrap();
 
         assert_eq!(graph.nodes.len(), 1);
-        assert!(graph.nodes.contains_key("mymod"));
-        assert_eq!(graph.nodes["mymod"].package, "test_pkg");
+        // Nodes are keyed by source path, find by module name
+        let node = graph.nodes.values().find(|n| n.name == "mymod").unwrap();
+        assert_eq!(node.package, "test_pkg");
     }
 
     #[test]
@@ -1085,7 +1248,7 @@ mod tests {
         let graph = build_module_graph(&sources, "test").unwrap();
 
         // app should only import base (external_lib filtered out)
-        let app_node = &graph.nodes["app"];
+        let app_node = graph.nodes.values().find(|n| n.name == "app").unwrap();
         assert_eq!(app_node.imports, vec!["base"]);
     }
 
@@ -1098,9 +1261,10 @@ mod tests {
         let sources = vec![file];
         let graph = build_module_graph(&sources, "test").unwrap();
 
-        // Legacy files use filename as module name
+        // Legacy files use filename as module name, nodes keyed by source path
         assert_eq!(graph.nodes.len(), 1);
-        assert!(graph.nodes.contains_key("main"));
+        let node = graph.nodes.values().find(|n| n.name == "main").unwrap();
+        assert_eq!(node.name, "main");
     }
 
     #[test]

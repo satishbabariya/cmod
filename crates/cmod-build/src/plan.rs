@@ -43,6 +43,9 @@ pub struct BuildPlan {
 
 impl BuildPlan {
     /// Generate a build plan from a module graph and configuration.
+    ///
+    /// Supports multiple translation units per logical module: interface,
+    /// implementation, and partition units are all scheduled correctly.
     pub fn from_graph(
         graph: &ModuleGraph,
         build_dir: &Path,
@@ -53,24 +56,26 @@ impl BuildPlan {
         let order = graph.topological_order()?;
         let mut nodes = Vec::new();
 
-        // Module name → PCM output path (for linking dependency PCMs)
+        // Module name → PCM output path (for linking dependency PCMs).
+        // Tracks the PCM for each logical module name (interface or partition).
         let mut pcm_paths: BTreeMap<String, PathBuf> = BTreeMap::new();
         let mut obj_paths: Vec<PathBuf> = Vec::new();
 
         let pcm_dir = build_dir.join("pcm");
         let obj_dir = build_dir.join("obj");
 
-        for module_name in &order {
-            let module_node = &graph.nodes[module_name];
+        for node_id in &order {
+            let graph_node = &graph.nodes[node_id];
+            let module_name = &graph_node.name;
 
-            match module_node.kind {
+            match graph_node.kind {
                 cmod_core::types::ModuleUnitKind::InterfaceUnit
                 | cmod_core::types::ModuleUnitKind::PartitionUnit => {
                     let pcm_path = pcm_dir.join(format!("{}.pcm", sanitize_name(module_name)));
                     let obj_path = obj_dir.join(format!("{}.o", sanitize_name(module_name)));
 
                     // Dependencies are the PCM build nodes for imported modules
-                    let deps: Vec<String> = module_node
+                    let deps: Vec<String> = graph_node
                         .imports
                         .iter()
                         .filter_map(|imp| pcm_paths.get(imp).map(|_| format!("interface:{}", imp)))
@@ -80,7 +85,7 @@ impl BuildPlan {
                         id: format!("interface:{}", module_name),
                         kind: NodeKind::Interface,
                         module_name: Some(module_name.clone()),
-                        source: Some(module_node.source.clone()),
+                        source: Some(graph_node.source.clone()),
                         dependencies: deps,
                         outputs: vec![pcm_path.clone(), obj_path.clone()],
                     };
@@ -91,19 +96,30 @@ impl BuildPlan {
                 }
 
                 cmod_core::types::ModuleUnitKind::ImplementationUnit => {
-                    let obj_path = obj_dir.join(format!("{}.o", sanitize_name(module_name)));
+                    // Use source-path based ID to avoid collision with interface
+                    let sanitized_source = sanitize_name(&graph_node.source.display().to_string());
+                    let obj_path = obj_dir.join(format!("{}.o", sanitized_source));
 
-                    let deps: Vec<String> = module_node
+                    // Implementation units depend on their module's interface PCM
+                    // plus any explicitly imported modules.
+                    let mut deps: Vec<String> = graph_node
                         .imports
                         .iter()
                         .filter_map(|imp| pcm_paths.get(imp).map(|_| format!("interface:{}", imp)))
                         .collect();
 
+                    // If this impl unit's own module has an interface, add it as a dep
+                    if pcm_paths.contains_key(module_name)
+                        && !deps.contains(&format!("interface:{}", module_name))
+                    {
+                        deps.push(format!("interface:{}", module_name));
+                    }
+
                     let node = BuildNode {
-                        id: format!("impl:{}", module_name),
+                        id: format!("impl:{}:{}", module_name, sanitized_source),
                         kind: NodeKind::Implementation,
                         module_name: Some(module_name.clone()),
-                        source: Some(module_node.source.clone()),
+                        source: Some(graph_node.source.clone()),
                         dependencies: deps,
                         outputs: vec![obj_path.clone()],
                     };
@@ -113,20 +129,21 @@ impl BuildPlan {
                 }
 
                 cmod_core::types::ModuleUnitKind::LegacyUnit => {
-                    let obj_path = obj_dir.join(format!("{}.o", sanitize_name(module_name)));
+                    let sanitized_source = sanitize_name(&graph_node.source.display().to_string());
+                    let obj_path = obj_dir.join(format!("{}.o", sanitized_source));
 
                     // Legacy TUs may import modules — track those as dependencies
-                    let deps: Vec<String> = module_node
+                    let deps: Vec<String> = graph_node
                         .imports
                         .iter()
                         .filter_map(|imp| pcm_paths.get(imp).map(|_| format!("interface:{}", imp)))
                         .collect();
 
                     let node = BuildNode {
-                        id: format!("object:{}", module_name),
+                        id: format!("object:{}:{}", module_name, sanitized_source),
                         kind: NodeKind::Object,
                         module_name: Some(module_name.clone()),
-                        source: Some(module_node.source.clone()),
+                        source: Some(graph_node.source.clone()),
                         dependencies: deps,
                         outputs: vec![obj_path.clone()],
                     };
@@ -140,9 +157,9 @@ impl BuildPlan {
         // Add the link node
         let output_name = graph
             .nodes
-            .keys()
+            .values()
             .last()
-            .cloned()
+            .map(|n| n.name.clone())
             .unwrap_or_else(|| "output".to_string());
 
         let link_output = match build_type {
@@ -308,11 +325,13 @@ mod tests {
     fn test_build_plan_single_module() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "mymod".to_string(),
             name: "mymod".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/lib.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -334,18 +353,22 @@ mod tests {
     fn test_build_plan_with_deps() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "base".to_string(),
             name: "base".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/base.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
         graph.add_node(ModuleNode {
+            id: "app".to_string(),
             name: "app".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/app.cppm"),
             package: "test".to_string(),
             imports: vec!["base".to_string()],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -372,11 +395,13 @@ mod tests {
     fn test_pcm_paths() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "mod_a".to_string(),
             name: "mod_a".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/a.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -404,11 +429,13 @@ mod tests {
     fn test_build_plan_static_lib() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "mylib".to_string(),
             name: "mylib".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/lib.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -437,11 +464,13 @@ mod tests {
     fn test_build_plan_shared_lib() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "mylib".to_string(),
             name: "mylib".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/lib.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -466,18 +495,22 @@ mod tests {
     fn test_build_plan_implementation_unit() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "iface".to_string(),
             name: "iface".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/iface.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
         graph.add_node(ModuleNode {
+            id: "impl_unit".to_string(),
             name: "impl_unit".to_string(),
             kind: ModuleUnitKind::ImplementationUnit,
             source: PathBuf::from("src/impl.cpp"),
             package: "test".to_string(),
             imports: vec!["iface".to_string()],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -505,11 +538,13 @@ mod tests {
     fn test_build_plan_legacy_unit() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "main".to_string(),
             name: "main".to_string(),
             kind: ModuleUnitKind::LegacyUnit,
             source: PathBuf::from("src/main.cpp"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -530,18 +565,22 @@ mod tests {
     fn test_build_plan_legacy_unit_with_module_import() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "mymod".to_string(),
             name: "mymod".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/lib.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
         graph.add_node(ModuleNode {
+            id: "main".to_string(),
             name: "main".to_string(),
             kind: ModuleUnitKind::LegacyUnit,
             source: PathBuf::from("src/main.cpp"),
             package: "test".to_string(),
             imports: vec!["mymod".to_string()],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -555,7 +594,11 @@ mod tests {
 
         // interface + object + link = 3 nodes
         assert_eq!(plan.nodes.len(), 3);
-        let main_node = plan.nodes.iter().find(|n| n.id == "object:main").unwrap();
+        let main_node = plan
+            .nodes
+            .iter()
+            .find(|n| n.id == "object:main:src_main_cpp")
+            .unwrap();
         assert!(main_node
             .dependencies
             .contains(&"interface:mymod".to_string()));
@@ -565,18 +608,22 @@ mod tests {
     fn test_build_plan_object_paths() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "mod_a".to_string(),
             name: "mod_a".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/a.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
         graph.add_node(ModuleNode {
+            id: "mod_b".to_string(),
             name: "mod_b".to_string(),
             kind: ModuleUnitKind::ImplementationUnit,
             source: PathBuf::from("src/b.cpp"),
             package: "test".to_string(),
             imports: vec!["mod_a".to_string()],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -596,32 +643,40 @@ mod tests {
     fn test_build_plan_diamond_deps() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "base".to_string(),
             name: "base".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/base.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
         graph.add_node(ModuleNode {
+            id: "left".to_string(),
             name: "left".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/left.cppm"),
             package: "test".to_string(),
             imports: vec!["base".to_string()],
+            partition_of: None,
         });
         graph.add_node(ModuleNode {
+            id: "right".to_string(),
             name: "right".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/right.cppm"),
             package: "test".to_string(),
             imports: vec!["base".to_string()],
+            partition_of: None,
         });
         graph.add_node(ModuleNode {
+            id: "top".to_string(),
             name: "top".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/top.cppm"),
             package: "test".to_string(),
             imports: vec!["left".to_string(), "right".to_string()],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -654,18 +709,22 @@ mod tests {
     fn test_compile_commands_generation() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "base".to_string(),
             name: "base".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/base.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
         graph.add_node(ModuleNode {
+            id: "app".to_string(),
             name: "app".to_string(),
             kind: ModuleUnitKind::ImplementationUnit,
             source: PathBuf::from("src/app.cpp"),
             package: "test".to_string(),
             imports: vec!["base".to_string()],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -693,11 +752,13 @@ mod tests {
     fn test_compile_commands_json_roundtrip() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "mymod".to_string(),
             name: "mymod".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/lib.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -722,11 +783,13 @@ mod tests {
     fn test_compile_commands_skips_link_node() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "main".to_string(),
             name: "main".to_string(),
             kind: ModuleUnitKind::LegacyUnit,
             source: PathBuf::from("src/main.cpp"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(
@@ -753,18 +816,22 @@ mod tests {
     fn test_compile_commands_includes_dep_pcm_refs() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
+            id: "base".to_string(),
             name: "base".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/base.cppm"),
             package: "test".to_string(),
             imports: vec![],
+            partition_of: None,
         });
         graph.add_node(ModuleNode {
+            id: "derived".to_string(),
             name: "derived".to_string(),
             kind: ModuleUnitKind::InterfaceUnit,
             source: PathBuf::from("src/derived.cppm"),
             package: "test".to_string(),
             imports: vec!["base".to_string()],
+            partition_of: None,
         });
 
         let plan = BuildPlan::from_graph(

@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  LLVM_VERSION: "17"
 
 jobs:
   fmt:
@@ -37,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable, nightly]
     steps:
       - uses: actions/checkout@v4
@@ -45,20 +46,58 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
-      - name: Install LLVM 17 (Ubuntu)
+      - name: Install LLVM ${{ env.LLVM_VERSION }} (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
-          sudo add-apt-repository "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main"
+          sudo add-apt-repository "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${{ env.LLVM_VERSION }} main"
           sudo apt-get update
-          sudo apt-get install -y clang-17 llvm-17 clang-tools-17
-          echo "/usr/lib/llvm-17/bin" >> $GITHUB_PATH
+          sudo apt-get install -y clang-${{ env.LLVM_VERSION }} llvm-${{ env.LLVM_VERSION }} clang-tools-${{ env.LLVM_VERSION }}
+          echo "/usr/lib/llvm-${{ env.LLVM_VERSION }}/bin" >> $GITHUB_PATH
       - name: Install LLVM (macOS)
         if: runner.os == 'macOS'
         run: |
           brew install llvm
           echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
+      - name: Verify LLVM (Windows)
+        if: runner.os == 'Windows'
+        run: clang++ --version
       - run: cargo test --all
+
+  # Run integration and E2E tests that exercise real C++ compilation.
+  # These are separate because they require LLVM/Clang and take longer.
+  e2e:
+    name: E2E Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install LLVM ${{ env.LLVM_VERSION }} (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          sudo add-apt-repository "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${{ env.LLVM_VERSION }} main"
+          sudo apt-get update
+          sudo apt-get install -y clang-${{ env.LLVM_VERSION }} llvm-${{ env.LLVM_VERSION }} clang-tools-${{ env.LLVM_VERSION }}
+          echo "/usr/lib/llvm-${{ env.LLVM_VERSION }}/bin" >> $GITHUB_PATH
+      - name: Install LLVM (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm
+          echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
+      - name: Verify Clang available
+        run: clang++ --version
+      - name: Run example project tests
+        run: cargo test --test example_projects -- --nocapture
+      - name: Run real project tests
+        run: cargo test --test real_projects -- --nocapture
+      - name: Run E2E validation tests
+        run: cargo test --test e2e_validation -- --nocapture
 
   msrv:
     name: MSRV (1.74)

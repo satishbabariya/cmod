@@ -1831,6 +1831,20 @@ fn test_e2e_workspace_lifecycle() {
 
     // 3. Add app member that imports core (binary)
     run_cmod(tmp.path(), &["workspace", "add", "app"]);
+    // Declare core as a path dependency so workspace PCM propagation works
+    let app_manifest = fs::read_to_string(tmp.path().join("app/cmod.toml")).unwrap();
+    let app_manifest = if app_manifest.contains("[dependencies]") {
+        app_manifest.replace(
+            "[dependencies]",
+            "[dependencies]\ncore = { path = \"../core\" }",
+        )
+    } else {
+        format!(
+            "{}\n[dependencies]\ncore = {{ path = \"../core\" }}\n",
+            app_manifest
+        )
+    };
+    fs::write(tmp.path().join("app/cmod.toml"), app_manifest).unwrap();
     fs::write(
         tmp.path().join("app/src/lib.cppm"),
         "export module local.app;\nimport local.core;\n\nexport namespace app {\n    int get() { return core::value(); }\n}\n",

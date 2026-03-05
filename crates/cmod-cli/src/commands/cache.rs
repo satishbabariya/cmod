@@ -2,6 +2,34 @@ use cmod_cache::{ArtifactCache, RemoteCache};
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 
+/// Run `cmod cache status` — show cache info (human-readable or JSON).
+pub fn status_json() -> Result<(), CmodError> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::load(&cwd)?;
+    let cache = ArtifactCache::new(config.cache_dir());
+    let status = cache.status_json()?;
+    let json = serde_json::to_string_pretty(&status)
+        .map_err(|e| CmodError::Other(format!("failed to serialize cache status: {}", e)))?;
+    println!("{}", json);
+    Ok(())
+}
+
+/// Run `cmod cache inspect <key>` — show metadata for a specific cache entry.
+pub fn inspect(module: &str, key: &str) -> Result<(), CmodError> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::load(&cwd)?;
+    let cache = ArtifactCache::new(config.cache_dir());
+
+    let cache_key = cmod_cache::CacheKey::from_hex(key)
+        .ok_or_else(|| CmodError::Other(format!("invalid cache key: {}", key)))?;
+
+    let info = cache.inspect(module, &cache_key)?;
+    let json = serde_json::to_string_pretty(&info)
+        .map_err(|e| CmodError::Other(format!("failed to serialize entry info: {}", e)))?;
+    println!("{}", json);
+    Ok(())
+}
+
 /// Run `cmod cache status` — show cache info.
 pub fn status() -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;

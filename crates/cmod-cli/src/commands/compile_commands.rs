@@ -78,17 +78,22 @@ fn build_module_graph(sources: &[PathBuf], package_name: &str) -> Result<ModuleG
 
         let imports = extract_imports_from_source(source)?;
 
+        let partition_of = runner::extract_partition_owner(source)?;
+        let node_id = source.display().to_string();
+
         graph.add_node(ModuleNode {
+            id: node_id,
             name: module_name,
             kind,
             source: source.clone(),
             package: package_name.to_string(),
             imports,
+            partition_of,
         });
     }
 
     // Filter imports to only include modules that exist in the graph
-    let known_modules: std::collections::BTreeSet<String> = graph.nodes.keys().cloned().collect();
+    let known_modules = graph.module_names();
     for node in graph.nodes.values_mut() {
         node.imports.retain(|imp| known_modules.contains(imp));
     }

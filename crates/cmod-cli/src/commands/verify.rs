@@ -2,6 +2,8 @@ use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
 use cmod_core::types::ModuleId;
+use cmod_security::hash::verify_content_hash;
+use cmod_security::policy::{SecurityPolicy, ViolationSeverity};
 use cmod_security::verify::{verify_all_packages, SignatureStatus};
 
 /// Run `cmod verify` — verify integrity and correctness.
@@ -32,6 +34,9 @@ pub fn run(verbose: bool, check_signatures: bool) -> Result<(), CmodError> {
     if check_signatures {
         validate_signatures(&config, &mut errors, &mut warnings, verbose);
     }
+
+    // 7. Enforce security policy from [security] section
+    validate_security_policy(&config, &mut errors, &mut warnings, verbose);
 
     // Print warnings
     if !warnings.is_empty() {
@@ -197,6 +202,59 @@ fn validate_lockfile(
                 ));
             }
 
+            // Verify lockfile integrity hash
+            if let Err(e) = lockfile.verify_integrity() {
+                errors.push(format!("lockfile integrity check failed: {}", e));
+            } else if verbose {
+                eprintln!("    Lockfile integrity hash verified.");
+            }
+
+            // Verify content hashes of checked-out dependencies
+            let deps_dir = config.deps_dir();
+            for pkg in &lockfile.packages {
+                if pkg.hash.is_none() {
+                    if pkg.source.as_deref() == Some("git") {
+                        warnings.push(format!(
+                            "package '{}' has no content hash; re-run `cmod resolve`",
+                            pkg.name
+                        ));
+                    }
+                    continue;
+                }
+
+                let repo_path = deps_dir.join(&pkg.name);
+                if !repo_path.exists() {
+                    // Dep not checked out — skip (could be offline)
+                    if verbose {
+                        eprintln!("    {} — not checked out, skipping hash check", pkg.name);
+                    }
+                    continue;
+                }
+
+                match verify_content_hash(pkg, &repo_path) {
+                    Ok(result) => {
+                        if result.valid {
+                            if verbose {
+                                eprintln!("    {} — content hash verified", pkg.name);
+                            }
+                        } else {
+                            errors.push(format!(
+                                "package '{}' content hash mismatch: expected {}, got {}",
+                                pkg.name,
+                                result.expected_hash,
+                                result.actual_hash.unwrap_or_else(|| "none".to_string()),
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        warnings.push(format!(
+                            "could not verify content hash for '{}': {}",
+                            pkg.name, e
+                        ));
+                    }
+                }
+            }
+
             if verbose {
                 eprintln!("    {} locked packages", lockfile.packages.len());
             }
@@ -294,6 +352,51 @@ fn validate_module_declaration(
                     module.root.display(),
                     e
                 ));
+            }
+        }
+    }
+}
+
+/// Enforce security policy from the `[security]` manifest section.
+fn validate_security_policy(
+    config: &Config,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    verbose: bool,
+) {
+    let policy = SecurityPolicy::from_manifest(config.manifest.security.as_ref());
+
+    if !policy.is_active() {
+        if verbose {
+            eprintln!("  No security policy configured.");
+        }
+        return;
+    }
+
+    if verbose {
+        eprintln!("  Enforcing security policy...");
+    }
+
+    let lockfile = match Lockfile::load(&config.lockfile_path) {
+        Ok(l) => l,
+        Err(_) => return, // Already reported
+    };
+
+    if lockfile.packages.is_empty() {
+        return;
+    }
+
+    let deps_dir = config.deps_dir();
+    let trust_db = cmod_security::trust::TrustDb::load_default().ok();
+    let violations = policy.enforce(&lockfile.packages, &deps_dir, trust_db.as_ref());
+
+    for v in &violations {
+        match v.severity {
+            ViolationSeverity::Error => {
+                errors.push(format!("[policy] {}: {}", v.package, v.reason));
+            }
+            ViolationSeverity::Warning => {
+                warnings.push(format!("[policy] {}: {}", v.package, v.reason));
             }
         }
     }
