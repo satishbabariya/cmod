@@ -234,13 +234,36 @@ fn validate_module_graph(
         }
     }
 
-    // Warn about external imports that don't match any declared dependency
+    // Warn about external imports that don't match any declared dependency.
+    // For path dependencies, also check the module name declared in the dep's cmod.toml.
     for ext_import in &external_imports {
         let has_dep = config.manifest.dependencies.keys().any(|dep_name| {
             let short = dep_name.rsplit('/').next().unwrap_or(dep_name);
-            ext_import == short
+            // Direct match against dependency short name
+            if ext_import == short
                 || ext_import.starts_with(&format!("{}.", short))
                 || ext_import.starts_with(&format!("{}:", short))
+            {
+                return true;
+            }
+            // For path dependencies, check if the import matches the module name
+            // declared in the dependency's own cmod.toml (e.g., "local.colors")
+            if let Some(dep_value) = config.manifest.dependencies.get(dep_name) {
+                if let Some(path) = dep_value.path() {
+                    let dep_dir = config.root.join(path);
+                    if let Ok(dep_config) = cmod_core::config::Config::load(&dep_dir) {
+                        if let Some(ref module) = dep_config.manifest.module {
+                            if ext_import == &module.name
+                                || ext_import.starts_with(&format!("{}.", module.name))
+                                || ext_import.starts_with(&format!("{}:", module.name))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            false
         });
         if !has_dep {
             warnings.push(format!(
