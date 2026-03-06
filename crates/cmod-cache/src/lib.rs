@@ -1,5 +1,6 @@
 pub mod bmi;
 pub mod cache;
+pub mod distribution;
 pub mod key;
 pub mod remote;
 
