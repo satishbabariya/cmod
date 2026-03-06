@@ -12,6 +12,8 @@ pub mod graph;
 pub mod init;
 pub mod lint;
 pub mod plugin;
+#[allow(dead_code)]
+pub mod plugin_sandbox;
 pub mod publish;
 pub mod remove;
 pub mod resolve;
