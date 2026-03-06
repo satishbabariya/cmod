@@ -5,6 +5,7 @@ use cmod_build::incremental::BuildState;
 use cmod_build::runner;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 
 /// Output format for the graph command.
 pub enum GraphFormat {
@@ -94,6 +95,7 @@ pub fn run(
     filter: Option<String>,
     status: bool,
     critical_path: bool,
+    shell: &Shell,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
@@ -102,7 +104,7 @@ pub fn run(
     let sources = runner::discover_sources(&src_dir)?;
 
     if sources.is_empty() {
-        eprintln!("  No source files found.");
+        shell.status("Graph", "no source files found");
         return Ok(());
     }
 
@@ -127,13 +129,16 @@ pub fn run(
         };
         let path = graph.critical_path(&timings);
         if path.is_empty() {
-            eprintln!("  No critical path (empty graph or no timings).");
+            shell.status("Critical", "no critical path (empty graph or no timings)");
         } else {
             let total_ms: u64 = path.iter().filter_map(|n| timings.get(n)).sum();
-            eprintln!("  Critical path ({} nodes, {}ms):", path.len(), total_ms);
+            shell.status(
+                "Critical",
+                format!("path ({} nodes, {}ms)", path.len(), total_ms),
+            );
             for node_id in &path {
                 let ms = timings.get(node_id).copied().unwrap_or(0);
-                eprintln!("    {} ({}ms)", node_id, ms);
+                shell.verbose("Node", format!("{} ({}ms)", node_id, ms));
             }
         }
     }
@@ -168,6 +173,7 @@ fn print_ascii(
     let order = match graph.topological_order() {
         Ok(o) => o,
         Err(e) => {
+            // Fallback to eprintln for error in a non-Result function
             eprintln!("  Error: {}", e);
             return;
         }

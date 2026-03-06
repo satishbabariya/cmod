@@ -1,7 +1,5 @@
 mod commands;
 
-use std::sync::Arc;
-
 use clap::{Parser, Subcommand};
 use cmod_core::shell::{Shell, Verbosity};
 
@@ -392,7 +390,7 @@ enum CacheAction {
 
 fn main() {
     let cli = Cli::parse();
-    let shell = Arc::new(Shell::new(cli.verbosity()));
+    let shell = Shell::new(cli.verbosity());
 
     let result = match cli.command {
         Commands::Init { workspace, name } => commands::init::run(workspace, name, &shell),
@@ -461,9 +459,9 @@ fn main() {
             tree,
             why,
             conflicts,
-        } => commands::deps::run(tree, why, conflicts),
+        } => commands::deps::run(tree, why, conflicts, &shell),
         Commands::Cache { action } => match action {
-            CacheAction::Status => commands::cache::status(),
+            CacheAction::Status => commands::cache::status(&shell),
             CacheAction::Clean => commands::cache::clean(&shell),
             CacheAction::Push => commands::cache::push(&shell),
             CacheAction::Pull => commands::cache::pull(&shell),
@@ -483,13 +481,13 @@ fn main() {
             filter,
             status,
             critical_path,
-        } => commands::graph::run(format, filter, status, critical_path),
+        } => commands::graph::run(format, filter, status, critical_path, &shell),
         Commands::Audit => commands::audit::run(&shell),
         Commands::Status => commands::status::run(&shell),
         Commands::Explain { module } => commands::explain::run(module, &shell),
         Commands::Toolchain { action } => match action {
             ToolchainAction::Show => commands::toolchain::show(&shell),
-            ToolchainAction::Check => commands::toolchain::check(),
+            ToolchainAction::Check => commands::toolchain::check(&shell),
         },
         Commands::Vendor { sync } => commands::vendor::run(sync, &shell),
         Commands::Lint => commands::lint::run(&shell),

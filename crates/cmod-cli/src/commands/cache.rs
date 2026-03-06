@@ -32,7 +32,7 @@ pub fn inspect(module: &str, key: &str) -> Result<(), CmodError> {
 }
 
 /// Run `cmod cache status` — show cache info.
-pub fn status() -> Result<(), CmodError> {
+pub fn status(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -41,12 +41,15 @@ pub fn status() -> Result<(), CmodError> {
     let size = cache.total_size()?;
     let modules = cache.list_modules()?;
 
-    eprintln!("  Cache directory: {}", config.cache_dir().display());
-    eprintln!("  Total size: {}", format_bytes(size));
-    eprintln!("  Cached modules: {}", modules.len());
+    shell.status(
+        "Cache",
+        format!("directory: {}", config.cache_dir().display()),
+    );
+    shell.status("Size", format_bytes(size));
+    shell.status("Modules", format!("{} cached", modules.len()));
 
     for module in &modules {
-        eprintln!("    - {}", module);
+        shell.verbose("Module", module);
     }
 
     Ok(())

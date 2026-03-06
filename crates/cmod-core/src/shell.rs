@@ -73,6 +73,11 @@ impl Shell {
         self.verbosity
     }
 
+    /// Returns true if the shell is in verbose mode.
+    pub fn is_verbose(&self) -> bool {
+        self.verbosity == Verbosity::Verbose
+    }
+
     /// Print a right-aligned green status label with a message.
     ///
     /// Produces output like:

@@ -18,7 +18,7 @@ pub fn run(
     release: bool,
     locked: bool,
     offline: bool,
-    shell: &Arc<Shell>,
+    shell: &Shell,
     target_override: Option<String>,
     jobs: usize,
     force: bool,
@@ -169,7 +169,7 @@ fn make_remote_cache(
 #[allow(clippy::too_many_arguments)]
 fn build_module(
     config: &Config,
-    shell: &Arc<Shell>,
+    shell: &Shell,
     jobs: usize,
     force: bool,
     remote_url: &Option<String>,
@@ -228,7 +228,7 @@ fn build_module(
         .with_no_cache(no_cache)
         .with_extra_pcm_paths(dep_pcms)
         .with_extra_obj_paths(dep_objs)
-        .with_shell(Arc::clone(shell));
+        .with_shell(Arc::new(Shell::new(shell.verbosity())));
 
     if let Some(remote) = make_remote_cache(remote_url, shell) {
         runner = runner.with_remote_cache(remote);
@@ -252,7 +252,7 @@ fn build_module(
 /// and return the aggregated PCMs and objects for the parent project.
 fn build_path_dependencies(
     config: &Config,
-    shell: &Arc<Shell>,
+    shell: &Shell,
     jobs: usize,
     force: bool,
     remote_url: &Option<String>,
@@ -353,7 +353,7 @@ fn build_path_dependencies(
 /// Build all members of a workspace.
 fn build_workspace(
     config: &Config,
-    shell: &Arc<Shell>,
+    shell: &Shell,
     jobs: usize,
     force: bool,
     remote_url: &Option<String>,
@@ -454,7 +454,7 @@ fn build_workspace(
             .with_no_cache(no_cache)
             .with_extra_pcm_paths(extra_pcms)
             .with_extra_obj_paths(extra_objs)
-            .with_shell(Arc::clone(shell));
+            .with_shell(Arc::new(Shell::new(shell.verbosity())));
         if let Some(remote) = make_remote_cache(remote_url, shell) {
             runner_instance = runner_instance.with_remote_cache(remote);
         }

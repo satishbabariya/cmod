@@ -81,9 +81,9 @@ pub fn run(query: &str, shell: &Shell) -> Result<(), CmodError> {
             format!("{} result(s) for '{}'", found.len(), query),
         );
         for result in &found {
-            eprintln!(
-                "    {} v{} ({})",
-                result.name, result.version, result.source
+            shell.status(
+                "Match",
+                format!("{} v{} ({})", result.name, result.version, result.source),
             );
         }
     }

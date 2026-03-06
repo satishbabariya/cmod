@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::Arc;
 
 use cmod_core::error::CmodError;
 use cmod_core::shell::Shell;
@@ -9,7 +8,7 @@ pub fn run(
     release: bool,
     locked: bool,
     offline: bool,
-    shell: &Arc<Shell>,
+    shell: &Shell,
     target: Option<String>,
     no_cache: bool,
 ) -> Result<(), CmodError> {

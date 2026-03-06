@@ -285,7 +285,12 @@ fn test_e2e_deps_shows_empty() {
 
     let output = run_cmod(tmp.path(), &["deps"]);
     assert!(output.status.success());
-    assert!(stderr(&output).contains("No dependencies"));
+    let err = stderr(&output);
+    assert!(
+        err.contains("No dependencies") || err.contains("no dependencies"),
+        "expected 'no dependencies' in stderr, got: {}",
+        err
+    );
 }
 
 #[test]
@@ -322,7 +327,12 @@ fn test_e2e_deps_conflicts_no_issues() {
 
     let output = run_cmod(tmp.path(), &["deps", "--conflicts"]);
     assert!(output.status.success());
-    assert!(stderr(&output).contains("No version conflicts"));
+    let err = stderr(&output);
+    assert!(
+        err.contains("No version conflicts") || err.contains("no version conflicts"),
+        "expected 'no version conflicts' in stderr, got: {}",
+        err
+    );
 }
 
 // ─── Group 3: Build System (real compilation) ────────────────────────────────

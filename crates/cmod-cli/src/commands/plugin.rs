@@ -51,7 +51,10 @@ pub fn list(shell: &Shell) -> Result<(), CmodError> {
 
     shell.status("Plugins", format!("{} plugin(s) configured", plugins.len()));
     for plugin in &plugins {
-        eprintln!("    {} ({})", plugin.name, plugin.path.display());
+        shell.status(
+            "Plugin",
+            format!("{} ({})", plugin.name, plugin.path.display()),
+        );
         if !plugin.capabilities.is_empty() {
             shell.verbose("Capabilities", plugin.capabilities.join(", "));
         }
@@ -108,10 +111,10 @@ pub fn run_plugin(name: &str, shell: &Shell) -> Result<(), CmodError> {
         for line in reader.lines().map_while(Result::ok) {
             if let Ok(resp) = serde_json::from_str::<PluginResponse>(&line) {
                 if let Some(msg) = resp.message {
-                    eprintln!("  [{}] {}", plugin.name, msg);
+                    shell.verbose(&plugin.name, msg);
                 }
             } else {
-                eprintln!("  [{}] {}", plugin.name, line);
+                shell.verbose(&plugin.name, &line);
             }
         }
     }

@@ -65,7 +65,7 @@ pub fn run(apply: bool, shell: &Shell) -> Result<(), CmodError> {
 
     shell.status("Unused", format!("{} dependencies", unused.len()));
     for (name, source) in &unused {
-        eprintln!("    - {}{}", name, source);
+        shell.status("", format!("- {}{}", name, source));
     }
 
     if apply {

@@ -1020,7 +1020,10 @@ fn test_deps_conflicts_flag() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("No version conflicts") || stderr.contains("No dependencies"),
+        stderr.contains("no version conflicts")
+            || stderr.contains("No version conflicts")
+            || stderr.contains("no dependencies")
+            || stderr.contains("No dependencies"),
         "should report no conflicts for clean project"
     );
 }

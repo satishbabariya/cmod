@@ -18,9 +18,9 @@ pub fn list(shell: &Shell) -> Result<(), CmodError> {
 
     shell.status("Workspace", &config.manifest.package.name);
     if let Some(ver) = ws.workspace_version() {
-        eprintln!("    Version: {}", ver);
+        shell.status("Version", ver);
     }
-    eprintln!("    Members ({}):", ws.members.len());
+    shell.status("Members", format!("{} member(s)", ws.members.len()));
 
     for member in &ws.members {
         let dep_count = member.manifest.dependencies.len();
@@ -34,7 +34,7 @@ pub fn list(shell: &Shell) -> Result<(), CmodError> {
             ),
         );
         if shell.verbosity() != cmod_core::shell::Verbosity::Verbose {
-            eprintln!("      {}", member.name);
+            shell.status("", &member.name);
         }
     }
 
