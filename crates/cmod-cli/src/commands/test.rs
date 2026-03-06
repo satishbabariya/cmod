@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use cmod_core::error::CmodError;
 use cmod_core::shell::Shell;
@@ -8,7 +9,7 @@ pub fn run(
     release: bool,
     locked: bool,
     offline: bool,
-    shell: &Shell,
+    shell: &Arc<Shell>,
     target: Option<String>,
     no_cache: bool,
 ) -> Result<(), CmodError> {
@@ -45,6 +46,7 @@ pub fn run(
             .hooks
             .as_ref()
             .and_then(|h| h.pre_test.as_deref()),
+        shell,
     )?;
 
     // Get test patterns from manifest
@@ -246,6 +248,7 @@ pub fn run(
             .hooks
             .as_ref()
             .and_then(|h| h.post_test.as_deref()),
+        shell,
     )?;
 
     shell.status("Finished", "all tests passed");

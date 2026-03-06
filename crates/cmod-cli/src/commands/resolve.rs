@@ -28,6 +28,7 @@ pub fn run(
             .hooks
             .as_ref()
             .and_then(|h| h.pre_resolve.as_deref()),
+        shell,
     )?;
 
     shell.status("Resolving", "dependencies...");

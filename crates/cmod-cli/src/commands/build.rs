@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use cmod_build::compiler::ClangBackend;
 use cmod_build::graph::{ModuleGraph, ModuleNode};
 use cmod_build::runner::{self, BuildRunner, BuildStats};
@@ -16,7 +18,7 @@ pub fn run(
     release: bool,
     locked: bool,
     offline: bool,
-    shell: &Shell,
+    shell: &Arc<Shell>,
     target_override: Option<String>,
     jobs: usize,
     force: bool,
@@ -75,7 +77,7 @@ pub fn run(
     );
 
     // Step 1: Ensure dependencies are resolved (with target-specific filtering)
-    let lockfile = ensure_resolved(&config)?;
+    let lockfile = ensure_resolved(&config, shell)?;
 
     // Step 1.5: Verify lockfile integrity if --verify is set
     if verify {
@@ -113,6 +115,7 @@ pub fn run(
                 .hooks
                 .as_ref()
                 .and_then(|h| h.pre_build.as_deref()),
+            shell,
         )?;
     }
 
@@ -142,6 +145,7 @@ pub fn run(
                 .hooks
                 .as_ref()
                 .and_then(|h| h.post_build.as_deref()),
+            shell,
         )?;
     }
 
@@ -165,7 +169,7 @@ fn make_remote_cache(
 #[allow(clippy::too_many_arguments)]
 fn build_module(
     config: &Config,
-    shell: &Shell,
+    shell: &Arc<Shell>,
     jobs: usize,
     force: bool,
     remote_url: &Option<String>,
@@ -223,7 +227,8 @@ fn build_module(
         .with_force(force)
         .with_no_cache(no_cache)
         .with_extra_pcm_paths(dep_pcms)
-        .with_extra_obj_paths(dep_objs);
+        .with_extra_obj_paths(dep_objs)
+        .with_shell(Arc::clone(shell));
 
     if let Some(remote) = make_remote_cache(remote_url, shell) {
         runner = runner.with_remote_cache(remote);
@@ -247,7 +252,7 @@ fn build_module(
 /// and return the aggregated PCMs and objects for the parent project.
 fn build_path_dependencies(
     config: &Config,
-    shell: &Shell,
+    shell: &Arc<Shell>,
     jobs: usize,
     force: bool,
     remote_url: &Option<String>,
@@ -348,7 +353,7 @@ fn build_path_dependencies(
 /// Build all members of a workspace.
 fn build_workspace(
     config: &Config,
-    shell: &Shell,
+    shell: &Arc<Shell>,
     jobs: usize,
     force: bool,
     remote_url: &Option<String>,
@@ -370,7 +375,7 @@ fn build_workspace(
     );
 
     // Ensure dependencies are resolved
-    let _lockfile = ensure_resolved(config)?;
+    let _lockfile = ensure_resolved(config, shell)?;
 
     // Build members in topological order so dependencies are built first
     let ordered_members = ws.build_order()?;
@@ -448,7 +453,8 @@ fn build_workspace(
             .with_force(force)
             .with_no_cache(no_cache)
             .with_extra_pcm_paths(extra_pcms)
-            .with_extra_obj_paths(extra_objs);
+            .with_extra_obj_paths(extra_objs)
+            .with_shell(Arc::clone(shell));
         if let Some(remote) = make_remote_cache(remote_url, shell) {
             runner_instance = runner_instance.with_remote_cache(remote);
         }
@@ -724,14 +730,14 @@ fn resolve_build_features(
 ///
 /// If a `vendor/` directory exists and the build is in offline mode (or
 /// `vendor/config.toml` is present), the resolver uses vendored sources.
-fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
+fn ensure_resolved(config: &Config, shell: &Shell) -> Result<Lockfile, CmodError> {
     // Check for vendored dependencies
     let vendor_dir = config.root.join("vendor");
     let vendor_config = vendor_dir.join("config.toml");
     let is_vendored = vendor_dir.exists() && vendor_config.exists();
 
     if is_vendored && config.offline {
-        eprintln!("{:>12} vendored dependencies (offline mode)", "Using");
+        shell.status("Using", "vendored dependencies (offline mode)");
     }
 
     if config.lockfile_path.exists() {
@@ -742,7 +748,7 @@ fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
         Err(CmodError::LockfileNotFound)
     } else {
         // Auto-resolve with target-specific dependency filtering
-        eprintln!("{:>12} dependencies...", "Resolving");
+        shell.status("Resolving", "dependencies...");
         // Use vendor dir as deps dir if vendored deps exist
         let deps_dir = if is_vendored {
             vendor_dir
@@ -901,11 +907,11 @@ fn print_build_stats(stats: &BuildStats, shell: &Shell, timings: bool) {
 
     // Per-node timings
     if timings && !stats.node_timings.is_empty() {
-        eprintln!("  Per-module timings:");
+        shell.verbose("Timings", "per-module breakdown:");
         let mut sorted: Vec<_> = stats.node_timings.iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(a.1)); // slowest first
         for (node_id, ms) in sorted {
-            eprintln!("    {:>6}ms  {}", ms, node_id);
+            shell.verbose("", format!("{:>6}ms  {}", ms, node_id));
         }
     }
 }
@@ -913,13 +919,18 @@ fn print_build_stats(stats: &BuildStats, shell: &Shell, timings: bool) {
 /// Execute a build lifecycle hook if configured.
 ///
 /// Hooks run in the project root directory. A non-zero exit code fails the build.
-pub fn run_hook(config: &Config, hook_name: &str, command: Option<&str>) -> Result<(), CmodError> {
+pub fn run_hook(
+    config: &Config,
+    hook_name: &str,
+    command: Option<&str>,
+    shell: &Shell,
+) -> Result<(), CmodError> {
     let cmd = match command {
         Some(c) => c,
         None => return Ok(()),
     };
 
-    eprintln!("{:>12} {} hook: {}", "Running", hook_name, cmd);
+    shell.status("Running", format!("{} hook: {}", hook_name, cmd));
 
     let status = std::process::Command::new("sh")
         .arg("-c")

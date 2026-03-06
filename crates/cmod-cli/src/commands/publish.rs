@@ -55,6 +55,7 @@ pub fn run(dry_run: bool, push: bool, shell: &Shell) -> Result<(), CmodError> {
             .hooks
             .as_ref()
             .and_then(|h| h.pre_publish.as_deref()),
+        shell,
     )?;
 
     if dry_run {

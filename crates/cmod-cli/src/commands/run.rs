@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::shell::Shell;
@@ -8,7 +10,7 @@ pub fn run(
     release: bool,
     package: Option<String>,
     args: Vec<String>,
-    shell: &Shell,
+    shell: &Arc<Shell>,
     no_cache: bool,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
