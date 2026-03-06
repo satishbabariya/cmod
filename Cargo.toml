@@ -7,6 +7,7 @@ members = [
     "crates/cmod-cache",
     "crates/cmod-workspace",
     "crates/cmod-security",
+    "crates/cmod-lsp",
 ]
 resolver = "2"
 

@@ -356,6 +356,9 @@ pub struct Security {
     /// Signing configuration (GPG key ID, SSH key path, etc.).
     #[serde(default)]
     pub signing_key: Option<String>,
+    /// Signing backend: "pgp", "ssh", "sigstore".
+    #[serde(default)]
+    pub signing_backend: Option<String>,
     /// Whether to verify content hashes on dependency fetch.
     #[serde(default)]
     pub verify_checksums: Option<bool>,
@@ -365,6 +368,12 @@ pub struct Security {
     /// Required signature policy: "none", "warn", "require".
     #[serde(default)]
     pub signature_policy: Option<String>,
+    /// OIDC issuer for Sigstore keyless signing.
+    #[serde(default)]
+    pub oidc_issuer: Option<String>,
+    /// Certificate identity (email) for Sigstore verification.
+    #[serde(default)]
+    pub certificate_identity: Option<String>,
 }
 
 /// Publish configuration for distributing the module.
@@ -1062,9 +1071,12 @@ tags = ["v0.1.0", "latest"]
         let mut manifest = default_manifest("hello");
         manifest.security = Some(Security {
             signing_key: None,
+            signing_backend: None,
             verify_checksums: None,
             trusted_sources: vec![],
             signature_policy: Some("invalid_policy".to_string()),
+            oidc_issuer: None,
+            certificate_identity: None,
         });
         assert!(manifest.validate().is_err());
     }

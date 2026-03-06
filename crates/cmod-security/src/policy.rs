@@ -333,9 +333,12 @@ mod tests {
     fn test_policy_from_manifest() {
         let sec = Security {
             signing_key: None,
+            signing_backend: None,
             verify_checksums: Some(true),
             trusted_sources: vec!["github.com/*".to_string()],
             signature_policy: Some("require".to_string()),
+            oidc_issuer: None,
+            certificate_identity: None,
         };
         let policy = SecurityPolicy::from_manifest(Some(&sec));
         assert!(policy.is_active());
