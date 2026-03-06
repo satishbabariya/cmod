@@ -313,6 +313,9 @@ enum Commands {
 
     /// Export a CMakeLists.txt for interop with CMake-based projects
     EmitCmake,
+
+    /// Start the LSP server for IDE integration
+    Lsp,
 }
 
 #[derive(Subcommand)]
@@ -515,6 +518,10 @@ fn main() {
         },
         Commands::Plan => commands::build::plan(&shell, cli.target.clone()),
         Commands::EmitCmake => commands::build::emit_cmake(&shell),
+        Commands::Lsp => {
+            let mut server = cmod_lsp::server::LspServer::new();
+            server.run()
+        }
     };
 
     if let Err(e) = result {

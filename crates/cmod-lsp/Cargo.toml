@@ -1,0 +1,24 @@
+[package]
+name = "cmod-lsp"
+description = "LSP server for cmod — module-aware IDE integration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+cmod-core = { path = "../cmod-core" }
+cmod-build = { path = "../cmod-build" }
+cmod-resolver = { path = "../cmod-resolver" }
+cmod-cache = { path = "../cmod-cache" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
