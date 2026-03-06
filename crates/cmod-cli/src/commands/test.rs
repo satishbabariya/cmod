@@ -28,6 +28,8 @@ pub fn run(
         &[],
         false,
         no_cache,
+        false,
+        vec![],
     )?;
 
     shell.status("Testing", "running tests...");

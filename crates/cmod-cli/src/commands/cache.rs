@@ -303,7 +303,45 @@ pub fn export_bmi(module: &str, key: &str, output: &str, shell: &Shell) -> Resul
     let config = Config::load(&cwd)?;
 
     let output_path = std::path::PathBuf::from(output);
-    let package = cmod_cache::export_bmi(&config.cache_dir(), module, key, &output_path)?;
+    let mut package = cmod_cache::export_bmi(&config.cache_dir(), module, key, &output_path)?;
+
+    // Sign the BMI package if signing key is configured
+    let signing_config = config.manifest.security.as_ref().and_then(|sec| {
+        cmod_security::signing::resolve_signing_config(
+            sec.signing_key.as_deref(),
+            sec.signing_backend.as_deref(),
+        )
+    });
+
+    if let Some(ref cfg) = signing_config {
+        shell.verbose("Signing", "BMI package will be signed");
+        let package_json = serde_json::to_string(&package)
+            .map_err(|e| CmodError::Other(format!("failed to serialize for signing: {}", e)))?;
+
+        match cmod_security::signing::sign_data(cfg, package_json.as_bytes()) {
+            Ok(result) => {
+                package.metadata.signature = Some(result.signature.clone());
+
+                // Write .sig file
+                let sig_path = output_path.join("bmi_package.sig");
+                std::fs::write(&sig_path, &result.signature)?;
+
+                // Re-write package JSON with signature
+                let updated_json = serde_json::to_string_pretty(&package).map_err(|e| {
+                    CmodError::Other(format!("failed to serialize BMI package: {}", e))
+                })?;
+                std::fs::write(output_path.join("bmi_package.json"), &updated_json)?;
+
+                shell.verbose(
+                    "Signed",
+                    format!("by {} ({})", result.signer, result.backend.as_str()),
+                );
+            }
+            Err(e) => {
+                shell.warn(format!("failed to sign BMI package: {}", e));
+            }
+        }
+    }
 
     shell.status(
         "Exported",
@@ -327,6 +365,52 @@ pub fn import_bmi(path: &str, shell: &Shell) -> Result<(), CmodError> {
     let config = Config::load(&cwd)?;
 
     let package_path = std::path::PathBuf::from(path);
+
+    // Verify signature if present
+    let sig_path = package_path.join("bmi_package.sig");
+    let pkg_json_path = package_path.join("bmi_package.json");
+
+    if sig_path.exists() && pkg_json_path.exists() {
+        let signing_config = config.manifest.security.as_ref().and_then(|sec| {
+            cmod_security::signing::resolve_signing_config(
+                sec.signing_key.as_deref(),
+                sec.signing_backend.as_deref(),
+            )
+        });
+
+        match cmod_security::signing::verify_file(
+            &pkg_json_path,
+            &sig_path,
+            signing_config.as_ref(),
+        ) {
+            Ok(cmod_security::signing::VerifyStatus::Valid { signer, backend }) => {
+                shell.verbose(
+                    "Signature",
+                    format!("verified ({}, signed by {})", backend.as_str(), signer),
+                );
+            }
+            Ok(cmod_security::signing::VerifyStatus::Untrusted { signer, reason, .. }) => {
+                shell.warn(format!(
+                    "BMI package signature untrusted (signer: {}): {}",
+                    signer, reason,
+                ));
+            }
+            Ok(cmod_security::signing::VerifyStatus::Unsigned) => {
+                shell.verbose("Signature", "no signature present");
+            }
+            Ok(cmod_security::signing::VerifyStatus::Invalid { reason }) => {
+                return Err(CmodError::SecurityViolation {
+                    reason: format!("BMI package has invalid signature: {}", reason),
+                });
+            }
+            Err(e) => {
+                shell.warn(format!("could not verify BMI signature: {}", e));
+            }
+        }
+    } else {
+        shell.verbose("Signature", "no signature file present");
+    }
+
     let metadata = cmod_cache::import_bmi(&config.cache_dir(), &package_path)?;
 
     shell.status(

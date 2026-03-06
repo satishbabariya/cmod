@@ -225,6 +225,29 @@ pub struct Build {
     pub parallel: Option<bool>,
     #[serde(default)]
     pub incremental: Option<bool>,
+    /// Distributed build configuration.
+    #[serde(default)]
+    pub distributed: Option<DistributedBuildConfig>,
+}
+
+/// Configuration for distributed builds in cmod.toml `[build.distributed]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DistributedBuildConfig {
+    /// Whether distributed builds are enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Worker endpoint URLs.
+    #[serde(default)]
+    pub workers: Vec<String>,
+    /// Scheduling strategy: "least_loaded", "round_robin", "target_affinity".
+    #[serde(default)]
+    pub scheduler: Option<String>,
+    /// Authentication token for worker communication.
+    #[serde(default)]
+    pub auth_token: Option<String>,
+    /// Timeout for individual compilation tasks (seconds).
+    #[serde(default)]
+    pub task_timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -767,6 +790,7 @@ pub fn default_manifest(name: &str) -> Manifest {
             lto: Some(false),
             parallel: Some(true),
             incremental: Some(true),
+            distributed: None,
         }),
         test: None,
         workspace: None,

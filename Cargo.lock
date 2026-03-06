@@ -234,6 +234,7 @@ dependencies = [
  "cmod-resolver",
  "cmod-security",
  "cmod-workspace",
+ "dirs",
  "git2",
  "semver",
  "serde",

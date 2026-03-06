@@ -99,14 +99,50 @@ pub fn export_bmi(
         )));
     }
 
-    // Read existing metadata
+    // Read existing metadata — try BmiMetadata first, fall back to ArtifactMetadata
     let metadata_path = entry_dir.join("metadata.json");
     let base_metadata: BmiMetadata = if metadata_path.exists() {
         let content = fs::read_to_string(&metadata_path)?;
-        serde_json::from_str(&content)
-            .map_err(|e| CmodError::Other(format!("failed to parse BMI metadata: {}", e)))?
+        serde_json::from_str::<BmiMetadata>(&content).unwrap_or_else(|_| {
+            // Try parsing as ArtifactMetadata (the format written by the cache module)
+            if let Ok(am) = serde_json::from_str::<crate::cache::ArtifactMetadata>(&content) {
+                BmiMetadata {
+                    module_name: am.module_name,
+                    version: "0.0.0".to_string(),
+                    compiler: am.compiler,
+                    compiler_version: am.compiler_version,
+                    target: am.target,
+                    cxx_standard: "20".to_string(),
+                    stdlib: None,
+                    abi: None,
+                    source_commit: None,
+                    pcm_hash: None,
+                    obj_hash: None,
+                    signature: None,
+                    created_at: am.created_at,
+                    extra: BTreeMap::new(),
+                }
+            } else {
+                let now = chrono_now();
+                BmiMetadata {
+                    module_name: module_name.to_string(),
+                    version: "0.0.0".to_string(),
+                    compiler: "unknown".to_string(),
+                    compiler_version: "unknown".to_string(),
+                    target: "unknown".to_string(),
+                    cxx_standard: "20".to_string(),
+                    stdlib: None,
+                    abi: None,
+                    source_commit: None,
+                    pcm_hash: None,
+                    obj_hash: None,
+                    signature: None,
+                    created_at: now,
+                    extra: BTreeMap::new(),
+                }
+            }
+        })
     } else {
-        // Create minimal metadata from cache entry
         let now = chrono_now();
         BmiMetadata {
             module_name: module_name.to_string(),

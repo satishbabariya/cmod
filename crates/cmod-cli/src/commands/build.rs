@@ -29,6 +29,8 @@ pub fn run(
     features: &[String],
     no_default_features: bool,
     no_cache: bool,
+    distributed: bool,
+    workers: Vec<String>,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
@@ -133,6 +135,8 @@ pub fn run(
         timings,
         &activated_features,
         no_cache,
+        distributed,
+        &workers,
     );
 
     // Step 4: Run post-build hook (only on success)
@@ -176,6 +180,8 @@ fn build_module(
     timings: bool,
     activated_features: &[String],
     no_cache: bool,
+    distributed: bool,
+    workers: &[String],
 ) -> Result<(), CmodError> {
     // Build path dependencies first and collect their artifacts
     let (dep_pcms, dep_objs) =
@@ -232,6 +238,38 @@ fn build_module(
 
     if let Some(remote) = make_remote_cache(remote_url, shell) {
         runner = runner.with_remote_cache(remote);
+    }
+
+    // Set up distributed build if requested
+    if distributed || !workers.is_empty() {
+        let worker_endpoints = if workers.is_empty() {
+            // Try to read workers from manifest [build.distributed] if available
+            Vec::new()
+        } else {
+            workers.to_vec()
+        };
+
+        if !worker_endpoints.is_empty() {
+            let dist_config = cmod_build::distributed::DistributedConfig {
+                enabled: true,
+                workers: worker_endpoints,
+                ..Default::default()
+            };
+            let pool = cmod_build::distributed::WorkerPool::new(&dist_config);
+            match pool.discover_workers() {
+                Ok(count) => {
+                    shell.status("Workers", format!("{} remote worker(s) available", count));
+                    runner = runner.with_worker_pool(pool);
+                }
+                Err(e) => {
+                    shell.warn(format!("distributed build setup failed: {}", e));
+                    shell.note("falling back to local build");
+                }
+            }
+        } else {
+            shell.warn("--distributed specified but no worker endpoints provided");
+            shell.note("use --workers=http://host:port to specify workers");
+        }
     }
 
     if jobs != 1 {
@@ -296,6 +334,8 @@ fn build_path_dependencies(
             false,
             &[],
             no_cache,
+            false,
+            &[],
         )?;
 
         // Collect PCM files

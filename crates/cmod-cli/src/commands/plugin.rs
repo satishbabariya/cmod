@@ -8,6 +8,8 @@ use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::shell::Shell;
 
+use super::plugin_sandbox::{load_plugin_manifest, parse_capabilities, PluginSandbox};
+
 /// A plugin definition from `[plugins]` in cmod.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginDef {
@@ -78,6 +80,46 @@ pub fn run_plugin(name: &str, shell: &Shell) -> Result<(), CmodError> {
 
     let entry = find_plugin_entry(&config.root, plugin)?;
 
+    // Load plugin manifest and enforce sandbox capabilities
+    let sandbox = if plugin.path.join("plugin.toml").exists() {
+        match load_plugin_manifest(&plugin.path) {
+            Ok(manifest) => {
+                let (capabilities, unknown) = parse_capabilities(&manifest.capabilities);
+                if !unknown.is_empty() {
+                    shell.warn(format!(
+                        "plugin '{}' requests unknown capabilities: {}",
+                        name,
+                        unknown.join(", "),
+                    ));
+                }
+
+                let sandbox =
+                    PluginSandbox::new(capabilities, config.root.clone(), manifest.limits.clone());
+
+                // Verify execute capability
+                sandbox.check_execute()?;
+
+                shell.verbose(
+                    "Sandbox",
+                    format!(
+                        "plugin '{}' granted {} capabilities (timeout: {}s)",
+                        name,
+                        manifest.capabilities.len(),
+                        manifest.limits.timeout_secs,
+                    ),
+                );
+
+                Some((sandbox, manifest.limits))
+            }
+            Err(e) => {
+                shell.verbose("Sandbox", format!("could not load plugin manifest: {}", e));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     shell.verbose("Running", format!("{} ({})", plugin.name, entry.display()));
 
     let request = PluginRequest {
@@ -119,9 +161,43 @@ pub fn run_plugin(name: &str, shell: &Shell) -> Result<(), CmodError> {
         }
     }
 
-    let status = child.wait().map_err(|e| CmodError::BuildFailed {
-        reason: format!("plugin '{}' failed: {}", name, e),
-    })?;
+    let status = if let Some((_, ref limits)) = sandbox {
+        if limits.timeout_secs > 0 {
+            let timeout = std::time::Duration::from_secs(limits.timeout_secs);
+            let start = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(s)) => break s,
+                    Ok(None) => {
+                        if start.elapsed() > timeout {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(CmodError::BuildFailed {
+                                reason: format!(
+                                    "plugin '{}' exceeded timeout of {}s",
+                                    name, limits.timeout_secs,
+                                ),
+                            });
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(e) => {
+                        return Err(CmodError::BuildFailed {
+                            reason: format!("plugin '{}' failed: {}", name, e),
+                        });
+                    }
+                }
+            }
+        } else {
+            child.wait().map_err(|e| CmodError::BuildFailed {
+                reason: format!("plugin '{}' failed: {}", name, e),
+            })?
+        }
+    } else {
+        child.wait().map_err(|e| CmodError::BuildFailed {
+            reason: format!("plugin '{}' failed: {}", name, e),
+        })?
+    };
 
     if !status.success() {
         return Err(CmodError::BuildFailed {

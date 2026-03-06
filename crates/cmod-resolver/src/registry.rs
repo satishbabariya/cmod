@@ -57,6 +57,17 @@ pub struct RegistryVersion {
     pub yanked: bool,
 }
 
+/// Parameters for publishing a module to the registry.
+pub struct PublishModuleParams {
+    pub name: String,
+    pub version: String,
+    pub tag: String,
+    pub commit: String,
+    pub description: Option<String>,
+    pub license: Option<String>,
+    pub repository: String,
+}
+
 /// The full registry index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryIndex {
@@ -200,6 +211,70 @@ impl RegistryClient {
         } else {
             Ok(None)
         }
+    }
+
+    /// Submit a module to the registry after publishing.
+    ///
+    /// Creates or updates the registry entry with the module's metadata and version.
+    pub fn publish_module(&self, params: &PublishModuleParams) -> Result<(), CmodError> {
+        let mut index = match self.cached_index()? {
+            Some(idx) => idx,
+            None => {
+                self.update()?;
+                self.cached_index()?
+                    .unwrap_or_else(|| RegistryIndex::new("cmod", "C++ Module Registry"))
+            }
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string();
+
+        let new_version = RegistryVersion {
+            version: params.version.clone(),
+            tag: params.tag.clone(),
+            commit: params.commit.clone(),
+            min_cpp_standard: None,
+            published_at: now.clone(),
+            yanked: false,
+        };
+
+        if let Some(entry) = index.modules.get_mut(&params.name) {
+            entry.versions.push(new_version);
+            entry.updated_at = now;
+            if let Some(ref desc) = params.description {
+                entry.description = Some(desc.clone());
+            }
+            if let Some(ref lic) = params.license {
+                entry.license = Some(lic.clone());
+            }
+        } else {
+            let entry = RegistryEntry {
+                name: params.name.clone(),
+                description: params.description.clone(),
+                repository: params.repository.clone(),
+                versions: vec![new_version],
+                keywords: Vec::new(),
+                category: None,
+                license: params.license.clone(),
+                authors: Vec::new(),
+                updated_at: now,
+                verified: false,
+                deprecated: None,
+            };
+            index.upsert_module(entry);
+        }
+
+        let index_path = self
+            .cache_dir
+            .join("registry")
+            .join("index")
+            .join("index.json");
+        index.save(&index_path)?;
+
+        Ok(())
     }
 
     fn clone_registry(&self, dest: &Path) -> Result<(), CmodError> {

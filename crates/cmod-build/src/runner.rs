@@ -53,8 +53,12 @@ pub struct BuildRunner {
     extra_pcm_paths: HashMap<String, PathBuf>,
     /// Extra object files to link (e.g., from workspace dependencies).
     extra_obj_paths: Vec<PathBuf>,
+    /// Directories containing precompiled BMI packages to check before compiling.
+    bmi_dirs: Vec<PathBuf>,
     /// Shell for colored, structured output.
     shell: Option<Arc<Shell>>,
+    /// Optional distributed worker pool for remote compilation.
+    worker_pool: Option<crate::distributed::WorkerPool>,
 }
 
 /// Outcome of executing a single build node.
@@ -88,7 +92,9 @@ impl BuildRunner {
             max_jobs: 0,
             extra_pcm_paths: HashMap::new(),
             extra_obj_paths: Vec::new(),
+            bmi_dirs: Vec::new(),
             shell: None,
+            worker_pool: None,
         }
     }
 
@@ -132,6 +138,79 @@ impl BuildRunner {
     pub fn with_shell(mut self, shell: Arc<Shell>) -> Self {
         self.shell = Some(shell);
         self
+    }
+
+    /// Add BMI directories for precompiled module lookup.
+    pub fn with_bmi_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.bmi_dirs = dirs;
+        self
+    }
+
+    /// Attach a distributed worker pool for remote compilation.
+    pub fn with_worker_pool(mut self, pool: crate::distributed::WorkerPool) -> Self {
+        self.worker_pool = Some(pool);
+        self
+    }
+
+    /// Check if a compatible precompiled BMI exists in any configured BMI directory.
+    ///
+    /// Searches each BMI directory for an `index.json` matching the given module name,
+    /// then checks for a variant compatible with the current compiler settings.
+    #[allow(dead_code)]
+    fn find_precompiled_bmi(&self, module_name: &str) -> Option<PathBuf> {
+        for bmi_dir in &self.bmi_dirs {
+            let index_path = bmi_dir.join("index.json");
+            if !index_path.exists() {
+                continue;
+            }
+
+            let content = match std::fs::read_to_string(&index_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let index: cmod_cache::distribution::BmiIndex = match serde_json::from_str(&content) {
+                Ok(i) => i,
+                Err(_) => continue,
+            };
+
+            if index.module_name != module_name {
+                continue;
+            }
+
+            // Derive compiler info from the backend fields.
+            // ClangBackend doesn't expose dedicated accessor methods, so we
+            // use the executable name and field values directly.
+            let compiler_name = self
+                .backend
+                .clang_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("clang++");
+            // Normalize "clang++" to "clang" for BMI index matching.
+            let compiler = if compiler_name.contains("clang") {
+                "clang"
+            } else {
+                compiler_name
+            };
+            let compiler_version = "";
+            let target = self.backend.target.as_deref().unwrap_or("");
+
+            if let Some(variant) = cmod_cache::distribution::find_compatible_variant(
+                &index,
+                compiler,
+                compiler_version,
+                target,
+                &self.backend.cxx_standard,
+            ) {
+                let variant_dir = bmi_dir.join(&variant.directory);
+                if variant_dir.exists() {
+                    return Some(variant_dir);
+                }
+            }
+        }
+
+        None
     }
 
     /// Emit a normal status message through Shell, or fall back to eprintln.
@@ -401,6 +480,102 @@ impl BuildRunner {
             for (name, path) in &artifact_files {
                 let _ = remote.put(module_id, key, name, path);
             }
+        }
+    }
+
+    /// Attempt to execute a build node on a remote worker.
+    /// Returns Ok(Some(outcome)) if distributed, Ok(None) if should fall back to local.
+    #[allow(dead_code)]
+    fn try_distribute_node(
+        &self,
+        node: &crate::plan::BuildNode,
+        project_root: &Path,
+    ) -> Result<Option<NodeOutcome>, CmodError> {
+        let pool = match &self.worker_pool {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // Only distribute compilation nodes, not link nodes
+        if !matches!(
+            node.kind,
+            cmod_core::types::NodeKind::Interface
+                | cmod_core::types::NodeKind::Implementation
+                | cmod_core::types::NodeKind::Object
+        ) {
+            return Ok(None);
+        }
+
+        let tasks =
+            crate::distributed::nodes_to_remote_tasks(std::slice::from_ref(node), project_root);
+        let task = match tasks.into_iter().next() {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        let task_id = task.task_id.clone();
+
+        // Select a worker
+        let worker_id = match pool.select_worker(&task) {
+            Some(id) => id,
+            None => {
+                self.emit_verbose(
+                    "Distributed",
+                    format!("no available worker for {}", node.id),
+                );
+                return Ok(None); // Fall back to local
+            }
+        };
+
+        // Submit task
+        match pool.submit_task(&worker_id, task) {
+            Ok(()) => {
+                self.emit_verbose(
+                    "Distributed",
+                    format!("submitted {} to worker {}", node.id, worker_id),
+                );
+            }
+            Err(e) => {
+                self.emit_verbose(
+                    "Distributed",
+                    format!("failed to submit {}: {}, falling back to local", node.id, e),
+                );
+                return Ok(None); // Fall back to local
+            }
+        }
+
+        // Poll for result
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(300);
+        loop {
+            if let Some(result) = pool.collect_result(&task_id) {
+                if result.success {
+                    self.emit_verbose(
+                        "Distributed",
+                        format!(
+                            "{} completed on {} in {}ms",
+                            node.id, worker_id, result.duration_ms
+                        ),
+                    );
+                    return Ok(Some(NodeOutcome::Compiled(result.duration_ms)));
+                } else {
+                    self.emit_verbose(
+                        "Distributed",
+                        format!("{} failed on {}: {}", node.id, worker_id, result.stderr),
+                    );
+                    return Ok(None); // Fall back to local on failure
+                }
+            }
+
+            if start.elapsed() > timeout {
+                self.emit_verbose(
+                    "Distributed",
+                    format!("{} timed out, falling back to local", node.id),
+                );
+                return Ok(None);
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 

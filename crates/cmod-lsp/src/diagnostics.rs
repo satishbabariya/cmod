@@ -230,6 +230,110 @@ impl Default for DiagnosticsEngine {
     }
 }
 
+/// A parsed Clang diagnostic from build output.
+#[derive(Debug, Clone)]
+pub struct ClangDiagnostic {
+    /// Source file path.
+    pub file: String,
+    /// 1-based line number.
+    pub line: u32,
+    /// 1-based column number.
+    pub column: u32,
+    /// Severity string ("error", "warning", "note").
+    pub severity: String,
+    /// Diagnostic message.
+    pub message: String,
+}
+
+/// Parse Clang-format diagnostics from build output.
+///
+/// Recognizes lines in the format: `file:line:col: severity: message`
+pub fn parse_clang_diagnostics(build_output: &str) -> Vec<ClangDiagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for line in build_output.lines() {
+        if let Some(diag) = parse_clang_diagnostic_line(line) {
+            diagnostics.push(diag);
+        }
+    }
+
+    diagnostics
+}
+
+/// Parse a single Clang diagnostic line.
+fn parse_clang_diagnostic_line(line: &str) -> Option<ClangDiagnostic> {
+    // Format: file:line:col: severity: message
+    // Example: src/main.cpp:10:5: error: undeclared identifier 'foo'
+    let trimmed = line.trim();
+
+    // Skip non-diagnostic lines
+    if trimmed.is_empty() || trimmed.starts_with("In file included") {
+        return None;
+    }
+
+    // Find the pattern: ":line:col: severity:"
+    let parts: Vec<&str> = trimmed.splitn(4, ':').collect();
+    if parts.len() < 4 {
+        return None;
+    }
+
+    let file = parts[0].to_string();
+    let line_num: u32 = parts[1].trim().parse().ok()?;
+    let col_num: u32 = parts[2].trim().parse().ok()?;
+
+    let rest = parts[3].trim();
+    // rest should be "severity: message"
+    let (severity, message) = if let Some(idx) = rest.find(':') {
+        let sev = rest[..idx].trim().to_string();
+        let msg = rest[idx + 1..].trim().to_string();
+        // Validate severity is a known keyword
+        if matches!(sev.as_str(), "error" | "warning" | "note" | "fatal error") {
+            (sev, msg)
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+
+    Some(ClangDiagnostic {
+        file,
+        line: line_num,
+        column: col_num,
+        severity,
+        message,
+    })
+}
+
+/// Convert parsed Clang diagnostics into LSP diagnostic values grouped by file.
+pub fn clang_diagnostics_to_lsp(
+    diagnostics: &[ClangDiagnostic],
+) -> std::collections::BTreeMap<String, Vec<Value>> {
+    let mut by_file: std::collections::BTreeMap<String, Vec<Value>> =
+        std::collections::BTreeMap::new();
+
+    for diag in diagnostics {
+        let severity = match diag.severity.as_str() {
+            "error" | "fatal error" => DiagnosticSeverity::Error,
+            "warning" => DiagnosticSeverity::Warning,
+            "note" => DiagnosticSeverity::Hint,
+            _ => DiagnosticSeverity::Information,
+        };
+
+        let lsp_diag = make_diagnostic(
+            diag.line.saturating_sub(1), // Convert to 0-based
+            diag.column.saturating_sub(1),
+            severity,
+            &diag.message,
+            "clang",
+        );
+
+        by_file.entry(diag.file.clone()).or_default().push(lsp_diag);
+    }
+
+    by_file
+}
+
 fn is_cpp_source(filename: &str) -> bool {
     let extensions = [".cpp", ".cppm", ".cxx", ".cc", ".c++", ".ixx", ".mxx"];
     extensions.iter().any(|ext| filename.ends_with(ext))
@@ -337,5 +441,73 @@ mod tests {
         assert_eq!(d["severity"], 1);
         assert_eq!(d["message"], "test error");
         assert_eq!(d["code"], "test-code");
+    }
+
+    #[test]
+    fn test_parse_clang_diagnostic_line() {
+        let diag =
+            parse_clang_diagnostic_line("src/main.cpp:10:5: error: undeclared identifier 'foo'")
+                .unwrap();
+        assert_eq!(diag.file, "src/main.cpp");
+        assert_eq!(diag.line, 10);
+        assert_eq!(diag.column, 5);
+        assert_eq!(diag.severity, "error");
+        assert_eq!(diag.message, "undeclared identifier 'foo'");
+    }
+
+    #[test]
+    fn test_parse_clang_diagnostic_warning() {
+        let diag =
+            parse_clang_diagnostic_line("lib.cppm:3:1: warning: unused variable 'x'").unwrap();
+        assert_eq!(diag.severity, "warning");
+        assert_eq!(diag.line, 3);
+    }
+
+    #[test]
+    fn test_parse_clang_diagnostic_not_diagnostic() {
+        assert!(parse_clang_diagnostic_line("Building module...").is_none());
+        assert!(parse_clang_diagnostic_line("").is_none());
+        assert!(parse_clang_diagnostic_line("In file included from header.h").is_none());
+    }
+
+    #[test]
+    fn test_parse_clang_diagnostics_multi() {
+        let output =
+            "src/a.cpp:1:1: error: missing semicolon\nsrc/b.cpp:5:3: warning: shadowed variable\n";
+        let diags = parse_clang_diagnostics(output);
+        assert_eq!(diags.len(), 2);
+        assert_eq!(diags[0].file, "src/a.cpp");
+        assert_eq!(diags[1].severity, "warning");
+    }
+
+    #[test]
+    fn test_clang_diagnostics_to_lsp() {
+        let diags = vec![
+            ClangDiagnostic {
+                file: "src/main.cpp".into(),
+                line: 10,
+                column: 5,
+                severity: "error".into(),
+                message: "test error".into(),
+            },
+            ClangDiagnostic {
+                file: "src/main.cpp".into(),
+                line: 20,
+                column: 1,
+                severity: "warning".into(),
+                message: "test warning".into(),
+            },
+            ClangDiagnostic {
+                file: "src/lib.cpp".into(),
+                line: 1,
+                column: 1,
+                severity: "note".into(),
+                message: "a note".into(),
+            },
+        ];
+        let by_file = clang_diagnostics_to_lsp(&diags);
+        assert_eq!(by_file.len(), 2);
+        assert_eq!(by_file["src/main.cpp"].len(), 2);
+        assert_eq!(by_file["src/lib.cpp"].len(), 1);
     }
 }

@@ -788,7 +788,7 @@ fn test_publish_dry_run() {
         status_str
     );
 
-    let output = run_cmod(tmp.path(), &["publish", "--dry-run"]);
+    let output = run_cmod(tmp.path(), &["publish", "--dry-run", "--skip-governance"]);
     assert!(
         output.status.success(),
         "publish --dry-run should succeed: {}",

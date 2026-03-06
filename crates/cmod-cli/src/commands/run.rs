@@ -50,6 +50,8 @@ pub fn run(
         &[],
         false,
         no_cache,
+        false,
+        vec![],
     )?;
 
     // For workspace projects, resolve the target member binary

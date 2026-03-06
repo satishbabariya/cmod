@@ -29,6 +29,12 @@ pub struct ModuleInfo {
     pub is_local: bool,
     /// Available partitions.
     pub partitions: Vec<String>,
+    /// Root file path for go-to-definition.
+    pub root_path: Option<PathBuf>,
+    /// Module version.
+    pub version: Option<String>,
+    /// Repository URL.
+    pub repository: Option<String>,
 }
 
 impl CompletionProvider {
@@ -192,6 +198,9 @@ impl CompletionProvider {
                         description: manifest.package.description.clone(),
                         is_local: true,
                         partitions: Vec::new(),
+                        root_path: Some(root.join(&module.root)),
+                        version: Some(manifest.package.version.clone()),
+                        repository: None,
                     });
                 }
 
@@ -202,6 +211,9 @@ impl CompletionProvider {
                         description: None,
                         is_local: false,
                         partitions: Vec::new(),
+                        root_path: None,
+                        version: None,
+                        repository: None,
                     });
                 }
             }
@@ -228,12 +240,43 @@ impl CompletionProvider {
                                 description: None,
                                 is_local: true,
                                 partitions: Vec::new(),
+                                root_path: Some(source.clone()),
+                                version: None,
+                                repository: None,
                             });
                         }
                     }
                 }
             }
         }
+
+        // Enrich dependency modules with lockfile info
+        let lockfile_path = root.join("cmod.lock");
+        if let Ok(lockfile_content) = std::fs::read_to_string(&lockfile_path) {
+            if let Ok(lockfile) = cmod_core::lockfile::Lockfile::from_str(&lockfile_content) {
+                for module in &mut self.known_modules {
+                    if !module.is_local {
+                        if let Some(pkg) = lockfile.find_package(&module.name) {
+                            module.version = Some(pkg.version.clone());
+                            module.repository = pkg.repo.clone();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Find the root file path for a module name.
+    pub fn find_module_root(&self, module_name: &str) -> Option<PathBuf> {
+        self.known_modules
+            .iter()
+            .find(|m| m.name == module_name)
+            .and_then(|m| m.root_path.clone())
+    }
+
+    /// Find module info by name.
+    pub fn find_module_info(&self, module_name: &str) -> Option<&ModuleInfo> {
+        self.known_modules.iter().find(|m| m.name == module_name)
     }
 }
 
@@ -261,6 +304,9 @@ mod tests {
             description: Some("Format library".into()),
             is_local: false,
             partitions: vec!["core".into()],
+            root_path: None,
+            version: None,
+            repository: None,
         });
 
         let items = provider.complete("import ", 0, 7);
@@ -283,12 +329,18 @@ mod tests {
             description: None,
             is_local: false,
             partitions: vec![],
+            root_path: None,
+            version: None,
+            repository: None,
         });
         provider.known_modules.push(ModuleInfo {
             name: "github.gabime.spdlog".into(),
             description: None,
             is_local: false,
             partitions: vec![],
+            root_path: None,
+            version: None,
+            repository: None,
         });
 
         let items = provider.complete("import github.fmt", 0, 17);

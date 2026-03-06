@@ -294,19 +294,43 @@ pub fn parse_capabilities(
 /// Verify a plugin's signature using the project's trust configuration.
 pub fn verify_plugin_signature(
     plugin_dir: &Path,
-    _trust_config: Option<&cmod_core::manifest::Security>,
+    trust_config: Option<&cmod_core::manifest::Security>,
 ) -> Result<bool, CmodError> {
     let sig_path = plugin_dir.join("plugin.sig");
     if !sig_path.exists() {
         return Ok(false); // No signature present
     }
 
-    let _manifest_path = plugin_dir.join("plugin.toml");
+    let manifest_path = plugin_dir.join("plugin.toml");
+    if !manifest_path.exists() {
+        return Ok(false);
+    }
 
-    // Use the signing module to verify
-    // For now, just check that the signature file exists and is non-empty
-    let sig_content = std::fs::read_to_string(&sig_path)?;
-    Ok(!sig_content.trim().is_empty())
+    // Resolve signing config from security settings
+    let signing_config = trust_config.and_then(|sec| {
+        cmod_security::signing::resolve_signing_config(
+            sec.signing_key.as_deref(),
+            sec.signing_backend.as_deref(),
+        )
+    });
+
+    // Verify the plugin manifest against its signature
+    match cmod_security::signing::verify_file(&manifest_path, &sig_path, signing_config.as_ref()) {
+        Ok(status) => match status {
+            cmod_security::signing::VerifyStatus::Valid { .. } => Ok(true),
+            cmod_security::signing::VerifyStatus::Untrusted { .. } => Ok(false),
+            cmod_security::signing::VerifyStatus::Unsigned => Ok(false),
+            cmod_security::signing::VerifyStatus::Invalid { reason } => {
+                Err(CmodError::SecurityViolation {
+                    reason: format!("plugin signature invalid: {}", reason),
+                })
+            }
+        },
+        Err(e) => Err(CmodError::Other(format!(
+            "failed to verify plugin signature: {}",
+            e
+        ))),
+    }
 }
 
 #[cfg(test)]

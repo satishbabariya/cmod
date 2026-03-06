@@ -283,7 +283,26 @@ impl LspServer {
         let uri = params?.get("textDocument")?.get("uri")?.as_str()?;
 
         let path = uri_to_path(uri);
-        let diagnostics = self.diagnostics.diagnose_file(&path);
+        let mut all_diagnostics = self.diagnostics.diagnose_file(&path);
+
+        // Also check for build log diagnostics from the last build
+        if let Some(ref root) = self.root {
+            let build_log = root.join("build").join("build.log");
+            if build_log.exists() {
+                if let Ok(log_content) = std::fs::read_to_string(&build_log) {
+                    let clang_diags = crate::diagnostics::parse_clang_diagnostics(&log_content);
+                    let by_file = crate::diagnostics::clang_diagnostics_to_lsp(&clang_diags);
+
+                    // Get the file path relative to root for matching
+                    let file_str = path.to_string_lossy();
+                    for (diag_file, diags) in &by_file {
+                        if file_str.ends_with(diag_file) {
+                            all_diagnostics.extend(diags.iter().cloned());
+                        }
+                    }
+                }
+            }
+        }
 
         let notification = JsonRpcMessage {
             jsonrpc: "2.0".to_string(),
@@ -291,7 +310,7 @@ impl LspServer {
             method: Some("textDocument/publishDiagnostics".to_string()),
             params: Some(serde_json::json!({
                 "uri": uri,
-                "diagnostics": diagnostics,
+                "diagnostics": all_diagnostics,
             })),
             result: None,
             error: None,
@@ -349,6 +368,40 @@ impl LspServer {
         if line < lines.len() {
             let current_line = lines[line];
             if current_line.contains("import") {
+                let module_name = word.trim_end_matches(';');
+
+                // Try to find rich metadata from known modules
+                if let Some(info) = self.completion.find_module_info(module_name) {
+                    let mut hover_parts = vec![format!("**Module:** `{}`", info.name)];
+
+                    if let Some(ref ver) = info.version {
+                        hover_parts.push(format!("**Version:** {}", ver));
+                    }
+
+                    if let Some(ref desc) = info.description {
+                        hover_parts.push(desc.clone());
+                    }
+
+                    if let Some(ref repo) = info.repository {
+                        hover_parts.push(format!("**Source:** {}", repo));
+                    }
+
+                    if info.is_local {
+                        hover_parts.push("*Local module*".to_string());
+                    }
+
+                    if !info.partitions.is_empty() {
+                        hover_parts.push(format!("**Partitions:** {}", info.partitions.join(", ")));
+                    }
+
+                    return Some(serde_json::json!({
+                        "contents": {
+                            "kind": "markdown",
+                            "value": hover_parts.join("\n\n"),
+                        }
+                    }));
+                }
+
                 return Some(serde_json::json!({
                     "contents": {
                         "kind": "markdown",
@@ -361,9 +414,42 @@ impl LspServer {
         None
     }
 
-    fn handle_definition(&self, _params: Option<&Value>) -> Option<Value> {
-        // Module definition lookup would trace to the module root file
-        // This requires resolving the module graph
+    fn handle_definition(&self, params: Option<&Value>) -> Option<Value> {
+        let uri = params?.get("textDocument")?.get("uri")?.as_str()?;
+        let content = self
+            .documents
+            .lock()
+            .ok()
+            .and_then(|docs| docs.get(uri).cloned())?;
+
+        let line = params?.get("position")?.get("line")?.as_u64()? as usize;
+        let character = params?.get("position")?.get("character")?.as_u64()? as usize;
+
+        let word = extract_word_at(&content, line, character)?;
+
+        // Check if this is an import line
+        let lines: Vec<&str> = content.lines().collect();
+        if line >= lines.len() {
+            return None;
+        }
+        let current_line = lines[line];
+        if !current_line.contains("import") {
+            return None;
+        }
+
+        // Look up module in known modules
+        let module_name = word.trim_end_matches(';');
+        if let Some(root_path) = self.completion.find_module_root(module_name) {
+            let target_uri = format!("file://{}", root_path.display());
+            return Some(serde_json::json!({
+                "uri": target_uri,
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 0 },
+                }
+            }));
+        }
+
         None
     }
 }

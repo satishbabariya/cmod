@@ -32,5 +32,6 @@ semver = { workspace = true }
 walkdir = { workspace = true }
 git2 = { workspace = true }
 tempfile = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]

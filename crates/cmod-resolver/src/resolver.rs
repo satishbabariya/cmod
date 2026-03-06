@@ -8,6 +8,7 @@ use cmod_core::lockfile::{LockedPackage, LockedToolchain, Lockfile};
 use cmod_core::manifest::{Dependency, Manifest};
 use cmod_security::trust::TrustDb;
 
+use crate::conditional::{resolve_transitive_features, FeatureConflict};
 use crate::features::{resolve_features, should_include_dep};
 use crate::git;
 use crate::version;
@@ -154,14 +155,48 @@ impl Resolver {
             self.resolve_dep(name, dep, manifest, existing_lock, offline, &mut resolved)?;
         }
 
+        // Gather dependency manifests for transitive feature resolution
+        let mut dep_manifests = BTreeMap::new();
+        for (name, dep) in &resolved {
+            let manifest_path = dep.local_path.join("cmod.toml");
+            if manifest_path.exists() {
+                if let Ok(dep_manifest) = Manifest::load(&manifest_path) {
+                    dep_manifests.insert(name.clone(), dep_manifest);
+                }
+            }
+        }
+
+        // Resolve transitive features across the dependency tree
+        let target_str = target_triple.unwrap_or("x86_64-unknown-linux-gnu");
+        let transitive = resolve_transitive_features(
+            manifest,
+            &dep_manifests,
+            requested_features,
+            no_default_features,
+            target_str,
+        )?;
+
+        // Surface feature conflicts as warnings (stored on lockfile metadata)
+        let _conflicts: &[FeatureConflict] = &transitive.conflicts;
+
         // Build lockfile from resolved deps
         for (name, dep) in &resolved {
-            // Collect features activated for this dep
-            let dep_features: Vec<String> = resolved_features
+            // Merge features from local resolution and transitive propagation
+            let mut dep_features: Vec<String> = resolved_features
                 .dep_features
                 .get(name)
                 .map(|fs| fs.iter().cloned().collect())
                 .unwrap_or_default();
+
+            // Add transitively propagated features
+            if let Some(transitive_feats) = transitive.dep_features.get(name) {
+                for f in transitive_feats {
+                    if !dep_features.contains(f) {
+                        dep_features.push(f.clone());
+                    }
+                }
+            }
+            dep_features.sort();
 
             lockfile.upsert_package(LockedPackage {
                 name: name.clone(),

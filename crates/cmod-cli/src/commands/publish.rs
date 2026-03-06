@@ -3,16 +3,26 @@ use std::process::Command;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::shell::Shell;
+use cmod_resolver::registry::{validate_for_publishing, GovernancePolicy};
+use cmod_security::signing::{resolve_signing_config, sign_data};
 
 /// Run `cmod publish` — prepare and tag a release.
 ///
 /// Steps:
 /// 1. Validate the manifest (name, version, description, license)
-/// 2. Ensure there are no uncommitted changes
-/// 3. Run `cmod verify` checks
-/// 4. Create a Git tag `v{version}`
-/// 5. Optionally push the tag
-pub fn run(dry_run: bool, push: bool, shell: &Shell) -> Result<(), CmodError> {
+/// 2. Validate governance policy
+/// 3. Ensure there are no uncommitted changes
+/// 4. Run `cmod verify` checks
+/// 5. Create a Git tag `v{version}` (optionally signed)
+/// 6. Optionally push the tag
+pub fn run(
+    dry_run: bool,
+    push: bool,
+    sign: bool,
+    no_sign: bool,
+    skip_governance: bool,
+    shell: &Shell,
+) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -25,10 +35,15 @@ pub fn run(dry_run: bool, push: bool, shell: &Shell) -> Result<(), CmodError> {
     // Step 1: Validate manifest for publishing
     validate_for_publish(&config, shell)?;
 
-    // Step 2: Check for uncommitted changes
+    // Step 2: Validate governance policy
+    if !skip_governance {
+        validate_governance(&config, shell)?;
+    }
+
+    // Step 3: Check for uncommitted changes
     check_clean_working_tree(shell)?;
 
-    // Step 3: Check if tag already exists
+    // Step 4: Check if tag already exists
     if tag_exists(&tag)? {
         return Err(CmodError::Other(format!(
             "tag '{}' already exists; bump the version in cmod.toml first",
@@ -36,7 +51,7 @@ pub fn run(dry_run: bool, push: bool, shell: &Shell) -> Result<(), CmodError> {
         )));
     }
 
-    // Step 4: Check publish include/exclude patterns
+    // Step 5: Check publish include/exclude patterns
     if let Some(ref publish) = config.manifest.publish {
         if !publish.include.is_empty() {
             shell.verbose("Include", format!("{:?}", publish.include));
@@ -45,6 +60,36 @@ pub fn run(dry_run: bool, push: bool, shell: &Shell) -> Result<(), CmodError> {
             shell.verbose("Exclude", format!("{:?}", publish.exclude));
         }
     }
+
+    // Determine if we should sign
+    let should_sign = if no_sign {
+        false
+    } else if sign {
+        true
+    } else {
+        // Auto-detect from [security] config
+        config
+            .manifest
+            .security
+            .as_ref()
+            .and_then(|s| s.signing_key.as_ref())
+            .is_some()
+    };
+
+    // Resolve signing config if needed
+    let signing_config = if should_sign {
+        let sec = config.manifest.security.as_ref();
+        let cfg = resolve_signing_config(
+            sec.and_then(|s| s.signing_key.as_deref()),
+            sec.and_then(|s| s.signing_backend.as_deref()),
+        );
+        if cfg.is_none() {
+            shell.warn("--sign requested but no signing key configured in [security]");
+        }
+        cfg
+    } else {
+        None
+    };
 
     // Run pre-publish hook
     super::build::run_hook(
@@ -60,6 +105,9 @@ pub fn run(dry_run: bool, push: bool, shell: &Shell) -> Result<(), CmodError> {
 
     if dry_run {
         shell.status("Dry run", format!("would create tag '{}'", tag));
+        if should_sign {
+            shell.status("Dry run", "tag would be signed");
+        }
         if push {
             shell.status("Dry run", format!("would push tag '{}' to origin", tag));
         }
@@ -67,11 +115,16 @@ pub fn run(dry_run: bool, push: bool, shell: &Shell) -> Result<(), CmodError> {
         return Ok(());
     }
 
-    // Step 5: Create the tag
-    create_tag(&tag, &format!("Release {} v{}", name, version))?;
+    // Step 6: Create the tag (signed or unsigned)
+    let message = format!("Release {} v{}", name, version);
+    if let Some(ref cfg) = signing_config {
+        create_signed_tag(&tag, &message, cfg, shell)?;
+    } else {
+        create_tag(&tag, &message)?;
+    }
     shell.status("Created", format!("tag {}", tag));
 
-    // Step 6: Push if requested
+    // Step 7: Push if requested
     if push {
         push_tag(&tag)?;
         shell.status("Pushed", format!("tag '{}' to origin", tag));
@@ -108,6 +161,34 @@ fn validate_for_publish(config: &Config, shell: &Shell) -> Result<(), CmodError>
     }
 
     Ok(())
+}
+
+/// Validate against governance policy.
+fn validate_governance(config: &Config, shell: &Shell) -> Result<(), CmodError> {
+    let policy = GovernancePolicy::default();
+    let manifest = &config.manifest;
+
+    let violations = validate_for_publishing(
+        &manifest.package.name,
+        &manifest.package.version,
+        manifest.package.description.as_deref(),
+        manifest.package.license.as_deref(),
+        &policy,
+    );
+
+    if violations.is_empty() {
+        shell.verbose("Governance", "policy validation passed");
+        return Ok(());
+    }
+
+    for violation in &violations {
+        shell.warn(format!("[governance] {}", violation));
+    }
+
+    Err(CmodError::Other(format!(
+        "governance policy validation failed with {} issue(s); use --skip-governance to bypass",
+        violations.len(),
+    )))
 }
 
 /// Check that the Git working tree is clean.
@@ -158,6 +239,63 @@ fn create_tag(tag: &str, message: &str) -> Result<(), CmodError> {
     Ok(())
 }
 
+/// Create a signed Git tag using the configured signing backend.
+fn create_signed_tag(
+    tag: &str,
+    message: &str,
+    signing_config: &cmod_security::signing::SigningConfig,
+    shell: &Shell,
+) -> Result<(), CmodError> {
+    // For PGP, use git tag -s which delegates to gpg
+    match signing_config.backend {
+        cmod_security::signing::SigningBackend::Pgp => {
+            let mut cmd = Command::new("git");
+            cmd.args(["tag", "-s", tag, "-m", message]);
+            if let Some(ref key_id) = signing_config.key_id {
+                cmd.args(["-u", key_id]);
+            }
+            let status = cmd
+                .status()
+                .map_err(|e| CmodError::Other(format!("git not available: {}", e)))?;
+            if !status.success() {
+                return Err(CmodError::Other(format!(
+                    "failed to create signed tag '{}'",
+                    tag
+                )));
+            }
+            shell.verbose("Signed", format!("tag {} with PGP", tag));
+        }
+        _ => {
+            // For SSH and Sigstore, create tag then sign the tag data
+            create_tag(tag, message)?;
+            let tag_data = format!("tag {}\nmessage {}", tag, message);
+            match sign_data(signing_config, tag_data.as_bytes()) {
+                Ok(result) => {
+                    shell.verbose(
+                        "Signed",
+                        format!(
+                            "tag {} with {} (signer: {})",
+                            tag,
+                            result.backend.as_str(),
+                            result.signer,
+                        ),
+                    );
+                    // Write signature alongside the tag
+                    let sig_file = format!("{}.sig", tag);
+                    if let Err(e) = std::fs::write(&sig_file, &result.signature) {
+                        shell.warn(format!("could not write signature file: {}", e));
+                    }
+                }
+                Err(e) => {
+                    shell.warn(format!("failed to sign tag: {}", e));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Push a Git tag to origin.
 fn push_tag(tag: &str) -> Result<(), CmodError> {
     let status = Command::new("git")
@@ -188,8 +326,6 @@ mod tests {
 
     #[test]
     fn test_validate_for_publish_minimal() {
-        // This test just verifies the validation logic compiles
-        // Real testing requires a cmod.toml on disk
         let config = Config {
             root: std::path::PathBuf::from("/tmp/nonexistent"),
             manifest_path: std::path::PathBuf::from("/tmp/nonexistent/cmod.toml"),
@@ -206,8 +342,61 @@ mod tests {
         };
 
         let shell = cmod_core::shell::Shell::new(cmod_core::shell::Verbosity::Normal);
-        // Should succeed — default manifest passes validation and has no deps
         let result = validate_for_publish(&config, &shell);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_governance_passes() {
+        let config = Config {
+            root: std::path::PathBuf::from("/tmp/nonexistent"),
+            manifest_path: std::path::PathBuf::from("/tmp/nonexistent/cmod.toml"),
+            manifest: {
+                let mut m = cmod_core::manifest::default_manifest("github.user.mylib");
+                m.package.description = Some("A great library".to_string());
+                m.package.license = Some("MIT".to_string());
+                m
+            },
+            lockfile_path: std::path::PathBuf::from("/tmp/nonexistent/cmod.lock"),
+            profile: cmod_core::types::Profile::Debug,
+            locked: false,
+            offline: false,
+            verbosity: cmod_core::shell::Verbosity::Normal,
+            target: None,
+            enabled_features: vec![],
+            no_default_features: false,
+            no_cache: false,
+        };
+
+        let shell = cmod_core::shell::Shell::new(cmod_core::shell::Verbosity::Normal);
+        let result = validate_governance(&config, &shell);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_governance_fails_for_banned_name() {
+        let config = Config {
+            root: std::path::PathBuf::from("/tmp/nonexistent"),
+            manifest_path: std::path::PathBuf::from("/tmp/nonexistent/cmod.toml"),
+            manifest: {
+                let mut m = cmod_core::manifest::default_manifest("std.io");
+                m.package.description = Some("desc".to_string());
+                m.package.license = Some("MIT".to_string());
+                m
+            },
+            lockfile_path: std::path::PathBuf::from("/tmp/nonexistent/cmod.lock"),
+            profile: cmod_core::types::Profile::Debug,
+            locked: false,
+            offline: false,
+            verbosity: cmod_core::shell::Verbosity::Normal,
+            target: None,
+            enabled_features: vec![],
+            no_default_features: false,
+            no_cache: false,
+        };
+
+        let shell = cmod_core::shell::Shell::new(cmod_core::shell::Verbosity::Normal);
+        let result = validate_governance(&config, &shell);
+        assert!(result.is_err());
     }
 }

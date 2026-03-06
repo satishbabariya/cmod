@@ -5,6 +5,7 @@ use cmod_core::shell::Shell;
 use cmod_core::types::ModuleId;
 use cmod_security::hash::verify_content_hash;
 use cmod_security::policy::{SecurityPolicy, ViolationSeverity};
+use cmod_security::signing::{resolve_signing_config, verify_file, VerifyStatus};
 use cmod_security::verify::{verify_all_packages, SignatureStatus};
 
 /// Run `cmod verify` — verify integrity and correctness.
@@ -34,6 +35,7 @@ pub fn run(shell: &Shell, check_signatures: bool) -> Result<(), CmodError> {
     // 6. Validate signatures if requested
     if check_signatures {
         validate_signatures(&config, &mut errors, &mut warnings, shell);
+        validate_artifact_signatures(&config, &mut errors, &mut warnings, shell);
     }
 
     // 7. Enforce security policy from [security] section
@@ -409,6 +411,113 @@ fn validate_signatures(
                     "package '{}' has invalid signature: {}",
                     result.package_name, reason
                 ));
+            }
+        }
+    }
+}
+
+fn validate_artifact_signatures(
+    config: &Config,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    shell: &Shell,
+) {
+    shell.verbose("Checking", "artifact signatures...");
+
+    let signing_config = config.manifest.security.as_ref().and_then(|sec| {
+        resolve_signing_config(sec.signing_key.as_deref(), sec.signing_backend.as_deref())
+    });
+
+    let lockfile = match Lockfile::load(&config.lockfile_path) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+
+    if lockfile.packages.is_empty() {
+        return;
+    }
+
+    let deps_dir = config.deps_dir();
+
+    for pkg in &lockfile.packages {
+        let repo_path = deps_dir.join(&pkg.name);
+        if !repo_path.exists() {
+            continue;
+        }
+
+        // Check for a detached signature file alongside the repo
+        let sig_path = repo_path.with_extension("sig");
+        if !sig_path.exists() {
+            shell.verbose(
+                "Signature",
+                format!("{} — no artifact signature file", pkg.name),
+            );
+            continue;
+        }
+
+        // Find the artifact to verify (look for common artifact files)
+        let artifact_candidates = [repo_path.join("cmod.toml")];
+
+        for artifact in &artifact_candidates {
+            if !artifact.exists() {
+                continue;
+            }
+
+            let artifact_sig = artifact.with_extension(format!(
+                "{}.sig",
+                artifact.extension().unwrap_or_default().to_string_lossy()
+            ));
+
+            let effective_sig = if artifact_sig.exists() {
+                artifact_sig
+            } else if sig_path.exists() {
+                sig_path.clone()
+            } else {
+                continue;
+            };
+
+            match verify_file(artifact, &effective_sig, signing_config.as_ref()) {
+                Ok(status) => match status {
+                    VerifyStatus::Valid { signer, backend } => {
+                        shell.verbose(
+                            "Signature",
+                            format!(
+                                "{} — verified ({}, signed by {})",
+                                pkg.name,
+                                backend.as_str(),
+                                signer,
+                            ),
+                        );
+                    }
+                    VerifyStatus::Untrusted {
+                        signer,
+                        backend,
+                        reason,
+                    } => {
+                        warnings.push(format!(
+                            "package '{}' signature untrusted ({}, signer: {}): {}",
+                            pkg.name,
+                            backend.as_str(),
+                            signer,
+                            reason,
+                        ));
+                    }
+                    VerifyStatus::Unsigned => {
+                        shell.verbose("Signature", format!("{} — unsigned artifact", pkg.name));
+                    }
+                    VerifyStatus::Invalid { reason } => {
+                        errors.push(format!(
+                            "package '{}' has invalid artifact signature: {}",
+                            pkg.name, reason,
+                        ));
+                    }
+                },
+                Err(e) => {
+                    warnings.push(format!(
+                        "could not verify artifact signature for '{}': {}",
+                        pkg.name, e,
+                    ));
+                }
             }
         }
     }
