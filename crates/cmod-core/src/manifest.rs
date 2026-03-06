@@ -225,6 +225,12 @@ pub struct Build {
     pub parallel: Option<bool>,
     #[serde(default)]
     pub incremental: Option<bool>,
+    /// Additional include directories (relative to project root).
+    #[serde(default)]
+    pub include_dirs: Vec<String>,
+    /// Extra compiler flags.
+    #[serde(default)]
+    pub extra_flags: Vec<String>,
     /// Distributed build configuration.
     #[serde(default)]
     pub distributed: Option<DistributedBuildConfig>,
@@ -790,6 +796,8 @@ pub fn default_manifest(name: &str) -> Manifest {
             lto: Some(false),
             parallel: Some(true),
             incremental: Some(true),
+            include_dirs: Vec::new(),
+            extra_flags: Vec::new(),
             distributed: None,
         }),
         test: None,

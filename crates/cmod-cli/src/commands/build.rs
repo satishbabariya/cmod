@@ -731,6 +731,16 @@ fn setup_compiler(config: &Config, activated_features: &[String]) -> (ClangBacke
         backend.extra_flags.push(flag);
     }
 
+    // Add include directories from [build] section
+    if let Some(ref build) = config.manifest.build {
+        let root = &config.root;
+        for dir in &build.include_dirs {
+            let abs = root.join(dir);
+            backend.extra_flags.push(format!("-I{}", abs.display()));
+        }
+        backend.extra_flags.extend(build.extra_flags.clone());
+    }
+
     (backend, target)
 }
 
