@@ -11,6 +11,7 @@ Working reference projects demonstrating cmod features and conventions.
 | [with-deps](with-deps/) | Git dependencies (fmt + json) | `cmod add`, semver constraints, branch pinning, `cmod.lock`, `--locked` |
 | [workspace](workspace/) | Multi-member monorepo | `[workspace]`, inter-member path deps, `{ workspace = true }`, shared lockfile |
 | [path-deps](path-deps/) | Local path dependencies | `path = "libs/..."`, co-located library development, `cmod deps --tree` |
+| [llvm-demangle](llvm-demangle/) | LLVM Demangle as C++20 modules | Scale test, mixed module/legacy TUs, global module fragment, include paths |
 
 ## Getting started
 

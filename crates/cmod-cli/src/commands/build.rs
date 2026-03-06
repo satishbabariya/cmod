@@ -835,7 +835,11 @@ fn extract_imports_from_source(path: &std::path::Path) -> Result<Vec<String>, Cm
     // the parent module is `foo.bar`.
     let parent_module = content.lines().find_map(|line| {
         let trimmed = line.trim();
-        if trimmed.starts_with("export module") || trimmed.starts_with("module") {
+        // Skip global module fragment marker (`module;`)
+        if trimmed == "module;" {
+            return None;
+        }
+        if trimmed.starts_with("export module") || trimmed.starts_with("module ") {
             let decl = trimmed
                 .trim_start_matches("export")
                 .trim()
@@ -843,6 +847,9 @@ fn extract_imports_from_source(path: &std::path::Path) -> Result<Vec<String>, Cm
                 .trim()
                 .trim_end_matches(';')
                 .trim();
+            if decl.is_empty() {
+                return None;
+            }
             // For `foo.bar:partition`, parent is `foo.bar`
             // For `foo.bar`, parent is `foo.bar`
             Some(decl.split(':').next().unwrap_or(decl).to_string())
@@ -1263,6 +1270,22 @@ mod tests {
 
         let imports = extract_imports_from_source(&file).unwrap();
         assert_eq!(imports, vec!["mylib:vec3", "mylib:mat4", "base"]);
+    }
+
+    #[test]
+    fn test_extract_imports_with_global_module_fragment() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("lib.cppm");
+        std::fs::write(
+            &file,
+            "module;\n#include \"some_header.h\"\nexport module mylib;\nexport import :part_a;\nexport import :part_b;\nimport other;\n",
+        )
+        .unwrap();
+
+        let imports = extract_imports_from_source(&file).unwrap();
+        // Partition imports must be qualified with the parent module name,
+        // even when the file starts with a global module fragment (`module;`).
+        assert_eq!(imports, vec!["mylib:part_a", "mylib:part_b", "other"]);
     }
 
     #[test]

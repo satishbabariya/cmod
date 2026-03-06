@@ -1,0 +1,20 @@
+[package]
+name = "llvm-demangle"
+version = "0.1.0"
+edition = "2023"
+description = "LLVM Demangle library wrapped as C++20 modules — cmod scale test"
+authors = ["cmod contributors"]
+license = "Apache-2.0 WITH LLVM-exception"
+
+[module]
+name = "llvm.demangle"
+root = "src/lib.cppm"
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "binary"
+include_dirs = ["include"]
+extra_flags = ["-DNDEBUG"]
