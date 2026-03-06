@@ -3,10 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::{LockedPackage, Lockfile};
+use cmod_core::shell::Shell;
 use cmod_resolver::Resolver;
 
 /// Run `cmod deps` — display the dependency graph.
-pub fn run(tree: bool, why: Option<String>, conflicts: bool) -> Result<(), CmodError> {
+pub fn run(
+    tree: bool,
+    why: Option<String>,
+    conflicts: bool,
+    shell: &Shell,
+) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -17,7 +23,10 @@ pub fn run(tree: bool, why: Option<String>, conflicts: bool) -> Result<(), CmodE
     if let Some(dep_name) = why {
         let reasons = Resolver::explain_dep(&lockfile, &dep_name);
         if reasons.is_empty() {
-            eprintln!("  '{}' is not in the dependency graph.", dep_name);
+            shell.status(
+                "Deps",
+                format!("'{}' is not in the dependency graph", dep_name),
+            );
         } else {
             for reason in &reasons {
                 println!("  {}", reason);
@@ -30,7 +39,7 @@ pub fn run(tree: bool, why: Option<String>, conflicts: bool) -> Result<(), CmodE
     if conflicts {
         let found = Resolver::check_conflicts(&lockfile);
         if found.is_empty() {
-            eprintln!("  No version conflicts detected.");
+            shell.status("Deps", "no version conflicts detected");
         } else {
             for c in &found {
                 println!(
@@ -45,7 +54,7 @@ pub fn run(tree: bool, why: Option<String>, conflicts: bool) -> Result<(), CmodE
     }
 
     if lockfile.is_empty() {
-        eprintln!("  No dependencies.");
+        shell.status("Deps", "no dependencies");
         return Ok(());
     }
 

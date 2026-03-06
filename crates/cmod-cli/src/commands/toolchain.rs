@@ -1,9 +1,10 @@
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 use cmod_core::types::ToolchainSpec;
 
 /// Run `cmod toolchain show` — display the active toolchain configuration.
-pub fn show(verbose: bool) -> Result<(), CmodError> {
+pub fn show(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
 
     let spec = if let Ok(config) = Config::load(&cwd) {
@@ -12,33 +13,31 @@ pub fn show(verbose: bool) -> Result<(), CmodError> {
         ToolchainSpec::default()
     };
 
-    eprintln!("  Active toolchain:");
-    eprintln!("    Compiler:  {}", spec.compiler);
+    shell.status("Toolchain", "active configuration");
+    shell.status("Compiler", &spec.compiler);
     if let Some(ref ver) = spec.compiler_version {
-        eprintln!("    Version:   {}", ver);
+        shell.status("Version", ver);
     }
-    eprintln!("    Standard:  C++{}", spec.cxx_standard);
+    shell.status("Standard", format!("C++{}", spec.cxx_standard));
     if let Some(ref stdlib) = spec.stdlib {
-        eprintln!("    Stdlib:    {}", stdlib);
+        shell.status("Stdlib", stdlib);
     }
-    eprintln!("    Target:    {}", spec.target);
-    eprintln!("    Host:      {}", ToolchainSpec::host_target());
+    shell.status("Target", &spec.target);
+    shell.status("Host", ToolchainSpec::host_target());
     if spec.is_cross_compiling() {
-        eprintln!("    Cross:     yes");
+        shell.status("Cross", "yes");
     }
     if let Some(ref sysroot) = spec.sysroot {
-        eprintln!("    Sysroot:   {}", sysroot.display());
+        shell.status("Sysroot", sysroot.display());
     }
 
-    if verbose {
-        eprintln!("    Cache key: {}", spec.cache_key_tuple());
-    }
+    shell.verbose("Cache key", spec.cache_key_tuple());
 
     Ok(())
 }
 
 /// Run `cmod toolchain check` — validate the toolchain is available.
-pub fn check() -> Result<(), CmodError> {
+pub fn check(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
 
     let spec = if let Ok(config) = Config::load(&cwd) {
@@ -47,25 +46,28 @@ pub fn check() -> Result<(), CmodError> {
         ToolchainSpec::default()
     };
 
-    eprintln!("  Checking toolchain...");
+    shell.status("Checking", "toolchain...");
 
     spec.validate()?;
-    eprintln!(
-        "  {} {} is available",
-        spec.compiler,
-        spec.compiler_version
-            .as_deref()
-            .unwrap_or("(version unknown)")
+    shell.status(
+        "Available",
+        format!(
+            "{} {}",
+            spec.compiler,
+            spec.compiler_version
+                .as_deref()
+                .unwrap_or("(version unknown)")
+        ),
     );
 
     if spec.is_cross_compiling() {
-        eprintln!("  Cross-compilation target: {}", spec.target);
+        shell.status("Cross", format!("target: {}", spec.target));
         if spec.sysroot.is_none() {
-            eprintln!("  Warning: cross-compiling without explicit sysroot");
+            shell.warn("cross-compiling without explicit sysroot");
         }
     }
 
-    eprintln!("  Toolchain OK");
+    shell.status("Finished", "toolchain OK");
     Ok(())
 }
 
@@ -94,7 +96,6 @@ fn from_manifest(config: &Config) -> ToolchainSpec {
         }
     }
 
-    // CLI target override
     if let Some(ref target) = config.target {
         spec.target = target.clone();
     }

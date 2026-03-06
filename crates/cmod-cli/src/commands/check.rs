@@ -4,18 +4,22 @@ use cmod_build::graph::{ModuleGraph, ModuleNode};
 use cmod_build::runner;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 use cmod_core::types::ModuleId;
 
 /// Run `cmod check` — validate module naming, identity, structure, and semantics.
-pub fn run(verbose: bool) -> Result<(), CmodError> {
+pub fn run(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
 
-    eprintln!(
-        "  Checking {} v{}",
-        config.manifest.package.name, config.manifest.package.version
+    shell.status(
+        "Checking",
+        format!(
+            "{} v{}",
+            config.manifest.package.name, config.manifest.package.version
+        ),
     );
 
     // 1. Check module name matches export declaration
@@ -31,13 +35,13 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
                         module.name, declared
                     ));
                 }
-            } else if verbose {
+            } else if shell.is_verbose() {
                 warnings.push(format!(
                     "no 'export module' declaration found in {}",
                     root_file.display()
                 ));
             }
-        } else if verbose {
+        } else if shell.is_verbose() {
             warnings.push(format!(
                 "module root file not found: {}",
                 root_file.display()
@@ -48,7 +52,7 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
         if let Some(ref repo) = config.manifest.package.repository {
             if let Some(module_id) = ModuleId::from_git_url(repo) {
                 let expected_prefix = module_id.to_string();
-                if !module.name.starts_with(&expected_prefix) && verbose {
+                if !module.name.starts_with(&expected_prefix) && shell.is_verbose() {
                     warnings.push(format!(
                         "module name '{}' does not match reverse-domain from repository '{}' (expected prefix: '{}')",
                         module.name, repo, expected_prefix
@@ -109,18 +113,21 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     }
 
     // 6. Semantic validation: build module graph and validate
-    validate_module_graph(&config, &mut errors, &mut warnings, verbose);
+    validate_module_graph(&config, &mut errors, &mut warnings, shell);
 
     // Report
     for w in &warnings {
-        eprintln!("  warning: {}", w);
+        shell.warn(w);
     }
     for e in &errors {
-        eprintln!("  error: {}", e);
+        shell.error(e);
     }
 
     if errors.is_empty() {
-        eprintln!("  All checks passed ({} warnings).", warnings.len());
+        shell.status(
+            "Finished",
+            format!("all checks passed ({} warnings)", warnings.len()),
+        );
         Ok(())
     } else {
         Err(CmodError::BuildFailed {
@@ -134,7 +141,7 @@ fn validate_module_graph(
     config: &Config,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
-    verbose: bool,
+    shell: &Shell,
 ) {
     // Skip for workspace roots without a module
     if config.manifest.is_workspace() && config.manifest.module.is_none() {
@@ -146,9 +153,7 @@ fn validate_module_graph(
         return; // No sources — already checked elsewhere
     }
 
-    if verbose {
-        eprintln!("  Building module graph for semantic validation...");
-    }
+    shell.verbose("Building", "module graph for semantic validation...");
 
     // Discover and classify sources
     let sources = match runner::discover_sources(&src_dir) {
@@ -212,13 +217,14 @@ fn validate_module_graph(
         });
     }
 
-    if verbose {
-        eprintln!(
-            "    Graph: {} nodes, {} modules",
+    shell.verbose(
+        "Graph",
+        format!(
+            "{} nodes, {} modules",
             graph.nodes.len(),
             graph.module_names().len()
-        );
-    }
+        ),
+    );
 
     // Validate graph: cycles, duplicate interfaces, imports
     // Filter imports to known modules first (same as build does)
@@ -281,9 +287,7 @@ fn validate_module_graph(
     // Run graph validation
     match graph.validate() {
         Ok(()) => {
-            if verbose {
-                eprintln!("    Module graph validation passed");
-            }
+            shell.verbose("Validate", "module graph validation passed");
         }
         Err(e) => {
             errors.push(format!("module graph validation failed: {}", e));
@@ -291,11 +295,11 @@ fn validate_module_graph(
     }
 
     // Check partition ownership consistency
-    validate_partitions(&graph, errors, verbose);
+    validate_partitions(&graph, errors, shell);
 }
 
 /// Validate partition ownership: each partition must have an owning interface.
-fn validate_partitions(graph: &ModuleGraph, errors: &mut Vec<String>, verbose: bool) {
+fn validate_partitions(graph: &ModuleGraph, errors: &mut Vec<String>, shell: &Shell) {
     let known_modules = graph.module_names();
 
     for node in graph.nodes.values() {
@@ -311,8 +315,11 @@ fn validate_partitions(graph: &ModuleGraph, errors: &mut Vec<String>, verbose: b
                     "partition '{}' owner '{}' has no interface unit",
                     node.name, owner
                 ));
-            } else if verbose {
-                eprintln!("    partition '{}' -> owner '{}' OK", node.name, owner);
+            } else {
+                shell.verbose(
+                    "Partition",
+                    format!("'{}' -> owner '{}' OK", node.name, owner),
+                );
             }
         }
     }

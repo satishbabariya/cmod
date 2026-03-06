@@ -10,6 +10,7 @@ use crossbeam_channel::bounded;
 use cmod_cache::cache::{ArtifactCache, ArtifactMetadata, CachedArtifactEntry};
 use cmod_cache::key::{hash_file, CacheKey, CacheKeyInputs};
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 use cmod_core::types::{Artifact, BuildType, NodeKind, Profile};
 
 use crate::compiler::{ClangBackend, CompilerBackend};
@@ -52,6 +53,8 @@ pub struct BuildRunner {
     extra_pcm_paths: HashMap<String, PathBuf>,
     /// Extra object files to link (e.g., from workspace dependencies).
     extra_obj_paths: Vec<PathBuf>,
+    /// Shell for colored, structured output.
+    shell: Option<Arc<Shell>>,
 }
 
 /// Outcome of executing a single build node.
@@ -85,6 +88,7 @@ impl BuildRunner {
             max_jobs: 0,
             extra_pcm_paths: HashMap::new(),
             extra_obj_paths: Vec::new(),
+            shell: None,
         }
     }
 
@@ -122,6 +126,30 @@ impl BuildRunner {
     pub fn with_extra_obj_paths(mut self, objs: Vec<PathBuf>) -> Self {
         self.extra_obj_paths = objs;
         self
+    }
+
+    /// Attach a Shell for colored, structured output.
+    pub fn with_shell(mut self, shell: Arc<Shell>) -> Self {
+        self.shell = Some(shell);
+        self
+    }
+
+    /// Emit a normal status message through Shell, or fall back to eprintln.
+    fn emit(&self, label: &str, message: impl std::fmt::Display) {
+        if let Some(ref shell) = self.shell {
+            shell.status(label, message);
+        } else {
+            eprintln!("{:>12}: {}", label, message);
+        }
+    }
+
+    /// Emit a verbose-only status message through Shell, or fall back to eprintln.
+    fn emit_verbose(&self, label: &str, message: impl std::fmt::Display) {
+        if let Some(ref shell) = self.shell {
+            shell.verbose(label, message);
+        } else {
+            eprintln!("{:>12}: {}", label, message);
+        }
     }
 
     /// Compute a hash representing the current compiler flags.
@@ -401,7 +429,7 @@ impl BuildRunner {
                 if !self.force_rebuild {
                     if let Some(state) = build_state {
                         if state.needs_rebuild(node, flags_hash).is_none() {
-                            eprintln!("  Up-to-date: {}", source.display());
+                            self.emit_verbose("Up-to-date", source.display());
                             return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
                         }
                     }
@@ -410,7 +438,7 @@ impl BuildRunner {
                 // Try cache next
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     if self.try_cache_restore(&module_id, &key, node) {
-                        eprintln!("  Cached interface: {}", source.display());
+                        self.emit_verbose("Cached", format!("interface: {}", source.display()));
                         return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
                     }
                 }
@@ -436,7 +464,7 @@ impl BuildRunner {
                     self.cache_store(&module_id, &key, node);
                 }
 
-                eprintln!("  Compiled interface: {}", source.display());
+                self.emit("Compiled", format!("interface: {}", source.display()));
                 Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
             }
 
@@ -447,7 +475,7 @@ impl BuildRunner {
                 if !self.force_rebuild {
                     if let Some(state) = build_state {
                         if state.needs_rebuild(node, flags_hash).is_none() {
-                            eprintln!("  Up-to-date: {}", source.display());
+                            self.emit_verbose("Up-to-date", source.display());
                             return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
                         }
                     }
@@ -455,7 +483,7 @@ impl BuildRunner {
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     if self.try_cache_restore(&module_id, &key, node) {
-                        eprintln!("  Cached impl: {}", source.display());
+                        self.emit_verbose("Cached", format!("impl: {}", source.display()));
                         return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
                     }
                 }
@@ -477,7 +505,7 @@ impl BuildRunner {
                     self.cache_store(&module_id, &key, node);
                 }
 
-                eprintln!("  Compiled impl: {}", source.display());
+                self.emit("Compiled", format!("impl: {}", source.display()));
                 Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
             }
 
@@ -488,7 +516,7 @@ impl BuildRunner {
                 if !self.force_rebuild {
                     if let Some(state) = build_state {
                         if state.needs_rebuild(node, flags_hash).is_none() {
-                            eprintln!("  Up-to-date: {}", source.display());
+                            self.emit_verbose("Up-to-date", source.display());
                             return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
                         }
                     }
@@ -496,7 +524,7 @@ impl BuildRunner {
 
                 if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
                     if self.try_cache_restore(&module_id, &key, node) {
-                        eprintln!("  Cached: {}", source.display());
+                        self.emit_verbose("Cached", source.display());
                         return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
                     }
                 }
@@ -518,7 +546,7 @@ impl BuildRunner {
                     self.cache_store(&module_id, &key, node);
                 }
 
-                eprintln!("  Compiled: {}", source.display());
+                self.emit("Compiled", source.display());
                 Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
             }
 
@@ -546,7 +574,7 @@ impl BuildRunner {
 
                 self.backend.link(&obj_refs, output, &artifact)?;
 
-                eprintln!("  Linked: {}", output.display());
+                self.emit("Linked", output.display());
                 Ok(NodeOutcome::Linked(start.elapsed().as_millis() as u64))
             }
         }

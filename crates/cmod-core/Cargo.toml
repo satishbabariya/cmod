@@ -22,6 +22,8 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
+anstyle = { workspace = true }
+anstream = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

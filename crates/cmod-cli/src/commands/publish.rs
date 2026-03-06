@@ -2,6 +2,7 @@ use std::process::Command;
 
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 
 /// Run `cmod publish` — prepare and tag a release.
 ///
@@ -11,7 +12,7 @@ use cmod_core::error::CmodError;
 /// 3. Run `cmod verify` checks
 /// 4. Create a Git tag `v{version}`
 /// 5. Optionally push the tag
-pub fn run(dry_run: bool, push: bool, verbose: bool) -> Result<(), CmodError> {
+pub fn run(dry_run: bool, push: bool, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -19,13 +20,13 @@ pub fn run(dry_run: bool, push: bool, verbose: bool) -> Result<(), CmodError> {
     let version = &config.manifest.package.version;
     let tag = format!("v{}", version);
 
-    eprintln!("  Publishing {} v{}", name, version);
+    shell.status("Publishing", format!("{} v{}", name, version));
 
     // Step 1: Validate manifest for publishing
-    validate_for_publish(&config)?;
+    validate_for_publish(&config, shell)?;
 
     // Step 2: Check for uncommitted changes
-    check_clean_working_tree(verbose)?;
+    check_clean_working_tree(shell)?;
 
     // Step 3: Check if tag already exists
     if tag_exists(&tag)? {
@@ -37,13 +38,11 @@ pub fn run(dry_run: bool, push: bool, verbose: bool) -> Result<(), CmodError> {
 
     // Step 4: Check publish include/exclude patterns
     if let Some(ref publish) = config.manifest.publish {
-        if verbose {
-            if !publish.include.is_empty() {
-                eprintln!("  Include patterns: {:?}", publish.include);
-            }
-            if !publish.exclude.is_empty() {
-                eprintln!("  Exclude patterns: {:?}", publish.exclude);
-            }
+        if !publish.include.is_empty() {
+            shell.verbose("Include", format!("{:?}", publish.include));
+        }
+        if !publish.exclude.is_empty() {
+            shell.verbose("Exclude", format!("{:?}", publish.exclude));
         }
     }
 
@@ -56,38 +55,36 @@ pub fn run(dry_run: bool, push: bool, verbose: bool) -> Result<(), CmodError> {
             .hooks
             .as_ref()
             .and_then(|h| h.pre_publish.as_deref()),
+        shell,
     )?;
 
     if dry_run {
-        eprintln!("  Dry run: would create tag '{}'", tag);
+        shell.status("Dry run", format!("would create tag '{}'", tag));
         if push {
-            eprintln!("  Dry run: would push tag '{}' to origin", tag);
+            shell.status("Dry run", format!("would push tag '{}' to origin", tag));
         }
-        eprintln!("  Publish dry run complete.");
+        shell.status("Finished", "publish dry run complete");
         return Ok(());
     }
 
     // Step 5: Create the tag
     create_tag(&tag, &format!("Release {} v{}", name, version))?;
-    eprintln!("  Created tag: {}", tag);
+    shell.status("Created", format!("tag {}", tag));
 
     // Step 6: Push if requested
     if push {
         push_tag(&tag)?;
-        eprintln!("  Pushed tag '{}' to origin", tag);
+        shell.status("Pushed", format!("tag '{}' to origin", tag));
     } else {
-        eprintln!(
-            "  Tag created locally. Run `git push origin {}` to publish.",
-            tag
-        );
+        shell.note(format!("run `git push origin {}` to publish", tag));
     }
 
-    eprintln!("  Published {} v{}", name, version);
+    shell.status("Published", format!("{} v{}", name, version));
     Ok(())
 }
 
 /// Validate that the manifest has enough info for publishing.
-fn validate_for_publish(config: &Config) -> Result<(), CmodError> {
+fn validate_for_publish(config: &Config, shell: &Shell) -> Result<(), CmodError> {
     let manifest = &config.manifest;
 
     // Run standard validation
@@ -95,12 +92,12 @@ fn validate_for_publish(config: &Config) -> Result<(), CmodError> {
 
     // Description is recommended
     if manifest.package.description.is_none() {
-        eprintln!("  Warning: package.description is not set");
+        shell.warn("package.description is not set");
     }
 
     // License is recommended
     if manifest.package.license.is_none() {
-        eprintln!("  Warning: package.license is not set");
+        shell.warn("package.license is not set");
     }
 
     // Check lockfile exists
@@ -114,7 +111,7 @@ fn validate_for_publish(config: &Config) -> Result<(), CmodError> {
 }
 
 /// Check that the Git working tree is clean.
-fn check_clean_working_tree(verbose: bool) -> Result<(), CmodError> {
+fn check_clean_working_tree(shell: &Shell) -> Result<(), CmodError> {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
         .output()
@@ -124,10 +121,8 @@ fn check_clean_working_tree(verbose: bool) -> Result<(), CmodError> {
     let dirty_lines: Vec<&str> = status.lines().filter(|l| !l.is_empty()).collect();
 
     if !dirty_lines.is_empty() {
-        if verbose {
-            for line in &dirty_lines {
-                eprintln!("  dirty: {}", line);
-            }
+        for line in &dirty_lines {
+            shell.verbose("Dirty", *line);
         }
         return Err(CmodError::Other(format!(
             "working tree has {} uncommitted change(s); commit or stash first",
@@ -203,15 +198,16 @@ mod tests {
             profile: cmod_core::types::Profile::Debug,
             locked: false,
             offline: false,
-            verbose: false,
+            verbosity: cmod_core::shell::Verbosity::Normal,
             target: None,
             enabled_features: vec![],
             no_default_features: false,
             no_cache: false,
         };
 
+        let shell = cmod_core::shell::Shell::new(cmod_core::shell::Verbosity::Normal);
         // Should succeed — default manifest passes validation and has no deps
-        let result = validate_for_publish(&config);
+        let result = validate_for_publish(&config, &shell);
         assert!(result.is_ok());
     }
 }

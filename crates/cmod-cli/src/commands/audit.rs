@@ -1,19 +1,20 @@
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
+use cmod_core::shell::{Shell, Verbosity};
 use cmod_security::audit::{audit_dependencies, Severity};
 
 /// Run `cmod audit` — audit dependencies for security and quality issues.
-pub fn run(verbose: bool) -> Result<(), CmodError> {
+pub fn run(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    eprintln!("  Auditing dependencies...");
+    shell.status("Auditing", "dependencies...");
 
     let lockfile = if config.lockfile_path.exists() {
         Lockfile::load(&config.lockfile_path)?
     } else if config.manifest.dependencies.is_empty() {
-        eprintln!("  No dependencies to audit.");
+        shell.status("Audited", "no dependencies to audit");
         return Ok(());
     } else {
         return Err(CmodError::LockfileNotFound);
@@ -22,9 +23,9 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
     let report = audit_dependencies(&config.manifest, &lockfile)?;
 
     if report.findings.is_empty() {
-        eprintln!(
-            "  No issues found. {} dependencies audited.",
-            lockfile.packages.len()
+        shell.status(
+            "Audited",
+            format!("no issues found ({} dependencies)", lockfile.packages.len()),
         );
         return Ok(());
     }
@@ -46,32 +47,28 @@ pub fn run(verbose: bool) -> Result<(), CmodError> {
         .filter(|f| f.severity == Severity::Info)
         .collect();
 
-    if !errors.is_empty() {
-        eprintln!("  Errors:");
-        for f in &errors {
-            eprintln!("    [error] {}: {}", f.package, f.message);
-        }
+    for f in &errors {
+        shell.error(format!("{}: {}", f.package, f.message));
     }
 
-    if !warnings.is_empty() {
-        eprintln!("  Warnings:");
-        for f in &warnings {
-            eprintln!("    [warn] {}: {}", f.package, f.message);
-        }
+    for f in &warnings {
+        shell.warn(format!("{}: {}", f.package, f.message));
     }
 
-    if verbose && !infos.is_empty() {
-        eprintln!("  Info:");
+    if shell.verbosity() == Verbosity::Verbose {
         for f in &infos {
-            eprintln!("    [info] {}: {}", f.package, f.message);
+            shell.note(format!("{}: {}", f.package, f.message));
         }
     }
 
-    eprintln!(
-        "\n  {} error(s), {} warning(s), {} info(s)",
-        report.error_count(),
-        report.warning_count(),
-        infos.len(),
+    shell.status(
+        "Audited",
+        format!(
+            "{} error(s), {} warning(s), {} info(s)",
+            report.error_count(),
+            report.warning_count(),
+            infos.len(),
+        ),
     );
 
     if report.has_errors() {

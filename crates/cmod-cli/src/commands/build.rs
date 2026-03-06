@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use cmod_build::compiler::ClangBackend;
 use cmod_build::graph::{ModuleGraph, ModuleNode};
 use cmod_build::runner::{self, BuildRunner, BuildStats};
@@ -5,6 +7,7 @@ use cmod_cache::{ArtifactCache, HttpRemoteCache, RemoteCacheMode};
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
+use cmod_core::shell::{Shell, Verbosity};
 use cmod_core::types::Profile;
 use cmod_resolver::Resolver;
 use cmod_workspace::WorkspaceManager;
@@ -15,7 +18,7 @@ pub fn run(
     release: bool,
     locked: bool,
     offline: bool,
-    verbose: bool,
+    shell: &Shell,
     target_override: Option<String>,
     jobs: usize,
     force: bool,
@@ -37,7 +40,6 @@ pub fn run(
     };
     config.locked = locked;
     config.offline = offline;
-    config.verbose = verbose;
     if let Some(t) = target_override {
         config.target = Some(t);
     }
@@ -60,7 +62,7 @@ pub fn run(
     if config.manifest.is_workspace() {
         return build_workspace(
             &config,
-            verbose,
+            shell,
             jobs,
             force,
             &effective_remote_url,
@@ -69,17 +71,17 @@ pub fn run(
         );
     }
 
-    eprintln!(
-        "  Building {} ({})",
-        config.manifest.package.name, profile_name
+    shell.status(
+        "Building",
+        format!("{} ({})", config.manifest.package.name, profile_name),
     );
 
     // Step 1: Ensure dependencies are resolved (with target-specific filtering)
-    let lockfile = ensure_resolved(&config)?;
+    let lockfile = ensure_resolved(&config, shell)?;
 
     // Step 1.5: Verify lockfile integrity if --verify is set
     if verify {
-        eprintln!("  Verifying lockfile integrity...");
+        shell.status("Verifying", "lockfile integrity...");
         lockfile.verify_integrity()?;
 
         // Verify all package hashes are present
@@ -94,16 +96,14 @@ pub fn run(
             }
         }
 
-        if verbose {
-            eprintln!(
-                "  Lockfile integrity verified ({} packages)",
-                lockfile.packages.len()
-            );
-        }
+        shell.verbose(
+            "Verified",
+            format!("lockfile integrity ({} packages)", lockfile.packages.len()),
+        );
     }
 
     // Step 1.7: Enforce signature policy from [security]
-    enforce_signature_policy(&config, &lockfile, verbose)?;
+    enforce_signature_policy(&config, &lockfile, shell)?;
 
     // Step 2: Run pre-build hook
     if !no_hooks {
@@ -115,6 +115,7 @@ pub fn run(
                 .hooks
                 .as_ref()
                 .and_then(|h| h.pre_build.as_deref()),
+            shell,
         )?;
     }
 
@@ -125,7 +126,7 @@ pub fn run(
     // Step 3: Build the single module
     let result = build_module(
         &config,
-        verbose,
+        shell,
         jobs,
         force,
         &effective_remote_url,
@@ -144,6 +145,7 @@ pub fn run(
                 .hooks
                 .as_ref()
                 .and_then(|h| h.post_build.as_deref()),
+            shell,
         )?;
     }
 
@@ -153,12 +155,10 @@ pub fn run(
 /// Create a remote cache instance from a URL, if provided.
 fn make_remote_cache(
     url: &Option<String>,
-    verbose: bool,
+    shell: &Shell,
 ) -> Option<Box<dyn cmod_cache::RemoteCache>> {
     let url = url.as_ref()?;
-    if verbose {
-        eprintln!("  Remote cache: {}", url);
-    }
+    shell.verbose("Remote cache", url);
     Some(Box::new(HttpRemoteCache::new(
         url,
         RemoteCacheMode::ReadWrite,
@@ -169,7 +169,7 @@ fn make_remote_cache(
 #[allow(clippy::too_many_arguments)]
 fn build_module(
     config: &Config,
-    verbose: bool,
+    shell: &Shell,
     jobs: usize,
     force: bool,
     remote_url: &Option<String>,
@@ -179,7 +179,7 @@ fn build_module(
 ) -> Result<(), CmodError> {
     // Build path dependencies first and collect their artifacts
     let (dep_pcms, dep_objs) =
-        build_path_dependencies(config, verbose, jobs, force, remote_url, no_cache)?;
+        build_path_dependencies(config, shell, jobs, force, remote_url, no_cache)?;
 
     // Discover source files
     let src_dir = config.src_dir();
@@ -191,11 +191,9 @@ fn build_module(
         });
     }
 
-    if verbose {
-        eprintln!("  Found {} source files", sources.len());
-        for s in &sources {
-            eprintln!("    {}", s.display());
-        }
+    shell.verbose("Found", format!("{} source files", sources.len()));
+    for s in &sources {
+        shell.verbose("Source", format!("{}", s.display()));
     }
 
     // Build the module graph
@@ -204,9 +202,9 @@ fn build_module(
     // Validate the module graph (imports, cycles, duplicates)
     graph.validate()?;
 
-    if verbose {
+    if shell.verbosity() == Verbosity::Verbose {
         let order = graph.topological_order()?;
-        eprintln!("  Build order: {}", order.join(" → "));
+        shell.verbose("Build order", order.join(" -> "));
     }
 
     // Set up the compiler backend (with feature flags as -D defines)
@@ -229,21 +227,22 @@ fn build_module(
         .with_force(force)
         .with_no_cache(no_cache)
         .with_extra_pcm_paths(dep_pcms)
-        .with_extra_obj_paths(dep_objs);
+        .with_extra_obj_paths(dep_objs)
+        .with_shell(Arc::new(Shell::new(shell.verbosity())));
 
-    if let Some(remote) = make_remote_cache(remote_url, verbose) {
+    if let Some(remote) = make_remote_cache(remote_url, shell) {
         runner = runner.with_remote_cache(remote);
     }
 
-    if verbose && jobs != 1 {
-        eprintln!("  Parallelism: {} jobs", runner.effective_jobs());
+    if jobs != 1 {
+        shell.verbose("Parallelism", format!("{} jobs", runner.effective_jobs()));
     }
 
     let (output, stats) =
         runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type)?;
 
-    print_build_stats(&stats, verbose, timings);
-    eprintln!("  Build complete: {}", output.display());
+    print_build_stats(&stats, shell, timings);
+    shell.status("Finished", format!("{}", output.display()));
     Ok(())
 }
 
@@ -253,7 +252,7 @@ fn build_module(
 /// and return the aggregated PCMs and objects for the parent project.
 fn build_path_dependencies(
     config: &Config,
-    verbose: bool,
+    shell: &Shell,
     jobs: usize,
     force: bool,
     remote_url: &Option<String>,
@@ -279,13 +278,10 @@ fn build_path_dependencies(
             continue;
         }
 
-        if verbose {
-            eprintln!(
-                "  Building path dependency: {} ({})",
-                dep_name,
-                dep_path.display()
-            );
-        }
+        shell.verbose(
+            "Building",
+            format!("path dependency: {} ({})", dep_name, dep_path.display()),
+        );
 
         // Load the dependency's config
         let dep_config = Config::load(&dep_path)?;
@@ -293,7 +289,7 @@ fn build_path_dependencies(
         // Recursively build the dependency (handles nested path deps)
         build_module(
             &dep_config,
-            verbose,
+            shell,
             jobs,
             force,
             remote_url,
@@ -344,11 +340,10 @@ fn build_path_dependencies(
         }
     }
 
-    if verbose && (!all_pcms.is_empty() || !all_objs.is_empty()) {
-        eprintln!(
-            "  Path dependencies: {} PCMs, {} objects/libs",
-            all_pcms.len(),
-            all_objs.len(),
+    if !all_pcms.is_empty() || !all_objs.is_empty() {
+        shell.verbose(
+            "Path deps",
+            format!("{} PCMs, {} objects/libs", all_pcms.len(), all_objs.len()),
         );
     }
 
@@ -358,7 +353,7 @@ fn build_path_dependencies(
 /// Build all members of a workspace.
 fn build_workspace(
     config: &Config,
-    verbose: bool,
+    shell: &Shell,
     jobs: usize,
     force: bool,
     remote_url: &Option<String>,
@@ -367,17 +362,20 @@ fn build_workspace(
 ) -> Result<(), CmodError> {
     let ws = WorkspaceManager::load(&config.root)?;
 
-    eprintln!(
-        "  Building workspace ({} members, {})",
-        ws.members.len(),
-        match config.profile {
-            Profile::Debug => "debug",
-            Profile::Release => "release",
-        }
+    shell.status(
+        "Building",
+        format!(
+            "workspace ({} members, {})",
+            ws.members.len(),
+            match config.profile {
+                Profile::Debug => "debug",
+                Profile::Release => "release",
+            }
+        ),
     );
 
     // Ensure dependencies are resolved
-    let _lockfile = ensure_resolved(config)?;
+    let _lockfile = ensure_resolved(config, shell)?;
 
     // Build members in topological order so dependencies are built first
     let ordered_members = ws.build_order()?;
@@ -394,15 +392,13 @@ fn build_workspace(
     let mut failed = Vec::new();
 
     for member in &ordered_members {
-        eprintln!("  Building member: {}", member.name);
+        shell.status("Compiling", &member.name);
 
         let member_src = member.path.join("src");
         let sources = runner::discover_sources(&member_src)?;
 
         if sources.is_empty() {
-            if verbose {
-                eprintln!("    No source files, skipping.");
-            }
+            shell.verbose("Skipping", format!("{} (no source files)", member.name));
             continue;
         }
 
@@ -435,17 +431,20 @@ fn build_workspace(
             }
         }
 
-        if verbose && !transitive_deps.is_empty() {
+        if !transitive_deps.is_empty() {
             let dep_list: Vec<&String> = transitive_deps.iter().collect();
-            eprintln!(
-                "    Upstream deps: {} ({} PCMs, {} objects)",
-                dep_list
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                extra_pcms.len(),
-                extra_objs.len(),
+            shell.verbose(
+                "Upstream",
+                format!(
+                    "{} ({} PCMs, {} objects)",
+                    dep_list
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    extra_pcms.len(),
+                    extra_objs.len(),
+                ),
             );
         }
 
@@ -454,8 +453,9 @@ fn build_workspace(
             .with_force(force)
             .with_no_cache(no_cache)
             .with_extra_pcm_paths(extra_pcms)
-            .with_extra_obj_paths(extra_objs);
-        if let Some(remote) = make_remote_cache(remote_url, verbose) {
+            .with_extra_obj_paths(extra_objs)
+            .with_shell(Arc::new(Shell::new(shell.verbosity())));
+        if let Some(remote) = make_remote_cache(remote_url, shell) {
             runner_instance = runner_instance.with_remote_cache(remote);
         }
         match runner_instance.build_with_stats(
@@ -466,8 +466,8 @@ fn build_workspace(
             build_type,
         ) {
             Ok((output, stats)) => {
-                print_build_stats(&stats, verbose, timings);
-                eprintln!("    Built: {}", output.display());
+                print_build_stats(&stats, shell, timings);
+                shell.verbose("Built", format!("{}", output.display()));
 
                 // Collect PCM files from this member for downstream members
                 let mut this_pcms: std::collections::HashMap<String, std::path::PathBuf> =
@@ -502,7 +502,7 @@ fn build_workspace(
                 member_obj_paths.insert(member.name.clone(), this_objs);
             }
             Err(e) => {
-                eprintln!("    Failed: {}", e);
+                shell.error(format!("{}: {}", member.name, e));
                 failed.push(member.name.clone());
             }
         }
@@ -514,7 +514,7 @@ fn build_workspace(
         });
     }
 
-    eprintln!("  Workspace build complete.");
+    shell.status("Finished", "workspace build complete");
     Ok(())
 }
 
@@ -730,14 +730,14 @@ fn resolve_build_features(
 ///
 /// If a `vendor/` directory exists and the build is in offline mode (or
 /// `vendor/config.toml` is present), the resolver uses vendored sources.
-fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
+fn ensure_resolved(config: &Config, shell: &Shell) -> Result<Lockfile, CmodError> {
     // Check for vendored dependencies
     let vendor_dir = config.root.join("vendor");
     let vendor_config = vendor_dir.join("config.toml");
     let is_vendored = vendor_dir.exists() && vendor_config.exists();
 
     if is_vendored && config.offline {
-        eprintln!("  Using vendored dependencies (offline mode)");
+        shell.status("Using", "vendored dependencies (offline mode)");
     }
 
     if config.lockfile_path.exists() {
@@ -748,7 +748,7 @@ fn ensure_resolved(config: &Config) -> Result<Lockfile, CmodError> {
         Err(CmodError::LockfileNotFound)
     } else {
         // Auto-resolve with target-specific dependency filtering
-        eprintln!("  No lockfile found, resolving dependencies...");
+        shell.status("Resolving", "dependencies...");
         // Use vendor dir as deps dir if vendored deps exist
         let deps_dir = if is_vendored {
             vendor_dir
@@ -861,7 +861,7 @@ fn default_target() -> String {
 }
 
 /// Display build statistics to the user.
-fn print_build_stats(stats: &BuildStats, verbose: bool, timings: bool) {
+fn print_build_stats(stats: &BuildStats, shell: &Shell, timings: bool) {
     let total_nodes = stats.cache_hits + stats.cache_misses + stats.incremental_skipped;
 
     if total_nodes == 0 {
@@ -880,32 +880,38 @@ fn print_build_stats(stats: &BuildStats, verbose: bool, timings: bool) {
         parts.push(format!("{} up-to-date", stats.incremental_skipped));
     }
 
-    eprintln!(
-        "  {} modules ({}), {:.1}s",
-        total_nodes,
-        parts.join(", "),
-        stats.wall_time_ms as f64 / 1000.0,
+    shell.status(
+        "Summary",
+        format!(
+            "{} modules ({}), {:.1}s",
+            total_nodes,
+            parts.join(", "),
+            stats.wall_time_ms as f64 / 1000.0,
+        ),
     );
 
-    if verbose && stats.total_compile_time_ms > 0 && stats.wall_time_ms > 0 {
+    if stats.total_compile_time_ms > 0 && stats.wall_time_ms > 0 {
         let speedup = stats.total_compile_time_ms as f64 / stats.wall_time_ms as f64;
         if speedup > 1.05 {
-            eprintln!(
-                "  Parallel speedup: {:.1}x ({:.1}s compile time in {:.1}s wall time)",
-                speedup,
-                stats.total_compile_time_ms as f64 / 1000.0,
-                stats.wall_time_ms as f64 / 1000.0,
+            shell.verbose(
+                "Parallel",
+                format!(
+                    "{:.1}x speedup ({:.1}s compile in {:.1}s wall)",
+                    speedup,
+                    stats.total_compile_time_ms as f64 / 1000.0,
+                    stats.wall_time_ms as f64 / 1000.0,
+                ),
             );
         }
     }
 
     // Per-node timings
     if timings && !stats.node_timings.is_empty() {
-        eprintln!("  Per-module timings:");
+        shell.verbose("Timings", "per-module breakdown:");
         let mut sorted: Vec<_> = stats.node_timings.iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(a.1)); // slowest first
         for (node_id, ms) in sorted {
-            eprintln!("    {:>6}ms  {}", ms, node_id);
+            shell.verbose("", format!("{:>6}ms  {}", ms, node_id));
         }
     }
 }
@@ -913,13 +919,18 @@ fn print_build_stats(stats: &BuildStats, verbose: bool, timings: bool) {
 /// Execute a build lifecycle hook if configured.
 ///
 /// Hooks run in the project root directory. A non-zero exit code fails the build.
-pub fn run_hook(config: &Config, hook_name: &str, command: Option<&str>) -> Result<(), CmodError> {
+pub fn run_hook(
+    config: &Config,
+    hook_name: &str,
+    command: Option<&str>,
+    shell: &Shell,
+) -> Result<(), CmodError> {
     let cmd = match command {
         Some(c) => c,
         None => return Ok(()),
     };
 
-    eprintln!("  Running {} hook: {}", hook_name, cmd);
+    shell.status("Running", format!("{} hook: {}", hook_name, cmd));
 
     let status = std::process::Command::new("sh")
         .arg("-c")
@@ -951,7 +962,7 @@ pub fn run_hook(config: &Config, hook_name: &str, command: Option<&str>) -> Resu
 fn enforce_signature_policy(
     config: &Config,
     lockfile: &Lockfile,
-    verbose: bool,
+    shell: &Shell,
 ) -> Result<(), CmodError> {
     let policy = config
         .manifest
@@ -978,20 +989,21 @@ fn enforce_signature_policy(
                     ),
                 });
             }
-            if verbose {
-                eprintln!(
-                    "  Security policy: all {} packages have content hashes",
+            shell.verbose(
+                "Security",
+                format!(
+                    "all {} packages have content hashes",
                     lockfile.packages.len()
-                );
-            }
+                ),
+            );
         }
         "warn" => {
             for pkg in &lockfile.packages {
                 if pkg.source.as_deref() == Some("git") && pkg.hash.is_none() {
-                    eprintln!(
-                        "  Warning: package '{}' has no content hash (signature_policy = \"warn\")",
+                    shell.warn(format!(
+                        "package '{}' has no content hash (signature_policy = \"warn\")",
                         pkg.name
-                    );
+                    ));
                 }
             }
         }
@@ -1001,7 +1013,7 @@ fn enforce_signature_policy(
 }
 
 /// Output the build plan as JSON without executing a build.
-pub fn plan(verbose: bool, target_override: Option<String>) -> Result<(), CmodError> {
+pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -1047,15 +1059,13 @@ pub fn plan(verbose: bool, target_override: Option<String>) -> Result<(), CmodEr
 
     println!("{}", json);
 
-    if verbose {
-        eprintln!("  Build plan: {} nodes", plan.nodes.len());
-    }
+    shell.verbose("Plan", format!("{} nodes", plan.nodes.len()));
 
     Ok(())
 }
 
 /// Generate a CMakeLists.txt for interop with CMake-based projects.
-pub fn emit_cmake(verbose: bool) -> Result<(), CmodError> {
+pub fn emit_cmake(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -1119,10 +1129,8 @@ pub fn emit_cmake(verbose: bool) -> Result<(), CmodError> {
     let content = lines.join("\n") + "\n";
     std::fs::write(&cmake_path, &content)?;
 
-    eprintln!("  Generated {}", cmake_path.display());
-    if verbose {
-        eprintln!("  {} source file(s)", source_files.len());
-    }
+    shell.status("Generated", format!("{}", cmake_path.display()));
+    shell.verbose("Sources", format!("{} source file(s)", source_files.len()));
 
     Ok(())
 }
@@ -1315,9 +1323,11 @@ mod tests {
     #[test]
     fn test_print_build_stats_no_panic() {
         // Verify stats printing doesn't panic for various states
+        let shell_normal = Shell::new(Verbosity::Normal);
+        let shell_verbose = Shell::new(Verbosity::Verbose);
         let empty = BuildStats::default();
-        print_build_stats(&empty, false, false);
-        print_build_stats(&empty, true, false);
+        print_build_stats(&empty, &shell_normal, false);
+        print_build_stats(&empty, &shell_verbose, false);
 
         let stats = BuildStats {
             cache_hits: 3,
@@ -1328,12 +1338,14 @@ mod tests {
             total_compile_time_ms: 4000,
             node_timings: BTreeMap::new(),
         };
-        print_build_stats(&stats, false, false);
-        print_build_stats(&stats, true, false);
+        print_build_stats(&stats, &shell_normal, false);
+        print_build_stats(&stats, &shell_verbose, false);
     }
 
     #[test]
     fn test_print_build_stats_with_timings() {
+        let shell_normal = Shell::new(Verbosity::Normal);
+        let shell_verbose = Shell::new(Verbosity::Verbose);
         let mut node_timings = BTreeMap::new();
         node_timings.insert("interface:base".to_string(), 120);
         node_timings.insert("impl:app".to_string(), 340);
@@ -1350,7 +1362,7 @@ mod tests {
         };
 
         // Should not panic with timings enabled
-        print_build_stats(&stats, false, true);
-        print_build_stats(&stats, true, true);
+        print_build_stats(&stats, &shell_normal, true);
+        print_build_stats(&stats, &shell_verbose, true);
     }
 }

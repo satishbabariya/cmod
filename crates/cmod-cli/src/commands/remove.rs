@@ -1,10 +1,11 @@
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
+use cmod_core::shell::Shell;
 use cmod_resolver::Resolver;
 
 /// Run `cmod remove <name>` — remove a dependency.
-pub fn run(name: String) -> Result<(), CmodError> {
+pub fn run(name: String, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
 
@@ -20,7 +21,7 @@ pub fn run(name: String) -> Result<(), CmodError> {
     // Save updated manifest
     config.manifest.save(&config.manifest_path)?;
 
-    eprintln!("  Removed dependency '{}'", name);
+    shell.status("Removing", format!("dependency '{}'", name));
 
     Ok(())
 }

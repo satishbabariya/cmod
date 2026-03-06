@@ -6,9 +6,10 @@ use cmod_build::plan::BuildPlan;
 use cmod_build::runner;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 
 /// Run `cmod compile-commands` — generate a compile_commands.json without building.
-pub fn run(verbose: bool, target_override: Option<String>) -> Result<(), CmodError> {
+pub fn run(shell: &Shell, target_override: Option<String>) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
 
@@ -20,7 +21,7 @@ pub fn run(verbose: bool, target_override: Option<String>) -> Result<(), CmodErr
     let sources = runner::discover_sources(&src_dir)?;
 
     if sources.is_empty() {
-        eprintln!("  No source files found in {}", src_dir.display());
+        shell.warn(format!("no source files found in {}", src_dir.display()));
         return Ok(());
     }
 
@@ -47,16 +48,13 @@ pub fn run(verbose: bool, target_override: Option<String>) -> Result<(), CmodErr
     let output_path = config.root.join("compile_commands.json");
     std::fs::write(&output_path, &json)?;
 
-    eprintln!(
-        "  Generated {} with {} entries",
-        output_path.display(),
-        commands.len()
+    shell.status(
+        "Generated",
+        format!("{} with {} entries", output_path.display(), commands.len()),
     );
 
-    if verbose {
-        for cmd in &commands {
-            eprintln!("    {}", cmd.file);
-        }
+    for cmd in &commands {
+        shell.verbose("Entry", &cmd.file);
     }
 
     Ok(())

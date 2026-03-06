@@ -1,58 +1,55 @@
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
+use cmod_core::shell::Shell;
 use cmod_core::types::ModuleId;
 use cmod_security::hash::verify_content_hash;
 use cmod_security::policy::{SecurityPolicy, ViolationSeverity};
 use cmod_security::verify::{verify_all_packages, SignatureStatus};
 
 /// Run `cmod verify` — verify integrity and correctness.
-pub fn run(verbose: bool, check_signatures: bool) -> Result<(), CmodError> {
+pub fn run(shell: &Shell, check_signatures: bool) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    eprintln!("  Verifying project...");
+    shell.status("Verifying", "project...");
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
     // 1. Validate manifest
-    validate_manifest(&config, &mut errors, &mut warnings, verbose);
+    validate_manifest(&config, &mut errors, &mut warnings, shell);
 
     // 2. Validate module identity
-    validate_module_identity(&config, &mut errors, &mut warnings, verbose);
+    validate_module_identity(&config, &mut errors, &mut warnings, shell);
 
     // 3. Validate lockfile consistency
-    validate_lockfile(&config, &mut errors, &mut warnings, verbose);
+    validate_lockfile(&config, &mut errors, &mut warnings, shell);
 
     // 4. Validate source structure
-    validate_sources(&config, &mut errors, &mut warnings, verbose);
+    validate_sources(&config, &mut errors, &mut warnings, shell);
 
     // 5. Validate module name matches source declaration
-    validate_module_declaration(&config, &mut errors, &mut warnings, verbose);
+    validate_module_declaration(&config, &mut errors, &mut warnings, shell);
 
     // 6. Validate signatures if requested
     if check_signatures {
-        validate_signatures(&config, &mut errors, &mut warnings, verbose);
+        validate_signatures(&config, &mut errors, &mut warnings, shell);
     }
 
     // 7. Enforce security policy from [security] section
-    validate_security_policy(&config, &mut errors, &mut warnings, verbose);
+    validate_security_policy(&config, &mut errors, &mut warnings, shell);
 
     // Print warnings
-    if !warnings.is_empty() {
-        eprintln!("  {} warning(s):", warnings.len());
-        for (i, warn) in warnings.iter().enumerate() {
-            eprintln!("    {}. [warn] {}", i + 1, warn);
-        }
+    for warn in &warnings {
+        shell.warn(warn);
     }
 
     if errors.is_empty() {
-        eprintln!("  Verification passed. No issues found.");
+        shell.status("Verified", "no issues found");
         Ok(())
     } else {
-        eprintln!("  Verification found {} error(s):", errors.len());
-        for (i, err) in errors.iter().enumerate() {
-            eprintln!("    {}. {}", i + 1, err);
+        for err in &errors {
+            shell.error(err);
         }
         Err(CmodError::Other(format!(
             "verification failed with {} issue(s)",
@@ -65,13 +62,10 @@ fn validate_manifest(
     config: &Config,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
-    verbose: bool,
+    shell: &Shell,
 ) {
-    if verbose {
-        eprintln!("  Checking manifest...");
-    }
+    shell.verbose("Checking", "manifest...");
 
-    // Check version is valid semver
     if semver::Version::parse(&config.manifest.package.version).is_err() {
         errors.push(format!(
             "package version '{}' is not valid semver",
@@ -79,19 +73,16 @@ fn validate_manifest(
         ));
     }
 
-    // Check package name is not empty
     if config.manifest.package.name.is_empty() {
         errors.push("package name is empty".to_string());
     }
 
-    // Warn if no edition specified
     if config.manifest.package.edition.is_none() {
         warnings.push(
             "no edition specified in [package]; consider adding edition = \"2023\"".to_string(),
         );
     }
 
-    // Warn about missing optional fields
     if config.manifest.package.license.is_none() {
         warnings.push("no license specified".to_string());
     }
@@ -101,16 +92,13 @@ fn validate_module_identity(
     config: &Config,
     errors: &mut Vec<String>,
     _warnings: &mut Vec<String>,
-    verbose: bool,
+    shell: &Shell,
 ) {
-    if verbose {
-        eprintln!("  Checking module identity...");
-    }
+    shell.verbose("Checking", "module identity...");
 
     if let Some(ref module) = config.manifest.module {
         let id = ModuleId(module.name.clone());
 
-        // Check for reserved prefixes
         if id.is_reserved() {
             errors.push(format!(
                 "module name '{}' uses a reserved prefix (std.* / stdx.*)",
@@ -118,12 +106,10 @@ fn validate_module_identity(
             ));
         }
 
-        // Check module name format
         if module.name.is_empty() {
             errors.push("module name is empty".to_string());
         }
 
-        // Validate module name characters (must be alphanumeric, dots, underscores, colons)
         if !module
             .name
             .chars()
@@ -135,7 +121,6 @@ fn validate_module_identity(
             ));
         }
 
-        // Check that root source file exists
         let root_path = config.root.join(&module.root);
         if !root_path.exists() {
             errors.push(format!(
@@ -144,13 +129,10 @@ fn validate_module_identity(
             ));
         }
 
-        // If this is not a local module, validate Git URL derivation
         if !id.is_local() {
-            if verbose {
-                eprintln!("    Module: {} (non-local)", module.name);
-            }
-        } else if verbose {
-            eprintln!("    Module: {} (local)", module.name);
+            shell.verbose("Module", format!("{} (non-local)", module.name));
+        } else {
+            shell.verbose("Module", format!("{} (local)", module.name));
         }
     }
 }
@@ -159,22 +141,17 @@ fn validate_lockfile(
     config: &Config,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
-    verbose: bool,
+    shell: &Shell,
 ) {
-    if verbose {
-        eprintln!("  Checking lockfile...");
-    }
+    shell.verbose("Checking", "lockfile...");
 
     if config.manifest.dependencies.is_empty() {
-        if verbose {
-            eprintln!("    No dependencies to check.");
-        }
+        shell.verbose("Lockfile", "no dependencies to check");
         return;
     }
 
     match Lockfile::load(&config.lockfile_path) {
         Ok(lockfile) => {
-            // Check that every dependency has a lock entry
             for name in config.manifest.dependencies.keys() {
                 if lockfile.find_package(name).is_none() {
                     errors.push(format!(
@@ -184,7 +161,6 @@ fn validate_lockfile(
                 }
             }
 
-            // Check for orphaned lock entries
             for pkg in &lockfile.packages {
                 if !config.manifest.dependencies.contains_key(&pkg.name) {
                     warnings.push(format!(
@@ -194,7 +170,6 @@ fn validate_lockfile(
                 }
             }
 
-            // Check lockfile has version field
             if lockfile.version != 1 {
                 warnings.push(format!(
                     "lockfile version {} is unexpected (expected 1)",
@@ -202,14 +177,12 @@ fn validate_lockfile(
                 ));
             }
 
-            // Verify lockfile integrity hash
             if let Err(e) = lockfile.verify_integrity() {
                 errors.push(format!("lockfile integrity check failed: {}", e));
-            } else if verbose {
-                eprintln!("    Lockfile integrity hash verified.");
+            } else {
+                shell.verbose("Lockfile", "integrity hash verified");
             }
 
-            // Verify content hashes of checked-out dependencies
             let deps_dir = config.deps_dir();
             for pkg in &lockfile.packages {
                 if pkg.hash.is_none() {
@@ -224,19 +197,14 @@ fn validate_lockfile(
 
                 let repo_path = deps_dir.join(&pkg.name);
                 if !repo_path.exists() {
-                    // Dep not checked out — skip (could be offline)
-                    if verbose {
-                        eprintln!("    {} — not checked out, skipping hash check", pkg.name);
-                    }
+                    shell.verbose("Skipping", format!("{} — not checked out", pkg.name));
                     continue;
                 }
 
                 match verify_content_hash(pkg, &repo_path) {
                     Ok(result) => {
                         if result.valid {
-                            if verbose {
-                                eprintln!("    {} — content hash verified", pkg.name);
-                            }
+                            shell.verbose("Verified", format!("{} — content hash OK", pkg.name));
                         } else {
                             errors.push(format!(
                                 "package '{}' content hash mismatch: expected {}, got {}",
@@ -255,9 +223,10 @@ fn validate_lockfile(
                 }
             }
 
-            if verbose {
-                eprintln!("    {} locked packages", lockfile.packages.len());
-            }
+            shell.verbose(
+                "Lockfile",
+                format!("{} locked packages", lockfile.packages.len()),
+            );
         }
         Err(_) => {
             errors.push("lockfile not found; run `cmod resolve`".to_string());
@@ -269,19 +238,14 @@ fn validate_sources(
     config: &Config,
     errors: &mut Vec<String>,
     _warnings: &mut Vec<String>,
-    verbose: bool,
+    shell: &Shell,
 ) {
-    // Workspace roots have no source files — skip this check
     if config.manifest.is_workspace() && config.manifest.module.is_none() {
-        if verbose {
-            eprintln!("  Skipping source check for workspace root.");
-        }
+        shell.verbose("Skipping", "source check for workspace root");
         return;
     }
 
-    if verbose {
-        eprintln!("  Checking source files...");
-    }
+    shell.verbose("Checking", "source files...");
 
     let src_dir = config.src_dir();
     if !src_dir.exists() {
@@ -296,13 +260,13 @@ fn validate_sources(
         Ok(sources) => {
             if sources.is_empty() {
                 errors.push("no C++ source files found in src/".to_string());
-            } else if verbose {
-                eprintln!("    Found {} source files:", sources.len());
+            } else {
+                shell.verbose("Sources", format!("found {} source files", sources.len()));
                 for s in &sources {
                     let kind = cmod_build::runner::classify_source(s)
                         .map(|k| format!("{:?}", k))
                         .unwrap_or_else(|_| "unknown".to_string());
-                    eprintln!("      {} ({})", s.display(), kind);
+                    shell.verbose("Source", format!("{} ({})", s.display(), kind));
                 }
             }
         }
@@ -312,21 +276,18 @@ fn validate_sources(
     }
 }
 
-/// Validate that the module name declared in source matches the manifest.
 fn validate_module_declaration(
     config: &Config,
     errors: &mut Vec<String>,
     _warnings: &mut Vec<String>,
-    verbose: bool,
+    shell: &Shell,
 ) {
-    if verbose {
-        eprintln!("  Checking module declaration...");
-    }
+    shell.verbose("Checking", "module declaration...");
 
     if let Some(ref module) = config.manifest.module {
         let root_path = config.root.join(&module.root);
         if !root_path.exists() {
-            return; // Already reported in validate_module_identity
+            return;
         }
 
         match cmod_build::runner::extract_module_name(&root_path) {
@@ -336,8 +297,11 @@ fn validate_module_declaration(
                         "module root declares 'export module {};' but manifest says '{}'",
                         declared_name, module.name
                     ));
-                } else if verbose {
-                    eprintln!("    Module declaration matches manifest: {}", module.name);
+                } else {
+                    shell.verbose(
+                        "Declaration",
+                        format!("module declaration matches manifest: {}", module.name),
+                    );
                 }
             }
             Ok(None) => {
@@ -357,29 +321,24 @@ fn validate_module_declaration(
     }
 }
 
-/// Enforce security policy from the `[security]` manifest section.
 fn validate_security_policy(
     config: &Config,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
-    verbose: bool,
+    shell: &Shell,
 ) {
     let policy = SecurityPolicy::from_manifest(config.manifest.security.as_ref());
 
     if !policy.is_active() {
-        if verbose {
-            eprintln!("  No security policy configured.");
-        }
+        shell.verbose("Policy", "no security policy configured");
         return;
     }
 
-    if verbose {
-        eprintln!("  Enforcing security policy...");
-    }
+    shell.verbose("Enforcing", "security policy...");
 
     let lockfile = match Lockfile::load(&config.lockfile_path) {
         Ok(l) => l,
-        Err(_) => return, // Already reported
+        Err(_) => return,
     };
 
     if lockfile.packages.is_empty() {
@@ -402,20 +361,17 @@ fn validate_security_policy(
     }
 }
 
-/// Verify commit signatures of locked dependencies.
 fn validate_signatures(
     config: &Config,
     errors: &mut Vec<String>,
     _warnings: &mut Vec<String>,
-    verbose: bool,
+    shell: &Shell,
 ) {
-    if verbose {
-        eprintln!("  Checking commit signatures...");
-    }
+    shell.verbose("Checking", "commit signatures...");
 
     let lockfile = match Lockfile::load(&config.lockfile_path) {
         Ok(l) => l,
-        Err(_) => return, // Lockfile issues already reported
+        Err(_) => return,
     };
 
     if lockfile.packages.is_empty() {
@@ -428,22 +384,25 @@ fn validate_signatures(
     for result in &results {
         match &result.signature_status {
             SignatureStatus::Valid { signer } => {
-                if verbose {
-                    eprintln!("    {} — signed by {}", result.package_name, signer);
-                }
+                shell.verbose(
+                    "Signature",
+                    format!("{} — signed by {}", result.package_name, signer),
+                );
             }
             SignatureStatus::Untrusted { signer } => {
-                if verbose {
-                    eprintln!(
-                        "    {} — signed by {} (untrusted key)",
+                shell.verbose(
+                    "Signature",
+                    format!(
+                        "{} — signed by {} (untrusted key)",
                         result.package_name, signer
-                    );
-                }
+                    ),
+                );
             }
             SignatureStatus::Unsigned => {
-                if verbose {
-                    eprintln!("    {} — unsigned commit", result.package_name);
-                }
+                shell.verbose(
+                    "Signature",
+                    format!("{} — unsigned commit", result.package_name),
+                );
             }
             SignatureStatus::Invalid { reason } => {
                 errors.push(format!(

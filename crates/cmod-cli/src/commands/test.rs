@@ -1,13 +1,14 @@
 use std::path::Path;
 
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 
 /// Run `cmod test` — build and run tests.
 pub fn run(
     release: bool,
     locked: bool,
     offline: bool,
-    verbose: bool,
+    shell: &Shell,
     target: Option<String>,
     no_cache: bool,
 ) -> Result<(), CmodError> {
@@ -16,7 +17,7 @@ pub fn run(
         release,
         locked,
         offline,
-        verbose,
+        shell,
         target,
         0,
         false,
@@ -29,7 +30,7 @@ pub fn run(
         no_cache,
     )?;
 
-    eprintln!("  Running tests...");
+    shell.status("Testing", "running tests...");
 
     // Look for test files
     let cwd = std::env::current_dir()?;
@@ -44,6 +45,7 @@ pub fn run(
             .hooks
             .as_ref()
             .and_then(|h| h.pre_test.as_deref()),
+        shell,
     )?;
 
     // Get test patterns from manifest
@@ -58,13 +60,13 @@ pub fn run(
     let test_dir = cwd.join("tests");
 
     if !test_dir.exists() {
-        eprintln!("  No tests directory found, skipping.");
+        shell.warn("no tests directory found, skipping");
         return Ok(());
     }
 
     let test_sources = cmod_build::runner::discover_sources(&test_dir)?;
     if test_sources.is_empty() {
-        eprintln!("  No test sources found.");
+        shell.warn("no test sources found");
         return Ok(());
     }
 
@@ -75,7 +77,7 @@ pub fn run(
         .collect();
 
     if filtered_sources.is_empty() {
-        eprintln!("  No test sources match the configured patterns.");
+        shell.warn("no test sources match the configured patterns");
         return Ok(());
     }
 
@@ -117,14 +119,10 @@ pub fn run(
         });
 
     // Collect PCM and object files from the build for linking with tests.
-    //
-    // Build a module-name → PCM-path map by discovering source files and
-    // extracting their declared module names (same as the build does).
     let mut pcm_flags: Vec<String> = Vec::new();
     let mut obj_files: Vec<String> = Vec::new();
 
     if pcm_dir.exists() {
-        // Build a sanitized-stem → module-name map from source files
         let src_dir = config.src_dir();
         let mut name_map: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
@@ -142,7 +140,6 @@ pub fn run(
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("pcm") {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        // Look up the real module name from the sanitized filename
                         let module_name = name_map
                             .get(stem)
                             .cloned()
@@ -154,10 +151,6 @@ pub fn run(
         }
     }
 
-    // Build a set of object file names to skip — these are entry-point sources
-    // whose `main()` would conflict with the test's own `main()`.
-    // Object files can be named by module name ("main.o") or by sanitized
-    // source path ("_path_to_src_main_cpp.o"), so we check both.
     let mut main_obj_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
     main_obj_stems.insert("main".to_string());
     {
@@ -166,7 +159,6 @@ pub fn run(
             for source in &sources {
                 let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                 if stem == "main" {
-                    // Sanitized full-path name used by multi-TU build plan
                     let sanitized = source.display().to_string().replace(['.', ':', '/'], "_");
                     main_obj_stems.insert(sanitized);
                 }
@@ -179,8 +171,6 @@ pub fn run(
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                    // Skip the main entry point object file to avoid
-                    // "multiple definition of main" when linking tests
                     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                     if main_obj_stems.contains(stem) {
                         continue;
@@ -197,7 +187,7 @@ pub fn run(
             .and_then(|s| s.to_str())
             .unwrap_or("test");
 
-        eprintln!("  Running test: {}", test_name);
+        shell.status("Running", format!("test: {}", test_name));
 
         // Compile the test with module precompiled paths
         let test_binary = build_dir.join(format!("test_{}", test_name));
@@ -208,14 +198,12 @@ pub fn run(
         cmd.arg(format!("-std=c++{}", cxx_standard));
         cmd.arg(format!("--target={}", target_triple));
 
-        // Add precompiled module references so import statements resolve
         for flag in &pcm_flags {
             cmd.arg(flag);
         }
 
         cmd.arg("-o").arg(&test_binary).arg(test_source);
 
-        // Link against object files from the main build
         for obj in &obj_files {
             cmd.arg(obj);
         }
@@ -247,7 +235,7 @@ pub fn run(
             });
         }
 
-        eprintln!("  Test '{}' passed.", test_name);
+        shell.status("Passed", format!("test: {}", test_name));
     }
 
     // Run post-test hook
@@ -259,17 +247,14 @@ pub fn run(
             .hooks
             .as_ref()
             .and_then(|h| h.post_test.as_deref()),
+        shell,
     )?;
 
-    eprintln!("  All tests passed.");
+    shell.status("Finished", "all tests passed");
     Ok(())
 }
 
 /// Check if a test source matches the configured patterns.
-///
-/// If `test_patterns` is empty, all sources match (no filtering).
-/// If `test_patterns` is non-empty, the filename must contain at least one pattern.
-/// If `exclude_patterns` is non-empty, the filename must not contain any exclude pattern.
 fn matches_test_patterns(
     source: &Path,
     test_patterns: &[String],

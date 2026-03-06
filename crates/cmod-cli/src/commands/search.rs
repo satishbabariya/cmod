@@ -1,14 +1,9 @@
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 
 /// Run `cmod search` — search for modules by name pattern.
-///
-/// Since cmod uses Git URLs as module identities (no central registry),
-/// search operates on:
-///   1. Local dependencies already resolved in the lockfile.
-///   2. Workspace members (if in a workspace).
-///   3. Known modules from the project's dependency tree.
-pub fn run(query: &str, verbose: bool) -> Result<(), CmodError> {
+pub fn run(query: &str, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -71,17 +66,24 @@ pub fn run(query: &str, verbose: bool) -> Result<(), CmodError> {
     }
 
     if found.is_empty() {
-        eprintln!("  No modules matching '{}' found.", query);
-        if verbose {
-            eprintln!("  hint: cmod search queries local dependencies and lockfile.");
-            eprintln!("  hint: for Git-based discovery, use `git ls-remote` or browse the repo.");
-        }
+        shell.status("Search", format!("no modules matching '{}'", query));
+        shell.verbose(
+            "Hint",
+            "cmod search queries local dependencies and lockfile",
+        );
+        shell.verbose(
+            "Hint",
+            "for Git-based discovery, use `git ls-remote` or browse the repo",
+        );
     } else {
-        eprintln!("  Found {} result(s) for '{}':", found.len(), query);
+        shell.status(
+            "Found",
+            format!("{} result(s) for '{}'", found.len(), query),
+        );
         for result in &found {
-            eprintln!(
-                "    {} v{} ({})",
-                result.name, result.version, result.source
+            shell.status(
+                "Match",
+                format!("{} v{} ({})", result.name, result.version, result.source),
             );
         }
     }

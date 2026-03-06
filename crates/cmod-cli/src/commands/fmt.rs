@@ -1,9 +1,10 @@
 use cmod_build::runner;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 
 /// Run `cmod fmt` — format C++ module sources using clang-format.
-pub fn run(check: bool, verbose: bool) -> Result<(), CmodError> {
+pub fn run(check: bool, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -11,7 +12,7 @@ pub fn run(check: bool, verbose: bool) -> Result<(), CmodError> {
     let sources = runner::discover_sources(&src_dir)?;
 
     if sources.is_empty() {
-        eprintln!("  No source files found to format.");
+        shell.warn("no source files found to format");
         return Ok(());
     }
 
@@ -22,10 +23,9 @@ pub fn run(check: bool, verbose: bool) -> Result<(), CmodError> {
         });
     }
 
-    eprintln!(
-        "  {} {} source files",
+    shell.status(
         if check { "Checking" } else { "Formatting" },
-        sources.len()
+        format!("{} source files", sources.len()),
     );
 
     let mut unformatted = Vec::new();
@@ -49,9 +49,7 @@ pub fn run(check: bool, verbose: bool) -> Result<(), CmodError> {
 
             if !output.status.success() {
                 unformatted.push(filename.to_string());
-                if verbose {
-                    eprintln!("  needs formatting: {}", filename);
-                }
+                shell.verbose("Unformatted", filename);
             }
         } else {
             // In-place formatting
@@ -69,15 +67,13 @@ pub fn run(check: bool, verbose: bool) -> Result<(), CmodError> {
                 });
             }
 
-            if verbose {
-                eprintln!("  formatted: {}", filename);
-            }
+            shell.verbose("Formatted", filename);
         }
     }
 
     if check {
         if unformatted.is_empty() {
-            eprintln!("  All files are properly formatted.");
+            shell.status("Finished", "all files are properly formatted");
         } else {
             return Err(CmodError::BuildFailed {
                 reason: format!(
@@ -88,7 +84,7 @@ pub fn run(check: bool, verbose: bool) -> Result<(), CmodError> {
             });
         }
     } else {
-        eprintln!("  Formatted {} files.", sources.len());
+        shell.status("Formatted", format!("{} files", sources.len()));
     }
 
     Ok(())

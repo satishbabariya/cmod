@@ -1,5 +1,6 @@
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 use cmod_workspace::WorkspaceManager;
 
 /// Run `cmod run` — build and execute the project binary.
@@ -7,7 +8,7 @@ pub fn run(
     release: bool,
     package: Option<String>,
     args: Vec<String>,
-    verbose: bool,
+    shell: &Shell,
     no_cache: bool,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
@@ -15,7 +16,6 @@ pub fn run(
 
     // For workspace projects, validate the target member BEFORE building
     if config.manifest.is_workspace() {
-        // Pre-validate the member so we don't waste time building if it doesn't exist
         if let Some(ref name) = package {
             let ws = WorkspaceManager::load(&config.root)?;
             if !ws.members.iter().any(|m| m.name == *name) {
@@ -39,7 +39,7 @@ pub fn run(
         release,
         false,
         false,
-        verbose,
+        shell,
         None,
         0,
         false,
@@ -54,7 +54,7 @@ pub fn run(
 
     // For workspace projects, resolve the target member binary
     if config.manifest.is_workspace() {
-        return run_workspace_member(&config, release, package, args, verbose);
+        return run_workspace_member(&config, release, package, args, shell);
     }
 
     // Find the built binary
@@ -62,9 +62,10 @@ pub fn run(
     let binary_name = &config.manifest.package.name;
     let binary_path = find_binary(&build_dir, binary_name)?;
 
-    if verbose {
-        eprintln!("  Running: {} {}", binary_path.display(), args.join(" "));
-    }
+    shell.verbose(
+        "Running",
+        format!("{} {}", binary_path.display(), args.join(" ")),
+    );
 
     // Execute the binary, forwarding args
     let status = std::process::Command::new(&binary_path)
@@ -88,14 +89,13 @@ fn run_workspace_member(
     release: bool,
     package: Option<String>,
     args: Vec<String>,
-    verbose: bool,
+    shell: &Shell,
 ) -> Result<(), CmodError> {
     let ws = WorkspaceManager::load(&config.root)?;
 
     // Determine which member to run
     let member_name = match package {
         Some(name) => {
-            // Validate the member exists
             if !ws.members.iter().any(|m| m.name == name) {
                 return Err(CmodError::BuildFailed {
                     reason: format!(
@@ -112,7 +112,6 @@ fn run_workspace_member(
             name
         }
         None => {
-            // Find the first member with build type = binary
             let binary_members: Vec<_> = ws
                 .members
                 .iter()
@@ -158,9 +157,10 @@ fn run_workspace_member(
 
     let binary_path = find_binary(&member_build_dir, &member_name)?;
 
-    if verbose {
-        eprintln!("  Running: {} {}", binary_path.display(), args.join(" "));
-    }
+    shell.verbose(
+        "Running",
+        format!("{} {}", binary_path.display(), args.join(" ")),
+    );
 
     let status = std::process::Command::new(&binary_path)
         .args(&args)
@@ -178,11 +178,7 @@ fn run_workspace_member(
 }
 
 /// Find the built binary in the build directory.
-///
-/// Searches both the build root and profile subdirectories (debug/release)
-/// for the named executable or any executable file.
 fn find_binary(build_dir: &std::path::Path, name: &str) -> Result<std::path::PathBuf, CmodError> {
-    // Search in both the build root and profile subdirectories
     let search_dirs = [
         build_dir.to_path_buf(),
         build_dir.join("debug"),
@@ -190,7 +186,6 @@ fn find_binary(build_dir: &std::path::Path, name: &str) -> Result<std::path::Pat
     ];
 
     for dir in &search_dirs {
-        // Try exact name matches first, then common linker output names
         let candidates = [
             dir.join(name),
             dir.join(format!("{}.exe", name)),
@@ -207,13 +202,11 @@ fn find_binary(build_dir: &std::path::Path, name: &str) -> Result<std::path::Pat
     }
 
     // Fallback: find any executable file in the build directories
-    // (the linker output name may differ from the package name)
     for dir in &search_dirs {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() {
-                    // Skip object files, PCMs, metadata, and test binaries
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                     if matches!(ext, "o" | "pcm" | "json" | "a" | "so" | "dylib") {
                         continue;
@@ -222,7 +215,6 @@ fn find_binary(build_dir: &std::path::Path, name: &str) -> Result<std::path::Pat
                     if stem.starts_with("test_") || stem.ends_with("_test") {
                         continue;
                     }
-                    // Check if it's an executable (on Unix, check permissions)
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;

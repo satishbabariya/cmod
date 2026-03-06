@@ -3,9 +3,10 @@ use std::path::Path;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
+use cmod_core::shell::Shell;
 
 /// Run `cmod vendor` — vendor dependencies for offline builds.
-pub fn run(sync: bool, verbose: bool) -> Result<(), CmodError> {
+pub fn run(sync: bool, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -14,8 +15,7 @@ pub fn run(sync: bool, verbose: bool) -> Result<(), CmodError> {
     let vendor_dir = config.root.join("vendor");
 
     if sync {
-        eprintln!("  Re-synchronizing vendor directory...");
-        // Remove stale entries
+        shell.status("Syncing", "vendor directory...");
         if vendor_dir.exists() {
             remove_stale_entries(&vendor_dir, &lockfile)?;
         }
@@ -28,26 +28,25 @@ pub fn run(sync: bool, verbose: bool) -> Result<(), CmodError> {
     for pkg in &lockfile.packages {
         let pkg_dir = vendor_dir.join(&pkg.name);
 
-        // Skip if already vendored and not syncing
         if pkg_dir.exists() && !sync {
-            if verbose {
-                eprintln!("    Already vendored: {}", pkg.name);
-            }
+            shell.verbose("Vendored", format!("{} (already)", pkg.name));
             vendored += 1;
             continue;
         }
 
-        // Vendor from the resolved dependency source
         let source = pkg.source.as_deref().unwrap_or("git");
         match source {
             "git" => {
-                vendor_git_dep(&config, pkg, &pkg_dir, verbose)?;
+                vendor_git_dep(&config, pkg, &pkg_dir, shell)?;
             }
             "path" => {
-                vendor_path_dep(pkg, &pkg_dir, verbose)?;
+                vendor_path_dep(pkg, &pkg_dir, shell)?;
             }
             _ => {
-                eprintln!("    Skipping {} (unknown source: {})", pkg.name, source);
+                shell.warn(format!(
+                    "skipping {} (unknown source: {})",
+                    pkg.name, source
+                ));
                 continue;
             }
         }
@@ -55,13 +54,11 @@ pub fn run(sync: bool, verbose: bool) -> Result<(), CmodError> {
         vendored += 1;
     }
 
-    // Generate vendor config
     generate_vendor_config(&vendor_dir, &lockfile)?;
 
-    eprintln!(
-        "  Vendored {} dependencies into {}",
-        vendored,
-        vendor_dir.display()
+    shell.status(
+        "Vendored",
+        format!("{} dependencies into {}", vendored, vendor_dir.display()),
     );
 
     Ok(())
@@ -72,26 +69,20 @@ fn vendor_git_dep(
     config: &Config,
     pkg: &cmod_core::lockfile::LockedPackage,
     dest: &Path,
-    verbose: bool,
+    shell: &Shell,
 ) -> Result<(), CmodError> {
     let deps_dir = config.deps_dir();
     let checkout = deps_dir.join(&pkg.name);
 
     if checkout.exists() {
-        if verbose {
-            eprintln!("    Copying {} from deps checkout...", pkg.name);
-        }
+        shell.verbose("Copying", format!("{} from deps checkout...", pkg.name));
         copy_dir_recursive(&checkout, dest)?;
     } else if let Some(ref repo_url) = pkg.repo {
-        if verbose {
-            eprintln!("    Cloning {} for vendor...", pkg.name);
-        }
-        // Clone the repo at the pinned commit
+        shell.verbose("Cloning", format!("{} for vendor...", pkg.name));
         let repo = git2::Repository::clone(repo_url, dest).map_err(|e| CmodError::GitError {
             reason: format!("failed to clone {}: {}", repo_url, e),
         })?;
 
-        // Checkout the specific commit
         if let Some(ref commit_hash) = pkg.commit {
             let oid = git2::Oid::from_str(commit_hash).map_err(|e| CmodError::GitError {
                 reason: format!("invalid commit hash: {}", e),
@@ -109,7 +100,7 @@ fn vendor_git_dep(
                 })?;
         }
     } else {
-        eprintln!("    Warning: no source for {}, skipping", pkg.name);
+        shell.warn(format!("no source for {}, skipping", pkg.name));
     }
 
     Ok(())
@@ -119,13 +110,9 @@ fn vendor_git_dep(
 fn vendor_path_dep(
     pkg: &cmod_core::lockfile::LockedPackage,
     dest: &Path,
-    verbose: bool,
+    shell: &Shell,
 ) -> Result<(), CmodError> {
-    if verbose {
-        eprintln!("    Symlinking {} (path dep)", pkg.name);
-    }
-    // For path deps, we record the mapping in vendor config
-    // but don't copy — they're already local
+    shell.verbose("Linking", format!("{} (path dep)", pkg.name));
     std::fs::create_dir_all(dest)?;
     std::fs::write(
         dest.join(".cmod-path-dep"),

@@ -2,9 +2,10 @@ use std::path::Path;
 
 use cmod_core::error::CmodError;
 use cmod_core::manifest;
+use cmod_core::shell::Shell;
 
 /// Run `cmod init` — initialize a new module or workspace.
-pub fn run(workspace: bool, name: Option<String>) -> Result<(), CmodError> {
+pub fn run(workspace: bool, name: Option<String>, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
 
     // Check if cmod.toml already exists
@@ -26,9 +27,9 @@ pub fn run(workspace: bool, name: Option<String>) -> Result<(), CmodError> {
     validate_project_name(&project_name)?;
 
     if workspace {
-        init_workspace(&cwd, &project_name)
+        init_workspace(&cwd, &project_name, shell)
     } else {
-        init_module(&cwd, &project_name)
+        init_module(&cwd, &project_name, shell)
     }
 }
 
@@ -65,7 +66,7 @@ fn sanitize_cpp_name(name: &str) -> String {
 }
 
 /// Initialize a single module project.
-fn init_module(dir: &Path, name: &str) -> Result<(), CmodError> {
+fn init_module(dir: &Path, name: &str, shell: &Shell) -> Result<(), CmodError> {
     let m = manifest::default_manifest(name);
 
     // Create directory structure
@@ -111,24 +112,25 @@ fn init_module(dir: &Path, name: &str) -> Result<(), CmodError> {
         ),
     )?;
 
-    eprintln!("  Created module '{}' in {}", name, dir.display());
-    eprintln!("  - cmod.toml");
-    eprintln!("  - src/lib.cppm");
-    eprintln!("  - src/main.cpp");
-    eprintln!("  - tests/main.cpp");
+    shell.status("Created", format!("module '{}' in {}", name, dir.display()));
+    shell.verbose("Created", "cmod.toml");
+    shell.verbose("Created", "src/lib.cppm");
+    shell.verbose("Created", "src/main.cpp");
+    shell.verbose("Created", "tests/main.cpp");
 
     Ok(())
 }
 
 /// Initialize a workspace.
-fn init_workspace(dir: &Path, name: &str) -> Result<(), CmodError> {
+fn init_workspace(dir: &Path, name: &str, shell: &Shell) -> Result<(), CmodError> {
     let m = manifest::default_workspace_manifest(name);
     m.save(&dir.join("cmod.toml"))?;
 
-    eprintln!("  Created workspace '{}' in {}", name, dir.display());
-    eprintln!("  - cmod.toml (workspace)");
-    eprintln!();
-    eprintln!("  Add members with `cmod init --name <member>` in subdirectories.");
+    shell.status(
+        "Created",
+        format!("workspace '{}' in {}", name, dir.display()),
+    );
+    shell.note("add members with `cmod init --name <member>` in subdirectories");
 
     Ok(())
 }

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::CmodError;
 use crate::manifest::Manifest;
+use crate::shell::Verbosity;
 use crate::types::Profile;
 
 /// Global context for a cmod session.
@@ -32,8 +33,8 @@ pub struct Config {
     /// Whether to allow network access.
     pub offline: bool,
 
-    /// Verbose logging.
-    pub verbose: bool,
+    /// Output verbosity level.
+    pub verbosity: Verbosity,
 
     /// Explicitly enabled features (from --features CLI flag).
     pub enabled_features: Vec<String>,
@@ -67,7 +68,7 @@ impl Config {
             target: None,
             locked: false,
             offline: false,
-            verbose: false,
+            verbosity: Verbosity::Normal,
             enabled_features: Vec::new(),
             no_default_features: false,
             no_cache: false,
@@ -132,7 +133,7 @@ version = "0.1.0"
         assert_eq!(config.profile, Profile::Debug);
         assert!(!config.locked);
         assert!(!config.offline);
-        assert!(!config.verbose);
+        assert_eq!(config.verbosity, Verbosity::Normal);
     }
 
     #[test]

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::shell::Shell;
 
 /// A plugin definition from `[plugins]` in cmod.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,25 +37,26 @@ pub struct PluginResponse {
 }
 
 /// Run `cmod plugin list` — list discovered plugins.
-pub fn list(verbose: bool) -> Result<(), CmodError> {
+pub fn list(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
     let plugins = discover_plugins(&config);
 
     if plugins.is_empty() {
-        eprintln!("  No plugins configured.");
-        eprintln!("  Add plugins in cmod.toml under [plugins]:");
-        eprintln!("    [plugins]");
-        eprintln!("    myplugin = {{ path = \"tools/myplugin\" }}");
+        shell.status("Plugins", "no plugins configured");
+        shell.note("add plugins in cmod.toml under [plugins]");
         return Ok(());
     }
 
-    eprintln!("  {} plugin(s) configured:", plugins.len());
+    shell.status("Plugins", format!("{} plugin(s) configured", plugins.len()));
     for plugin in &plugins {
-        eprintln!("    {} ({})", plugin.name, plugin.path.display());
-        if verbose && !plugin.capabilities.is_empty() {
-            eprintln!("      capabilities: {}", plugin.capabilities.join(", "));
+        shell.status(
+            "Plugin",
+            format!("{} ({})", plugin.name, plugin.path.display()),
+        );
+        if !plugin.capabilities.is_empty() {
+            shell.verbose("Capabilities", plugin.capabilities.join(", "));
         }
     }
 
@@ -62,7 +64,7 @@ pub fn list(verbose: bool) -> Result<(), CmodError> {
 }
 
 /// Run `cmod plugin run <name>` — execute a plugin.
-pub fn run_plugin(name: &str, verbose: bool) -> Result<(), CmodError> {
+pub fn run_plugin(name: &str, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -76,9 +78,7 @@ pub fn run_plugin(name: &str, verbose: bool) -> Result<(), CmodError> {
 
     let entry = find_plugin_entry(&config.root, plugin)?;
 
-    if verbose {
-        eprintln!("  Running plugin: {} ({})", plugin.name, entry.display());
-    }
+    shell.verbose("Running", format!("{} ({})", plugin.name, entry.display()));
 
     let request = PluginRequest {
         action: "run".to_string(),
@@ -111,10 +111,10 @@ pub fn run_plugin(name: &str, verbose: bool) -> Result<(), CmodError> {
         for line in reader.lines().map_while(Result::ok) {
             if let Ok(resp) = serde_json::from_str::<PluginResponse>(&line) {
                 if let Some(msg) = resp.message {
-                    eprintln!("  [{}] {}", plugin.name, msg);
+                    shell.verbose(&plugin.name, msg);
                 }
             } else {
-                eprintln!("  [{}] {}", plugin.name, line);
+                shell.verbose(&plugin.name, &line);
             }
         }
     }
