@@ -4,7 +4,7 @@
 
 **cmod** is a Cargo-inspired, Git-native package and build tool for modern C++20+ modules. It provides dependency resolution, build orchestration, workspace management, and caching — all without a central package registry.
 
-**Status:** Initial Rust implementation (Phase 0-2). The Cargo workspace compiles and has 270+ passing tests. The 21 RFCs and design documents under `docs/` remain the canonical specification.
+**Status:** Rust implementation (Phase 0-4 complete, Phase 5 in progress). The Cargo workspace compiles and has 750+ passing tests. The 21 RFCs and design documents under `docs/` remain the canonical specification.
 
 **Implementation language:** Rust (with LLVM/Clang C++ APIs for build hooks).
 
@@ -252,9 +252,9 @@ Module names follow reverse-domain Git path format: `com.github.user.my_math`.
 | 0 — Foundations | **Implemented** | `cmod.toml` parser, Git resolver, lockfile, CLI commands |
 | 1 — Builds | **Implemented** | LLVM/Clang backend, module DAG, build plan IR, build runner |
 | 2 — Scale | **Implemented** | Workspace manager, local cache, cache keys |
-| 3 — Distributed | Planned | Remote cache protocol, artifact upload/download |
-| 4 — Security | Planned | Signature verification, `--locked --verify` modes |
-| 5 — Ecosystem | Planned | LSP integration, plugin SDK, visualization tools |
+| 3 — Distributed | **Implemented** | Remote cache protocol (HTTP), artifact push/pull, BMI distribution |
+| 4 — Security | **Implemented** | GPG/SSH/Sigstore signing, TOFU trust model, `--locked --verify` modes |
+| 5 — Ecosystem | **In Progress** | LSP server, plugin SDK with sandbox, graph visualization (ASCII/DOT/JSON) |
 
 ## RFC Tiers
 

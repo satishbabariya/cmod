@@ -373,23 +373,33 @@ cmod emit-cmake
 
 ### `cmod lint`
 
-Lint C++ source files for common issues using clang-tidy.
+Lint C++ source files for common issues. Checks for trailing whitespace, tabs, long lines, `#pragma once` in modules, `using namespace std;`, C-style casts, and missing final newlines. Optionally integrates with clang-tidy when `[lint].clang_tidy = true` in `cmod.toml`.
+
+Scans `src/` and `tests/` by default plus any directories listed in `[lint].include_dirs`.
 
 ```
-cmod lint
+cmod lint [--deny-warnings] [-p <member>]
 ```
+
+| Option | Description |
+|--------|-------------|
+| `--deny-warnings` | Treat warnings as errors (non-zero exit code if any warnings) |
+| `-p, --package <name>` | Lint a specific workspace member |
 
 ### `cmod fmt`
 
 Format C++ source files using clang-format.
 
+Scans `src/` and `tests/` by default plus any directories listed in `[format].include_dirs`.
+
 ```
-cmod fmt [--check]
+cmod fmt [--check] [-p <member>]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--check` | Check formatting without modifying files |
+| `-p, --package <name>` | Format a specific workspace member |
 
 ---
 

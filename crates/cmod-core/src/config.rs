@@ -124,6 +124,60 @@ impl Config {
             .map(|b| b.exclude.clone())
             .unwrap_or_default()
     }
+
+    /// Directories to format: src_dirs() + tests/ + [format].include_dirs.
+    pub fn format_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = self.src_dirs();
+        let tests_dir = self.root.join("tests");
+        if tests_dir.is_dir() && !dirs.contains(&tests_dir) {
+            dirs.push(tests_dir);
+        }
+        if let Some(ref fmt) = self.manifest.format {
+            for d in &fmt.include_dirs {
+                let p = self.root.join(d);
+                if !dirs.contains(&p) {
+                    dirs.push(p);
+                }
+            }
+        }
+        dirs
+    }
+
+    /// Exclude patterns for formatting.
+    pub fn format_exclude(&self) -> Vec<String> {
+        self.manifest
+            .format
+            .as_ref()
+            .map(|f| f.exclude.clone())
+            .unwrap_or_default()
+    }
+
+    /// Directories to lint: src_dirs() + tests/ + [lint].include_dirs.
+    pub fn lint_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = self.src_dirs();
+        let tests_dir = self.root.join("tests");
+        if tests_dir.is_dir() && !dirs.contains(&tests_dir) {
+            dirs.push(tests_dir);
+        }
+        if let Some(ref lint) = self.manifest.lint {
+            for d in &lint.include_dirs {
+                let p = self.root.join(d);
+                if !dirs.contains(&p) {
+                    dirs.push(p);
+                }
+            }
+        }
+        dirs
+    }
+
+    /// Exclude patterns for linting.
+    pub fn lint_exclude(&self) -> Vec<String> {
+        self.manifest
+            .lint
+            .as_ref()
+            .map(|l| l.exclude.clone())
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -265,5 +319,118 @@ local_path = "/custom/cache"
 
         let config = Config::load(tmp.path()).unwrap();
         assert_eq!(config.cache_dir(), PathBuf::from("/custom/cache"));
+    }
+
+    #[test]
+    fn test_format_dirs_default() {
+        let tmp = setup_project();
+        // Create tests/ dir so it gets included
+        std::fs::create_dir_all(tmp.path().join("tests")).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let dirs = config.format_dirs();
+        assert!(dirs.contains(&tmp.path().join("src")));
+        assert!(dirs.contains(&tmp.path().join("tests")));
+    }
+
+    #[test]
+    fn test_format_dirs_no_tests_dir() {
+        let tmp = setup_project();
+        let config = Config::load(tmp.path()).unwrap();
+        let dirs = config.format_dirs();
+        assert!(dirs.contains(&tmp.path().join("src")));
+        // tests/ doesn't exist, so it shouldn't be included
+        assert!(!dirs.contains(&tmp.path().join("tests")));
+    }
+
+    #[test]
+    fn test_format_dirs_with_include_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let toml = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[format]
+include_dirs = ["benchmarks"]
+"#;
+        std::fs::write(tmp.path().join("cmod.toml"), toml).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let dirs = config.format_dirs();
+        assert!(dirs.contains(&tmp.path().join("src")));
+        assert!(dirs.contains(&tmp.path().join("benchmarks")));
+    }
+
+    #[test]
+    fn test_lint_dirs_default() {
+        let tmp = setup_project();
+        std::fs::create_dir_all(tmp.path().join("tests")).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let dirs = config.lint_dirs();
+        assert!(dirs.contains(&tmp.path().join("src")));
+        assert!(dirs.contains(&tmp.path().join("tests")));
+    }
+
+    #[test]
+    fn test_lint_dirs_with_include_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let toml = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[lint]
+include_dirs = ["examples"]
+"#;
+        std::fs::write(tmp.path().join("cmod.toml"), toml).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let dirs = config.lint_dirs();
+        assert!(dirs.contains(&tmp.path().join("src")));
+        assert!(dirs.contains(&tmp.path().join("examples")));
+    }
+
+    #[test]
+    fn test_format_exclude() {
+        let tmp = TempDir::new().unwrap();
+        let toml = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[format]
+exclude = ["generated/**", "vendor/**"]
+"#;
+        std::fs::write(tmp.path().join("cmod.toml"), toml).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        assert_eq!(config.format_exclude(), vec!["generated/**", "vendor/**"]);
+    }
+
+    #[test]
+    fn test_lint_exclude() {
+        let tmp = TempDir::new().unwrap();
+        let toml = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[lint]
+exclude = ["third_party/**"]
+"#;
+        std::fs::write(tmp.path().join("cmod.toml"), toml).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        assert_eq!(config.lint_exclude(), vec!["third_party/**"]);
+    }
+
+    #[test]
+    fn test_format_exclude_default_empty() {
+        let tmp = setup_project();
+        let config = Config::load(tmp.path()).unwrap();
+        assert!(config.format_exclude().is_empty());
+    }
+
+    #[test]
+    fn test_lint_exclude_default_empty() {
+        let tmp = setup_project();
+        let config = Config::load(tmp.path()).unwrap();
+        assert!(config.lint_exclude().is_empty());
     }
 }

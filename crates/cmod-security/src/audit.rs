@@ -175,6 +175,8 @@ mod tests {
             toolchain: None,
             build: None,
             test: None,
+            format: None,
+            lint: None,
             workspace: None,
             cache: None,
             metadata: None,

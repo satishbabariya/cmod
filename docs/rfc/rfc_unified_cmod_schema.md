@@ -79,6 +79,18 @@ runner = ""                         # Custom test runner command (empty = direct
 extra_flags = ["-fsanitize=address"] # Extra compiler flags for test builds only
 timeout = 300                       # Per-test timeout in seconds (0 = no timeout)
 
+# === Formatting Configuration ===
+[format]
+include_dirs = ["benchmarks"]       # Extra directories to format (merged with src/ and tests/)
+exclude = ["generated/**"]          # Glob patterns to exclude from formatting
+
+# === Linting Configuration ===
+[lint]
+include_dirs = ["benchmarks"]       # Extra directories to lint (merged with src/ and tests/)
+exclude = ["generated/**"]          # Glob patterns to exclude from linting
+max_line_length = 120               # Maximum line length (default: 120)
+clang_tidy = false                  # Enable clang-tidy integration (default: false)
+
 # === Publishing Configuration ===
 [publish]
 registry = "https://crates.cmod.io" # Future registry URL
