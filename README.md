@@ -237,9 +237,9 @@ Key data flows:
 | 0 — Foundations | Done | `cmod.toml` parser, Git resolver, lockfile, CLI |
 | 1 — Builds | Done | LLVM/Clang backend, module DAG, build runner |
 | 2 — Scale | Done | Workspace manager, local cache, cache keys |
-| 3 — Distributed | Planned | Remote cache protocol, artifact upload/download |
-| 4 — Security | Planned | Signature verification, `--locked --verify` modes |
-| 5 — Ecosystem | Planned | LSP integration, plugin SDK, visualization tools |
+| 3 — Distributed | Done | Remote cache protocol (HTTP), artifact push/pull, BMI distribution |
+| 4 — Security | Done | GPG/SSH/Sigstore signing, TOFU trust model, `--locked --verify` modes |
+| 5 — Ecosystem | In Progress | LSP server, plugin SDK with sandbox, graph visualization (ASCII/DOT/JSON) |
 
 ## Contributing
 
