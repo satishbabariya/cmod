@@ -413,6 +413,105 @@ fn make_diagnostic(
     })
 }
 
+/// Propagate diagnostics through the module DAG.
+///
+/// When a module has errors, all modules that depend on it should receive
+/// informational diagnostics noting they may be affected.
+pub fn propagate_diagnostics(
+    broken_file: &Path,
+    root: &Path,
+    graph: &Option<cmod_build::graph::ModuleGraph>,
+) -> std::collections::BTreeMap<PathBuf, Vec<Value>> {
+    let mut result: std::collections::BTreeMap<PathBuf, Vec<Value>> =
+        std::collections::BTreeMap::new();
+
+    // Find the module name for the broken file
+    let broken_module = match cmod_build::runner::extract_module_name(broken_file) {
+        Ok(Some(name)) => name,
+        _ => return result,
+    };
+
+    // Use the provided graph, or build a minimal one
+    let owned_graph;
+    let graph_ref = if let Some(g) = graph {
+        g
+    } else {
+        // Try to build a graph from the project root
+        let manifest_path = root.join("cmod.toml");
+        let content = match std::fs::read_to_string(&manifest_path) {
+            Ok(c) => c,
+            Err(_) => return result,
+        };
+        let manifest = match cmod_core::manifest::Manifest::from_str(&content) {
+            Ok(m) => m,
+            Err(_) => return result,
+        };
+        let src_dirs: Vec<PathBuf> = manifest
+            .build
+            .as_ref()
+            .map(|b| {
+                if b.sources.is_empty() {
+                    vec![root.join("src")]
+                } else {
+                    b.sources.iter().map(|s| root.join(s)).collect()
+                }
+            })
+            .unwrap_or_else(|| vec![root.join("src")]);
+        let exclude = manifest
+            .build
+            .as_ref()
+            .map(|b| b.exclude.clone())
+            .unwrap_or_default();
+
+        let sources = match cmod_build::runner::discover_sources_multi(&src_dirs, &exclude) {
+            Ok(s) => s,
+            Err(_) => return result,
+        };
+
+        let mut g = cmod_build::graph::ModuleGraph::new();
+        for source in &sources {
+            if let Ok(Some(name)) = cmod_build::runner::extract_module_name(source) {
+                let kind = cmod_build::runner::classify_source(source)
+                    .unwrap_or(cmod_core::types::ModuleUnitKind::LegacyUnit);
+                let partition_of = cmod_build::runner::extract_partition_owner(source)
+                    .ok()
+                    .flatten();
+                let node = cmod_build::graph::ModuleNode {
+                    id: source.display().to_string(),
+                    name,
+                    kind,
+                    source: source.clone(),
+                    package: String::new(),
+                    imports: Vec::new(),
+                    partition_of,
+                };
+                g.add_node(node);
+            }
+        }
+        owned_graph = g;
+        &owned_graph
+    };
+
+    // Find all nodes that import the broken module
+    for node in graph_ref.nodes.values() {
+        if node.imports.contains(&broken_module) {
+            let diag = make_diagnostic(
+                0,
+                0,
+                DiagnosticSeverity::Information,
+                &format!(
+                    "Module '{}' has errors; this module may be affected",
+                    broken_module
+                ),
+                "cmod-propagated",
+            );
+            result.entry(node.source.clone()).or_default().push(diag);
+        }
+    }
+
+    result
+}
+
 fn find_error_line(error_msg: &str, _content: &str) -> Option<u32> {
     // Try to extract line number from error message
     for part in error_msg.split_whitespace() {
@@ -565,5 +664,77 @@ mod tests {
         assert_eq!(by_file.len(), 2);
         assert_eq!(by_file["src/main.cpp"].len(), 2);
         assert_eq!(by_file["src/lib.cpp"].len(), 1);
+    }
+
+    #[test]
+    fn test_propagate_diagnostics_no_dependents() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("cmod.toml"),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let broken = tmp.path().join("src").join("lib.cppm");
+        std::fs::write(&broken, "export module mylib;\n").unwrap();
+
+        // No graph, no dependents → empty
+        let result = propagate_diagnostics(&broken, tmp.path(), &None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_propagate_diagnostics_with_dependents() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("cmod.toml"),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let broken = tmp.path().join("src").join("base.cppm");
+        std::fs::write(&broken, "export module base;\n").unwrap();
+
+        let dep1 = tmp.path().join("src").join("dep1.cppm");
+        std::fs::write(&dep1, "export module dep1;\nimport base;\n").unwrap();
+
+        let dep2 = tmp.path().join("src").join("dep2.cppm");
+        std::fs::write(&dep2, "export module dep2;\nimport base;\n").unwrap();
+
+        // Build a graph with imports
+        let mut graph = cmod_build::graph::ModuleGraph::new();
+        graph.add_node(cmod_build::graph::ModuleNode {
+            id: broken.display().to_string(),
+            name: "base".into(),
+            kind: cmod_core::types::ModuleUnitKind::InterfaceUnit,
+            source: broken.clone(),
+            package: "test".into(),
+            imports: vec![],
+            partition_of: None,
+        });
+        graph.add_node(cmod_build::graph::ModuleNode {
+            id: dep1.display().to_string(),
+            name: "dep1".into(),
+            kind: cmod_core::types::ModuleUnitKind::InterfaceUnit,
+            source: dep1.clone(),
+            package: "test".into(),
+            imports: vec!["base".into()],
+            partition_of: None,
+        });
+        graph.add_node(cmod_build::graph::ModuleNode {
+            id: dep2.display().to_string(),
+            name: "dep2".into(),
+            kind: cmod_core::types::ModuleUnitKind::InterfaceUnit,
+            source: dep2.clone(),
+            package: "test".into(),
+            imports: vec!["base".into()],
+            partition_of: None,
+        });
+
+        let result = propagate_diagnostics(&broken, tmp.path(), &Some(graph));
+        // dep1 and dep2 both import "base", so both get propagated diagnostics
+        assert_eq!(result.len(), 2);
+        assert!(result.contains_key(&dep1));
+        assert!(result.contains_key(&dep2));
     }
 }

@@ -1,7 +1,7 @@
 # RFC-0014: Module Graph Visualization & Developer Tools Enhancements
 
 ## Status
-Draft
+Implemented
 
 ## Summary
 This RFC defines the **module graph visualization and developer tooling enhancements** for **cmod**, providing better insights into module dependencies, build states, and performance metrics, integrated with IDEs and CLI tools.

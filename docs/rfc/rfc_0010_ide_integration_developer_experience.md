@@ -1,7 +1,7 @@
 # RFC-0010: IDE Integration & Developer Experience
 
 ## Status
-Draft
+Implemented
 
 ## Summary
 This RFC defines the **IDE integration and developer experience** for **cmod**, focusing on how C++ modules are surfaced in editors, how builds interact with IDE tooling, and how developers can inspect, debug, and navigate module-based projects efficiently.

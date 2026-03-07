@@ -591,4 +591,65 @@ max_memory_mb = 256
         assert_eq!(output.len(), big.len());
         assert!(!truncated);
     }
+
+    #[test]
+    fn test_min_cmod_version_satisfied() {
+        // Current version should satisfy a low requirement
+        let current = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let required = semver::VersionReq::parse(">=0.1.0").unwrap();
+        assert!(required.matches(&current));
+    }
+
+    #[test]
+    fn test_min_cmod_version_too_high() {
+        let current = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let required = semver::VersionReq::parse(">=999.0.0").unwrap();
+        assert!(!required.matches(&current));
+    }
+
+    #[test]
+    fn test_verify_unsigned_plugin_warn_policy() {
+        // An unsigned plugin should return false (not signed)
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("plugin.toml"),
+            "[plugin]\nname = \"test\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let security = cmod_core::manifest::Security {
+            signing_key: None,
+            signing_backend: None,
+            verify_checksums: None,
+            trusted_sources: vec![],
+            signature_policy: Some("warn".to_string()),
+            oidc_issuer: None,
+            certificate_identity: None,
+        };
+        let result = verify_plugin_signature(tmp.path(), Some(&security)).unwrap();
+        assert!(!result); // Not signed
+    }
+
+    #[test]
+    fn test_verify_unsigned_plugin_require_policy() {
+        // An unsigned plugin with "require" policy - verify returns false
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("plugin.toml"),
+            "[plugin]\nname = \"test\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let security = cmod_core::manifest::Security {
+            signing_key: None,
+            signing_backend: None,
+            verify_checksums: None,
+            trusted_sources: vec![],
+            signature_policy: Some("require".to_string()),
+            oidc_issuer: None,
+            certificate_identity: None,
+        };
+        let result = verify_plugin_signature(tmp.path(), Some(&security)).unwrap();
+        assert!(!result); // Not signed, so false — caller should reject
+    }
 }

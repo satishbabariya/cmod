@@ -1,0 +1,15 @@
+#!/bin/sh
+# hello-plugin — Example cmod plugin
+#
+# Reads a JSON request from stdin, outputs a JSON response to stdout.
+# Usage: cmod plugin run hello-plugin -- greeting=world
+
+read -r INPUT
+GREETING=$(echo "$INPUT" | sed -n 's/.*"greeting":"\([^"]*\)".*/\1/p')
+PROJECT=$(echo "$INPUT" | sed -n 's/.*"project_root":"\([^"]*\)".*/\1/p')
+
+if [ -z "$GREETING" ]; then
+    GREETING="world"
+fi
+
+echo "{\"status\":\"ok\",\"message\":\"Hello, ${GREETING}! Project: ${PROJECT}\"}"

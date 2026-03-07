@@ -369,12 +369,76 @@ impl CompletionProvider {
     pub fn find_module_info(&self, module_name: &str) -> Option<&ModuleInfo> {
         self.known_modules.iter().find(|m| m.name == module_name)
     }
+
+    /// Get known modules for external use (e.g., rescan trigger check).
+    pub fn known_modules(&self) -> &[ModuleInfo] {
+        &self.known_modules
+    }
 }
 
 impl Default for CompletionProvider {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Find all source files that import `module_name` by scanning on disk.
+///
+/// Returns `(file_path, line_number)` pairs.
+pub fn find_importers(module_name: &str, root: &std::path::Path) -> Vec<(PathBuf, u32)> {
+    let manifest_path = root.join("cmod.toml");
+    let content = match std::fs::read_to_string(&manifest_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let manifest = match cmod_core::manifest::Manifest::from_str(&content) {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+
+    let src_dirs: Vec<PathBuf> = manifest
+        .build
+        .as_ref()
+        .map(|b| {
+            if b.sources.is_empty() {
+                vec![root.join("src")]
+            } else {
+                b.sources.iter().map(|s| root.join(s)).collect()
+            }
+        })
+        .unwrap_or_else(|| vec![root.join("src")]);
+    let exclude = manifest
+        .build
+        .as_ref()
+        .map(|b| b.exclude.clone())
+        .unwrap_or_default();
+
+    let sources = match cmod_build::runner::discover_sources_multi(&src_dirs, &exclude) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut results = Vec::new();
+    for source in &sources {
+        if let Ok(content) = std::fs::read_to_string(source) {
+            for (line_num, line) in content.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("import") {
+                    let name = trimmed
+                        .strip_prefix("import")
+                        .unwrap_or("")
+                        .trim()
+                        .trim_end_matches(';')
+                        .trim();
+                    if name == module_name {
+                        results.push((source.clone(), line_num as u32));
+                    }
+                }
+            }
+        }
+    }
+
+    results
 }
 
 /// Convert an LSP UTF-16 code-unit offset into a byte offset within a UTF-8 string.
@@ -476,5 +540,30 @@ mod tests {
         let content = "export module test;\nimport std;\n\n";
         let items = provider.complete(content, 2, 0);
         assert!(!items.is_empty());
+    }
+
+    #[test]
+    fn test_find_importers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("cmod.toml"),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("src").join("lib.cppm"),
+            "export module mylib;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("src").join("user.cppm"),
+            "import mylib;\nint main() {}\n",
+        )
+        .unwrap();
+
+        let importers = find_importers("mylib", tmp.path());
+        assert_eq!(importers.len(), 1);
+        assert_eq!(importers[0].1, 0); // Line 0
     }
 }

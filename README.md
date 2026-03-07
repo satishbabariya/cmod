@@ -24,6 +24,8 @@
 - **Workspace support** — monorepo management with unified dependency resolution
 - **LLVM/Clang integration** — uses `clang-scan-deps` for automatic module dependency discovery
 - **Security built-in** — hash verification, signature checking, trust-on-first-use (TOFU) model
+- **LSP server** — IDE integration with completion, diagnostics, go-to-definition, references, and code actions
+- **Plugin SDK** — extend cmod with sandboxed plugins using a JSON IPC protocol
 - **30+ CLI commands** — from `init` to `sbom`, covering the full development lifecycle
 
 ## Quick Start
@@ -74,6 +76,7 @@ See the [examples/](examples/) directory for complete working projects:
 | [with-deps](examples/with-deps/) | Git dependencies (fmt + json) |
 | [workspace](examples/workspace/) | Multi-member monorepo |
 | [path-deps](examples/path-deps/) | Local path dependencies |
+| [plugin](examples/plugin/) | Plugin system |
 
 ## Configuration
 
@@ -164,6 +167,7 @@ See `docs/rfc/rfc_unified_cmod_schema.md` for the full schema specification.
 | `cmod publish [--dry-run]` | Publish a release (create a Git tag) |
 | `cmod toolchain show\|check` | Manage the active toolchain |
 | `cmod plugin list\|run` | Manage plugins |
+| `cmod lsp` | Start the LSP server for IDE integration |
 
 ### Global Flags
 
@@ -208,6 +212,7 @@ cmod is implemented as a Rust workspace with focused crates:
 | `cmod-cache` | Content-addressed artifact caching with SHA-256 keys |
 | `cmod-workspace` | Monorepo support, unified dependencies, cross-member builds |
 | `cmod-security` | Hash verification, signature checking, TOFU trust model |
+| `cmod-lsp` | LSP server for IDE integration — completion, diagnostics, references |
 
 Key data flows:
 1. **Resolution:** `cmod.toml` → dependency graph → `cmod.lock`
@@ -239,7 +244,7 @@ Key data flows:
 | 2 — Scale | Done | Workspace manager, local cache, cache keys |
 | 3 — Distributed | Done | Remote cache protocol (HTTP), artifact push/pull, BMI distribution |
 | 4 — Security | Done | GPG/SSH/Sigstore signing, TOFU trust model, `--locked --verify` modes |
-| 5 — Ecosystem | In Progress | LSP server, plugin SDK with sandbox, graph visualization (ASCII/DOT/JSON) |
+| 5 — Ecosystem | Done | LSP server, plugin SDK with sandbox, graph visualization (ASCII/DOT/JSON) |
 
 ## Contributing
 

@@ -426,6 +426,10 @@ enum PluginAction {
     Run {
         /// Plugin name
         name: String,
+
+        /// Arguments to pass to the plugin (key=value pairs)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -626,7 +630,7 @@ fn main() {
         Commands::Check => commands::check::run(&shell),
         Commands::Plugin { action } => match action {
             PluginAction::List => commands::plugin::list(&shell),
-            PluginAction::Run { name } => commands::plugin::run_plugin(&name, &shell),
+            PluginAction::Run { name, args } => commands::plugin::run_plugin(&name, &args, &shell),
         },
         Commands::Plan => commands::build::plan(&shell, cli.target.clone()),
         Commands::EmitCmake => commands::build::emit_cmake(&shell),

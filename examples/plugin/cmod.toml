@@ -1,0 +1,11 @@
+[package]
+name = "plugin-example"
+version = "0.1.0"
+
+[module]
+name = "plugin_example"
+root = "src/lib.cppm"
+
+[plugins.hello-plugin]
+path = ".cmod/plugins/hello-plugin"
+capabilities = ["cli", "read_project"]

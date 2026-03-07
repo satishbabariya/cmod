@@ -65,8 +65,25 @@ pub fn list(shell: &Shell) -> Result<(), CmodError> {
     Ok(())
 }
 
+/// Parse plugin arguments from `key=value` pairs into a BTreeMap.
+///
+/// Arguments without `=` are treated as positional: `arg0`, `arg1`, etc.
+fn parse_plugin_args(raw_args: &[String]) -> BTreeMap<String, String> {
+    let mut args = BTreeMap::new();
+    let mut positional_index = 0u32;
+    for arg in raw_args {
+        if let Some((key, value)) = arg.split_once('=') {
+            args.insert(key.to_string(), value.to_string());
+        } else {
+            args.insert(format!("arg{}", positional_index), arg.clone());
+            positional_index += 1;
+        }
+    }
+    args
+}
+
 /// Run `cmod plugin run <name>` — execute a plugin.
-pub fn run_plugin(name: &str, shell: &Shell) -> Result<(), CmodError> {
+pub fn run_plugin(name: &str, raw_args: &[String], shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -84,6 +101,20 @@ pub fn run_plugin(name: &str, shell: &Shell) -> Result<(), CmodError> {
     let sandbox = if plugin.path.join("plugin.toml").exists() {
         match load_plugin_manifest(&plugin.path) {
             Ok(manifest) => {
+                // Check min_cmod_version compatibility
+                if let Some(ref min_ver) = manifest.plugin.min_cmod_version {
+                    let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+                        .unwrap_or_else(|_| semver::Version::new(0, 0, 0));
+                    if let Ok(required) = semver::VersionReq::parse(&format!(">={}", min_ver)) {
+                        if !required.matches(&current) {
+                            return Err(CmodError::Other(format!(
+                                "plugin '{}' requires cmod >= {}, but current version is {}",
+                                name, min_ver, current,
+                            )));
+                        }
+                    }
+                }
+
                 let (capabilities, unknown) = parse_capabilities(&manifest.capabilities);
                 if !unknown.is_empty() {
                     shell.warn(format!(
@@ -95,6 +126,38 @@ pub fn run_plugin(name: &str, shell: &Shell) -> Result<(), CmodError> {
 
                 let sandbox =
                     PluginSandbox::new(capabilities, config.root.clone(), manifest.limits.clone());
+
+                // Check signature policy
+                let sig_policy = config
+                    .manifest
+                    .security
+                    .as_ref()
+                    .and_then(|s| s.signature_policy.as_deref())
+                    .unwrap_or("none");
+
+                let is_signed = super::plugin_sandbox::verify_plugin_signature(
+                    &plugin.path,
+                    config.manifest.security.as_ref(),
+                )
+                .unwrap_or(false);
+
+                match sig_policy {
+                    "require" if !is_signed => {
+                        return Err(CmodError::SecurityViolation {
+                            reason: format!(
+                                "plugin '{}' is unsigned but signature_policy = \"require\"",
+                                name,
+                            ),
+                        });
+                    }
+                    "warn" if !is_signed => {
+                        shell.warn(format!(
+                            "plugin '{}' is unsigned (signature_policy = \"warn\")",
+                            name,
+                        ));
+                    }
+                    _ => {}
+                }
 
                 // Verify execute capability
                 sandbox.check_execute()?;
@@ -125,7 +188,7 @@ pub fn run_plugin(name: &str, shell: &Shell) -> Result<(), CmodError> {
     let request = PluginRequest {
         action: "run".to_string(),
         project_root: config.root.to_string_lossy().to_string(),
-        args: BTreeMap::new(),
+        args: parse_plugin_args(raw_args),
     };
 
     let request_json = serde_json::to_string(&request).map_err(|e| CmodError::BuildFailed {
@@ -350,5 +413,41 @@ mod tests {
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"action\":\"run\""));
+    }
+
+    #[test]
+    fn test_parse_plugin_args_key_value() {
+        let raw = vec!["greeting=hello".to_string(), "target=world".to_string()];
+        let args = parse_plugin_args(&raw);
+        assert_eq!(args.get("greeting").unwrap(), "hello");
+        assert_eq!(args.get("target").unwrap(), "world");
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_plugin_args_positional() {
+        let raw = vec![
+            "hello".to_string(),
+            "key=val".to_string(),
+            "world".to_string(),
+        ];
+        let args = parse_plugin_args(&raw);
+        assert_eq!(args.get("arg0").unwrap(), "hello");
+        assert_eq!(args.get("key").unwrap(), "val");
+        assert_eq!(args.get("arg1").unwrap(), "world");
+        assert_eq!(args.len(), 3);
+    }
+
+    #[test]
+    fn test_plugin_request_serialization_with_args() {
+        let mut args = BTreeMap::new();
+        args.insert("greeting".to_string(), "hello".to_string());
+        let req = PluginRequest {
+            action: "run".to_string(),
+            project_root: "/tmp/test".to_string(),
+            args,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"greeting\":\"hello\""));
     }
 }
