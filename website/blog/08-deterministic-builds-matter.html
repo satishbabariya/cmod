@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why Deterministic Builds Matter — cmod Blog</title>
+  <meta name="description" content="How cmod's mandatory lockfiles, pinned commits, and toolchain versioning eliminate 'works on my machine' forever.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--technical">Technical</span>
+        <h1 class="article__title">Why Deterministic Builds Matter</h1>
+        <p class="article__meta">January 2026 &middot; 7 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p>"It works on my machine." These five words have caused more wasted engineering hours than perhaps any other phrase in software development. And in C++, where builds depend on compiler versions, system headers, link order, and preprocessor state, the problem is especially severe.</p>
+
+        <p>cmod was designed from day one to make deterministic builds the default, not an aspirational goal. Here's how and why.</p>
+
+        <h2>What Makes a Build Non-Deterministic?</h2>
+
+        <p>A build is non-deterministic when the same source code produces different results on different machines or at different times. In C++, the common culprits are:</p>
+
+        <ul>
+          <li><strong>Floating dependency versions:</strong> <code>>=10.0</code> resolves to <code>10.2.1</code> today and <code>10.3.0</code> tomorrow</li>
+          <li><strong>Unpinned compiler versions:</strong> Clang 17 and Clang 18 can produce different code for the same source</li>
+          <li><strong>System header differences:</strong> glibc on Ubuntu 22.04 differs from Ubuntu 24.04</li>
+          <li><strong>Implicit dependencies:</strong> A library works because a transitive header was included — until it isn't</li>
+          <li><strong>Build order sensitivity:</strong> Parallel builds can produce different results if ordering isn't determined by a DAG</li>
+        </ul>
+
+        <h2>cmod's Approach: Pin Everything</h2>
+
+        <h3>Mandatory lockfiles</h3>
+        <p>When you run <code>cmod resolve</code>, cmod generates a <code>cmod.lock</code> file that records:</p>
+        <pre><code>[[dependencies]]
+url = "github.com/fmtlib/fmt"
+version = "10.2.1"
+commit = "a0b8a4e19f7e8f..."
+hash = "sha256:3f7c4d..."
+
+[toolchain]
+compiler = "clang"
+version = "18.1.3"
+std = "c++23"</code></pre>
+
+        <p>The lockfile pins not just the version, but the <strong>exact Git commit hash</strong> and a <strong>content hash</strong> of the source. Even if a maintainer force-pushes over a tag (a bad practice, but it happens), the lockfile catches it.</p>
+
+        <h3>The --locked flag</h3>
+        <p>In CI, always build with <code>--locked</code>:</p>
+        <pre><code>cmod build --locked --release</code></pre>
+
+        <p>This tells cmod to use the lockfile exactly as-is. If the lockfile is missing or out of date with <code>cmod.toml</code>, the build fails immediately with a clear error message instead of silently resolving to different versions.</p>
+
+        <h3>Toolchain pinning</h3>
+        <p>The <code>[toolchain]</code> section in <code>cmod.toml</code> specifies exact compiler requirements:</p>
+        <pre><code>[toolchain]
+compiler = "clang"
+version = ">=18.0"
+std = "c++23"</code></pre>
+
+        <p>cmod verifies the installed compiler matches these constraints before starting a build. No more "it compiled on the developer's Clang 19 but CI has Clang 17" surprises.</p>
+
+        <h2>The Module DAG: Determined Build Order</h2>
+
+        <p>C++20 modules introduce explicit import relationships. cmod uses <code>clang-scan-deps</code> to discover these relationships and construct a Directed Acyclic Graph (DAG) of module dependencies. The build order is a topological sort of this DAG — it's deterministic by construction.</p>
+
+        <pre><code># Visualize the exact build order
+cmod graph --format dot
+
+# See why a module would be rebuilt
+cmod explain my_module</code></pre>
+
+        <p>Unlike header-based builds where include order can affect macro expansion and therefore compilation results, module imports are unambiguous. Module <code>A</code> imports module <code>B</code> means exactly one thing, regardless of order.</p>
+
+        <h2>Content-Addressed Caching</h2>
+
+        <p>cmod's cache uses SHA-256 hashes computed from:</p>
+        <ul>
+          <li>Source file content</li>
+          <li>Compiler version and flags</li>
+          <li>Dependencies' BMI hashes</li>
+          <li>Target triple</li>
+        </ul>
+
+        <p>This means a cache hit is a <strong>proof of equivalence</strong>. If the cache key matches, the output is guaranteed to be identical. No stale cache bugs, no "have you tried a clean build?" troubleshooting.</p>
+
+        <pre><code># Cache is transparent — same inputs always produce same outputs
+cmod cache status     # See what's cached
+cmod cache clean      # Clear everything (rarely needed)
+cmod build --no-cache # Build without cache (for verification)</code></pre>
+
+        <h2>Real-World Impact</h2>
+
+        <h3>CI reliability</h3>
+        <p>With deterministic builds, CI failures mean something. If the build passes locally with <code>--locked</code> and fails in CI, you know the environment differs — not that a dependency silently updated. The lockfile becomes a contract between your local machine and CI.</p>
+
+        <h3>Security auditing</h3>
+        <p>Deterministic builds are a prerequisite for meaningful security auditing. If you can't reproduce a build exactly, you can't verify that the binary you're auditing matches the source code you reviewed. cmod's lockfile + <code>--locked</code> flag + <code>cmod verify</code> provides an auditable chain from source to artifact.</p>
+
+        <h3>Regulatory compliance</h3>
+        <p>Industries like automotive (ISO 26262), medical devices (IEC 62304), and aerospace (DO-178C) require reproducible builds as part of their certification processes. cmod's deterministic build model satisfies these requirements without additional tooling or custom scripts.</p>
+
+        <h2>The CI Recipe</h2>
+
+        <p>Here's the recommended CI pipeline for deterministic builds:</p>
+
+        <pre><code># .github/workflows/ci.yml
+- name: Build
+  run: cmod build --locked --release
+
+- name: Test
+  run: cmod test --locked --release
+
+- name: Verify
+  run: cmod verify
+
+- name: SBOM
+  run: cmod sbom --output sbom.json</code></pre>
+
+        <p>If any step fails, it's a real problem — not a flaky build caused by floating dependencies or cache corruption.</p>
+
+        <h2>Updating Dependencies Deliberately</h2>
+
+        <p>Deterministic builds don't mean frozen builds. cmod provides controlled update mechanisms:</p>
+
+        <pre><code># Update all dependencies
+cmod update
+
+# Update only patch versions (safe)
+cmod update --patch
+
+# Update a specific dependency
+cmod update fmt
+
+# See what changed
+git diff cmod.lock</code></pre>
+
+        <p>Every update produces a diff in <code>cmod.lock</code> that you can review, test, and commit. Updates are deliberate actions, not side effects of building.</p>
+
+        <h2>The Bottom Line</h2>
+
+        <p>Deterministic builds aren't just a nice-to-have. They're the foundation for:</p>
+        <ul>
+          <li>Reliable CI pipelines</li>
+          <li>Meaningful security audits</li>
+          <li>Regulatory compliance</li>
+          <li>Team confidence ("if it builds for you, it builds for me")</li>
+          <li>Faster debugging (fewer variables to investigate)</li>
+        </ul>
+
+        <p>cmod makes deterministic builds the default by pinning everything that matters: dependency versions, Git commits, compiler versions, and build order. The result is a build system you can trust.</p>
+
+        <p><a href="../getting-started.html">Get started with cmod</a> and experience deterministic C++ builds.</p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

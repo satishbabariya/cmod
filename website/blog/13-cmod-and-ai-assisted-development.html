@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cmod and AI-Assisted C++ Development — cmod Blog</title>
+  <meta name="description" content="How structured project manifests and deterministic builds make C++ projects more accessible to AI coding assistants.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--ecosystem">Ecosystem</span>
+        <h1 class="article__title">cmod and AI-Assisted C++ Development</h1>
+        <p class="article__meta">March 2026 &middot; 8 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p>AI coding assistants have transformed how developers write Python, JavaScript, and TypeScript. But C++ has been left behind. Not because LLMs can't generate C++ — they can — but because C++ projects are so difficult to set up, build, and validate that even a correct code suggestion often leads to a broken build.</p>
+
+        <p>cmod changes this equation. By providing structured manifests, deterministic builds, and simple CLI commands, cmod makes C++ projects legible to AI tools in ways that CMake never could.</p>
+
+        <h2>Why AI Struggles with C++ Today</h2>
+
+        <p>Consider what an AI coding assistant needs to do to help with a C++ project:</p>
+
+        <ol>
+          <li><strong>Understand the project structure:</strong> What files exist? What are the targets? What are the dependencies?</li>
+          <li><strong>Generate correct code:</strong> What headers/modules are available? What's the API surface?</li>
+          <li><strong>Validate the result:</strong> Does the code compile? Do the tests pass?</li>
+        </ol>
+
+        <p>With CMake, step 1 requires parsing a Turing-complete scripting language with conditional logic, generator expressions, and platform-specific branches. Step 3 requires running a multi-step build process (<code>cmake -B build && cmake --build build</code>) that may fail for reasons unrelated to the code change.</p>
+
+        <h2>How cmod Makes C++ AI-Friendly</h2>
+
+        <h3>Machine-readable project manifest</h3>
+        <p><code>cmod.toml</code> is a simple, declarative TOML file. An AI assistant can parse it instantly to understand:</p>
+        <ul>
+          <li>Project name, version, and type (library vs. binary)</li>
+          <li>Module name and root file</li>
+          <li>All dependencies and their version constraints</li>
+          <li>Compiler requirements</li>
+          <li>Build configuration</li>
+        </ul>
+
+        <pre><code># An AI can read this in milliseconds
+[package]
+name = "myapp"
+version = "1.0.0"
+
+[module]
+name = "com.github.user.myapp"
+root = "src/myapp.cppm"
+
+[dependencies]
+"github.com/fmtlib/fmt" = ">=10.0"
+
+[build]
+type = "binary"</code></pre>
+
+        <p>Compare this with understanding a 500-line CMakeLists.txt that uses <code>if(WIN32)</code> branches, custom macros, and <code>FetchContent</code> calls.</p>
+
+        <h3>Explicit module boundaries</h3>
+        <p>C++20 modules with <code>export</code> declarations give AI tools a clear picture of the public API:</p>
+        <pre><code>export module com.github.user.myapp;
+
+export namespace myapp {
+    struct Config { /* ... */ };
+    void process(const Config&amp; cfg);
+    // AI knows exactly what's available to consumers
+}</code></pre>
+
+        <p>With headers, the AI has to guess which symbols are "public" based on naming conventions, documentation, or directory structure. With modules, the <code>export</code> keyword is unambiguous.</p>
+
+        <h3>Simple build validation</h3>
+        <p>An AI assistant that generates code can verify it compiles with a single command:</p>
+        <pre><code>cmod build</code></pre>
+
+        <p>No build directory to create, no generator to choose, no cache variables to set. If it returns 0, the code compiles. If it returns 1, the error messages point to the problem. This tight feedback loop is essential for AI coding assistants that iterate on code until it works.</p>
+
+        <h3>Dependency management for AI</h3>
+        <p>When an AI assistant suggests using a library, adding it is one command:</p>
+        <pre><code>cmod add github.com/fmtlib/fmt@10.0</code></pre>
+
+        <p>No need to figure out the right <code>find_package</code> incantation, install the library system-wide, or configure pkg-config. The AI can suggest the dependency and the user (or the AI itself) can add it immediately.</p>
+
+        <h2>Practical AI + cmod Workflows</h2>
+
+        <h3>Code generation with validation</h3>
+        <pre><code># AI generates code, then validates
+# 1. AI writes src/feature.cpp
+# 2. AI runs: cmod build
+# 3. If build fails, AI reads errors and fixes
+# 4. AI runs: cmod test
+# 5. If tests fail, AI reads output and iterates</code></pre>
+
+        <h3>Dependency exploration</h3>
+        <pre><code># AI can explore the dependency graph
+cmod deps --tree
+cmod graph --format json  # Machine-readable output
+cmod explain some_module  # Why would this rebuild?</code></pre>
+
+        <h3>Project scaffolding</h3>
+        <pre><code># AI creates a complete project
+cmod init my_project
+cd my_project
+cmod add github.com/fmtlib/fmt@10.0
+# AI writes source files
+cmod build && cmod test</code></pre>
+
+        <h2>The Compile Commands Bridge</h2>
+
+        <p>For AI tools that need deep code intelligence (understanding types, finding definitions, tracing call graphs), cmod generates <code>compile_commands.json</code>:</p>
+
+        <pre><code>cmod compile-commands</code></pre>
+
+        <p>This file is the standard interface between build systems and language tools (clangd, clang-tidy, IDE plugins). AI assistants that integrate with clangd can use this for full semantic understanding of the codebase — not just pattern matching on text.</p>
+
+        <h2>Structured Output for Tooling</h2>
+
+        <p>cmod is designed to be tool-friendly:</p>
+
+        <pre><code># JSON dependency graph
+cmod graph --format json
+
+# Machine-readable status
+cmod status
+
+# SBOM for dependency analysis
+cmod sbom --output sbom.json</code></pre>
+
+        <p>Every command that produces structured data supports JSON output, making it easy for AI tools to consume cmod's output programmatically.</p>
+
+        <h2>The Bigger Picture</h2>
+
+        <p>AI-assisted development works best when:</p>
+        <ul>
+          <li><strong>Project structure is declarative:</strong> The AI can read a manifest instead of reverse-engineering a build script</li>
+          <li><strong>Build commands are simple:</strong> One command to build, one to test, one to run</li>
+          <li><strong>APIs are explicit:</strong> <code>export</code> keywords tell the AI what's public</li>
+          <li><strong>Builds are deterministic:</strong> The same code always produces the same result</li>
+          <li><strong>Errors are clear:</strong> Build failures produce actionable error messages</li>
+        </ul>
+
+        <p>cmod checks all of these boxes. By making C++ projects as structured and predictable as Rust projects (where AI tools already excel), cmod opens the door to a new generation of AI-powered C++ development.</p>
+
+        <p>The future of C++ development isn't just faster compilers or better debuggers — it's tools that make the entire development experience accessible, whether the developer is human or artificial.</p>
+
+        <p><a href="../getting-started.html">Get started with cmod</a> and bring your C++ projects into the AI era.</p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

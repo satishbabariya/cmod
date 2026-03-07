@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Documentation — cmod</title>
+  <meta name="description" content="cmod documentation: CLI reference, configuration format, architecture, and design specifications.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="index.html#features">Features</a></li>
+        <li><a href="index.html#comparison">Compare</a></li>
+        <li><a href="blog.html">Blog</a></li>
+        <li><a href="docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <h1 class="article__title">Documentation</h1>
+        <p class="article__meta">Everything you need to know about cmod</p>
+      </div>
+
+      <div class="article__body">
+
+        <h2>Overview</h2>
+        <p>cmod is a Cargo-inspired, Git-native package and build tool for modern C++20 modules. It handles dependency resolution, build orchestration, workspace management, artifact caching, and supply-chain security &mdash; all in a single tool.</p>
+
+        <h2 id="install">Installation</h2>
+        <pre><code># Clone and build from source
+git clone https://github.com/satishbabariya/cmod.git
+cd cmod
+cargo build --release
+
+# Add to PATH
+export PATH="$PWD/target/release:$PATH"
+
+# Verify installation
+cmod --help</code></pre>
+
+        <p><strong>Requirements:</strong> Rust 1.74+, Clang 18+ with clang-scan-deps, Git 2.25+</p>
+
+        <h2 id="config">Configuration: cmod.toml</h2>
+        <p>Every cmod project has a <code>cmod.toml</code> manifest at its root. Here's the full schema:</p>
+
+        <h3>[package]</h3>
+        <pre><code>[package]
+name = "my_project"        # Project name
+version = "1.0.0"          # Semver version
+edition = "2024"            # C++ module edition
+authors = ["Name &lt;email&gt;"] # Authors list
+license = "MIT"             # SPDX license identifier
+description = "..."         # Short description
+repository = "..."          # Git repository URL</code></pre>
+
+        <h3>[module]</h3>
+        <pre><code>[module]
+name = "com.github.user.my_project"  # Reverse-domain module name
+root = "src/my_project.cppm"         # Module interface file</code></pre>
+        <p>Module names follow reverse-domain Git path format: <code>com.github.user.project_name</code></p>
+
+        <h3>[dependencies]</h3>
+        <pre><code>[dependencies]
+"github.com/fmtlib/fmt" = ">=10.0"         # Minimum version
+"github.com/nlohmann/json" = "^3.11"       # Compatible version
+"gitlab.com/org/lib" = "~2.0"              # Patch-compatible
+"github.com/user/fork" = { branch = "dev" } # Branch pin
+"../local-lib" = { path = "../local-lib" }  # Local path dep</code></pre>
+
+        <h3>[toolchain]</h3>
+        <pre><code>[toolchain]
+compiler = "clang"      # Compiler (clang, gcc, msvc)
+version = ">=18.0"      # Compiler version constraint
+std = "c++23"           # C++ standard
+stdlib = "libc++"       # Standard library
+target = "x86_64-linux" # Target triple</code></pre>
+
+        <h3>[build]</h3>
+        <pre><code>[build]
+type = "binary"         # binary | library | header-only
+optimization = "2"      # 0, 1, 2, 3, s, z
+lto = false             # Link-time optimization
+parallel = true         # Parallel compilation</code></pre>
+
+        <h3>[workspace]</h3>
+        <pre><code>[workspace]
+members = [
+  "core",
+  "app",
+  "tests"
+]</code></pre>
+
+        <h2 id="cli">CLI Reference</h2>
+
+        <h3>Core Workflow</h3>
+        <pre><code>cmod init [name] [--workspace]     # Initialize project
+cmod build [--release] [--jobs N]  # Build
+cmod test [--release]              # Build and run tests
+cmod run [--release] [-- args...]  # Build and run binary
+cmod clean                         # Remove build artifacts</code></pre>
+
+        <h3>Dependency Management</h3>
+        <pre><code>cmod add &lt;dep&gt;[@version]            # Add dependency
+cmod remove &lt;name&gt;                 # Remove dependency
+cmod resolve                       # Resolve deps, generate lockfile
+cmod update [name] [--patch]       # Update dependencies
+cmod deps [--tree] [--why &lt;name&gt;]  # Inspect dependency graph
+cmod tidy [--apply]                # Remove unused deps
+cmod vendor [--sync]               # Vendor for offline builds
+cmod search &lt;query&gt;                # Search for modules</code></pre>
+
+        <h3>Build Tools</h3>
+        <pre><code>cmod graph [--format dot|json]     # Visualize module DAG
+cmod explain &lt;module&gt;              # Why would this rebuild?
+cmod compile-commands              # Generate compile_commands.json
+cmod lint                          # Run clang-tidy
+cmod fmt [--check]                 # Run clang-format
+cmod check                         # Validate module structure</code></pre>
+
+        <h3>Cache &amp; Security</h3>
+        <pre><code>cmod cache status|clean|gc         # Manage cache
+cmod cache push|pull               # Sync with remote cache
+cmod verify [--signatures]         # Verify integrity
+cmod audit                         # Audit for vulnerabilities
+cmod sbom [--output &lt;file&gt;]        # Generate SBOM
+cmod publish [--dry-run]           # Publish (create Git tag)</code></pre>
+
+        <h3>Workspace &amp; Project</h3>
+        <pre><code>cmod workspace list|add|remove     # Manage workspace
+cmod status                        # Project overview
+cmod toolchain show|check          # Manage toolchain
+cmod plugin list|run               # Manage plugins</code></pre>
+
+        <h3>Global Flags</h3>
+        <pre><code>--locked              # Strict lockfile mode (fail if outdated)
+--offline             # No network access
+--verbose / -v        # Verbose output
+--target &lt;triple&gt;     # Target triple override
+--features &lt;list&gt;     # Enable features
+--no-default-features # Disable default features
+--no-cache            # Skip build cache
+--untrusted           # Skip trust verification</code></pre>
+
+        <h3>Exit Codes</h3>
+        <pre><code>0  Success
+1  Build failure
+2  Resolution error
+3  Security violation</code></pre>
+
+        <h2 id="lockfile">Lockfile: cmod.lock</h2>
+        <p>The lockfile is generated by <code>cmod resolve</code> and records:</p>
+        <ul>
+          <li>Exact Git commit hash for every dependency</li>
+          <li>Resolved version for every constraint</li>
+          <li>Toolchain version used for resolution</li>
+        </ul>
+        <p>Always commit <code>cmod.lock</code> to version control. Use <code>--locked</code> in CI to enforce it.</p>
+
+        <h2 id="modules">C++20 Modules</h2>
+        <p>cmod treats C++20 modules as the fundamental unit of compilation:</p>
+        <ul>
+          <li><strong>Module interface units</strong> (<code>.cppm</code>) define the public API</li>
+          <li><strong>Module implementation units</strong> (<code>.cpp</code>) contain the implementation</li>
+          <li><strong>Module partitions</strong> split large modules into logical pieces</li>
+          <li><strong>BMIs</strong> (Binary Module Interfaces) are compiled once and cached</li>
+        </ul>
+        <p>cmod uses <code>clang-scan-deps</code> to automatically discover the module dependency graph. The full graph is resolved before any compilation begins, enabling optimal parallelism.</p>
+
+        <h2 id="security">Security Model</h2>
+        <ul>
+          <li><strong>Mandatory lockfiles</strong> &mdash; Exact commit hashes prevent silent updates</li>
+          <li><strong>TOFU trust</strong> &mdash; First-use identity is recorded; changes trigger alerts</li>
+          <li><strong>Hash verification</strong> &mdash; Source integrity verified against lockfile</li>
+          <li><strong>Signature verification</strong> &mdash; Cryptographic proof (planned full support)</li>
+          <li><strong>SBOM generation</strong> &mdash; Full dependency inventory for compliance</li>
+          <li><strong>Audit</strong> &mdash; Check dependencies for known vulnerabilities</li>
+        </ul>
+
+        <h2 id="architecture">Architecture</h2>
+        <p>cmod is implemented in Rust as a Cargo workspace with 7 crates:</p>
+
+        <table style="width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); margin-bottom: var(--space-lg);">
+          <thead>
+            <tr style="border-bottom: 2px solid var(--color-border);">
+              <th style="padding: 8px; text-align: left; color: var(--color-text-secondary);">Crate</th>
+              <th style="padding: 8px; text-align: left; color: var(--color-text-secondary);">Responsibility</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-core</code></td><td style="padding: 8px;">Core types, config parsing, manifest/lockfile, error model</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-cli</code></td><td style="padding: 8px;">CLI frontend, clap-based argument parsing, subcommand dispatch</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-resolver</code></td><td style="padding: 8px;">Git fetch, semver solving, lockfile generation, module registry, feature resolution</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-build</code></td><td style="padding: 8px;">Module DAG, build plan IR, Clang invocation, parallel execution, distributed builds, incremental rebuilds</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-cache</code></td><td style="padding: 8px;">Content-addressed caching with SHA-256 keys, remote cache protocol, BMI distribution</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-workspace</code></td><td style="padding: 8px;">Monorepo management, unified dependency resolution</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-security</code></td><td style="padding: 8px;">Hash/signature verification, TOFU trust, policy enforcement, cryptographic signing (PGP/SSH/Sigstore)</td></tr>
+            <tr><td style="padding: 8px;"><code>cmod-lsp</code></td><td style="padding: 8px;">Language Server Protocol server with completion and diagnostics</td></tr>
+          </tbody>
+        </table>
+
+        <p>Dependencies flow downward: <code>cli &rarr; {resolver, build, cache, workspace, security} &rarr; core</code>.</p>
+
+        <h2 id="examples">Examples</h2>
+        <p>Working example projects are available in the <a href="https://github.com/satishbabariya/cmod/tree/main/examples">examples/</a> directory:</p>
+        <ul>
+          <li><strong>hello/</strong> &mdash; Minimal binary, no dependencies</li>
+          <li><strong>library/</strong> &mdash; Static library with module partitions</li>
+          <li><strong>with-deps/</strong> &mdash; Git dependencies (fmt + json)</li>
+          <li><strong>workspace/</strong> &mdash; Multi-member monorepo</li>
+          <li><strong>path-deps/</strong> &mdash; Local path dependencies</li>
+          <li><strong>with-tests/</strong> &mdash; Testing with cmod test</li>
+        </ul>
+
+        <h2 id="rfcs">Design Specifications</h2>
+        <p>cmod's design is specified in 21 RFCs organized by priority tier:</p>
+        <ul>
+          <li><strong>Core (Tier 0):</strong> RFC-0001 through RFC-0004, RFC-UNIFIED &mdash; manifest schema, resolver, build system, lockfile</li>
+          <li><strong>Tier 1:</strong> RFC-0005 through RFC-0008 &mdash; caching, workspaces, security, toolchain</li>
+          <li><strong>Tier 2:</strong> RFC-0009, RFC-0010 &mdash; developer experience, IDE integration</li>
+          <li><strong>Tier 3:</strong> RFC-0011 through RFC-0014 &mdash; distributed features, advanced builds</li>
+          <li><strong>Tier 4:</strong> RFC-0015 through RFC-0019 &mdash; ecosystem, plugins, visualization</li>
+        </ul>
+        <p>Full specifications: <a href="https://github.com/satishbabariya/cmod/tree/main/docs/rfc">docs/rfc/</a></p>
+
+        <h2>Further Reading</h2>
+        <ul>
+          <li><a href="https://github.com/satishbabariya/cmod/blob/main/CONTRIBUTING.md">Contributing Guide</a></li>
+          <li><a href="https://github.com/satishbabariya/cmod/blob/main/CHANGELOG.md">Changelog</a></li>
+          <li><a href="https://github.com/satishbabariya/cmod/blob/main/SECURITY.md">Security Policy</a></li>
+          <li><a href="blog.html">Blog &mdash; deep-dives and tutorials</a></li>
+        </ul>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0 License</span>
+        <span><a href="index.html">Home</a> &middot; <a href="blog.html">Blog</a> &middot; <a href="docs.html">Docs</a> &middot; <a href="https://github.com/satishbabariya/cmod" target="_blank" rel="noopener">GitHub</a></span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

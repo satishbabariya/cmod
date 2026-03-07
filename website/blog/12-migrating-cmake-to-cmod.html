@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Migrating a CMake Project to cmod — cmod Blog</title>
+  <meta name="description" content="Step-by-step walkthrough of converting a CMake project with external dependencies into a clean cmod project.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--tutorial">Tutorial</span>
+        <h1 class="article__title">Migrating a CMake Project to cmod</h1>
+        <p class="article__meta">March 2026 &middot; 10 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p>You have a working CMake project. It builds. Tests pass. The CI pipeline is green. But the <code>CMakeLists.txt</code> is 400 lines long, <code>find_package</code> calls break on different systems, and nobody on the team fully understands the build configuration. Sound familiar?</p>
+
+        <p>This guide walks through migrating a real-world CMake project to cmod, step by step. We'll convert a project that uses fmt, nlohmann/json, and has both a library and a binary target.</p>
+
+        <h2>The Starting Point</h2>
+
+        <p>Our example CMake project:</p>
+        <pre><code>myapp/
+├── CMakeLists.txt
+├── cmake/
+│   └── FindFmt.cmake
+├── include/
+│   └── myapp/
+│       ├── config.h
+│       └── processor.h
+├── src/
+│   ├── main.cpp
+│   ├── processor.cpp
+│   └── config.cpp
+└── tests/
+    └── test_processor.cpp</code></pre>
+
+        <p>The CMakeLists.txt:</p>
+        <pre><code>cmake_minimum_required(VERSION 3.20)
+project(myapp VERSION 1.0.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Dependencies — the pain begins
+find_package(fmt REQUIRED)
+find_package(nlohmann_json 3.11 REQUIRED)
+
+# Library target
+add_library(myapp_lib
+    src/config.cpp
+    src/processor.cpp
+)
+target_include_directories(myapp_lib PUBLIC include)
+target_link_libraries(myapp_lib PUBLIC fmt::fmt nlohmann_json::nlohmann_json)
+
+# Binary target
+add_executable(myapp src/main.cpp)
+target_link_libraries(myapp PRIVATE myapp_lib)
+
+# Tests
+enable_testing()
+add_executable(test_processor tests/test_processor.cpp)
+target_link_libraries(test_processor PRIVATE myapp_lib)
+add_test(NAME test_processor COMMAND test_processor)</code></pre>
+
+        <p>The problems: <code>find_package</code> depends on system-installed libraries (or vcpkg/Conan), the header-based includes are slow, and there's no lockfile.</p>
+
+        <h2>Step 1: Convert Headers to Module Interfaces</h2>
+
+        <p>The first and most impactful change is converting your headers to C++20 module interfaces.</p>
+
+        <p>Before (<code>include/myapp/processor.h</code>):</p>
+        <pre><code>#pragma once
+#include &lt;string&gt;
+#include &lt;vector&gt;
+#include &lt;nlohmann/json.hpp&gt;
+
+namespace myapp {
+    struct ProcessResult {
+        std::string output;
+        int status;
+    };
+
+    ProcessResult process(const std::string&amp; input);
+    std::vector&lt;ProcessResult&gt; batch_process(const nlohmann::json&amp; config);
+}</code></pre>
+
+        <p>After (<code>src/myapp.cppm</code>):</p>
+        <pre><code>export module com.github.user.myapp;
+
+import std;  // C++23 standard library module (or individual imports)
+
+export namespace myapp {
+    struct ProcessResult {
+        std::string output;
+        int status;
+    };
+
+    ProcessResult process(const std::string&amp; input);
+    std::vector&lt;ProcessResult&gt; batch_process(/* json param */);
+}</code></pre>
+
+        <p>Key changes:</p>
+        <ul>
+          <li><code>#pragma once</code> is gone — modules don't need include guards</li>
+          <li><code>#include</code> becomes <code>import</code></li>
+          <li><code>export</code> marks public API explicitly</li>
+          <li>Implementation details stay private without any extra effort</li>
+        </ul>
+
+        <h2>Step 2: Create the cmod.toml Manifest</h2>
+
+        <pre><code>[package]
+name = "myapp"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+
+[module]
+name = "com.github.user.myapp"
+root = "src/myapp.cppm"
+
+[dependencies]
+"github.com/fmtlib/fmt" = ">=10.0"
+"github.com/nlohmann/json" = "^3.11"
+
+[toolchain]
+compiler = "clang"
+version = ">=18.0"
+std = "c++23"
+
+[build]
+type = "binary"</code></pre>
+
+        <p>Compare this with the 30+ line CMakeLists.txt. The cmod manifest is declarative, readable, and complete.</p>
+
+        <h2>Step 3: Restructure the Source Tree</h2>
+
+        <p>Reorganize to follow cmod conventions:</p>
+
+        <pre><code>myapp/
+├── cmod.toml
+├── src/
+│   ├── myapp.cppm        # Module interface (was include/myapp/*.h)
+│   ├── main.cpp          # Binary entry point
+│   ├── processor.cpp     # Module implementation
+│   └── config.cpp        # Module implementation
+└── tests/
+    └── test_processor.cpp</code></pre>
+
+        <p>The <code>include/</code> directory is gone. With modules, the interface is defined in <code>.cppm</code> files, not headers. The <code>cmake/</code> directory is gone too — cmod handles dependency resolution.</p>
+
+        <h2>Step 4: Update Source Files</h2>
+
+        <p>Update implementation files to use module syntax:</p>
+
+        <p>Before (<code>src/processor.cpp</code>):</p>
+        <pre><code>#include "myapp/processor.h"
+#include &lt;fmt/format.h&gt;
+#include &lt;algorithm&gt;
+
+namespace myapp {
+    ProcessResult process(const std::string&amp; input) {
+        auto output = fmt::format("Processed: {}", input);
+        return {output, 0};
+    }
+}</code></pre>
+
+        <p>After (<code>src/processor.cpp</code>):</p>
+        <pre><code>module com.github.user.myapp;
+
+import com.github.fmtlib.fmt;
+import std;
+
+namespace myapp {
+    ProcessResult process(const std::string&amp; input) {
+        auto output = fmt::format("Processed: {}", input);
+        return {output, 0};
+    }
+}</code></pre>
+
+        <p>Update <code>main.cpp</code>:</p>
+        <pre><code>import com.github.user.myapp;
+import com.github.fmtlib.fmt;
+
+int main() {
+    auto result = myapp::process("hello");
+    fmt::print("{}\n", result.output);
+    return result.status;
+}</code></pre>
+
+        <h2>Step 5: Resolve and Build</h2>
+
+        <pre><code># Resolve dependencies (fetches from Git)
+cmod resolve
+
+# Build
+cmod build
+
+# Run
+cmod run
+
+# Test
+cmod test</code></pre>
+
+        <p>That's it. No <code>cmake -B build</code>, no <code>cmake --build build</code>, no figuring out where CMake put the binary. Just <code>cmod build</code> and <code>cmod run</code>.</p>
+
+        <h2>Step 6: Set Up CI</h2>
+
+        <p>Replace your CMake CI pipeline:</p>
+
+        <p>Before:</p>
+        <pre><code>- name: Install dependencies
+  run: |
+    apt-get install -y libfmt-dev nlohmann-json3-dev
+
+- name: Configure
+  run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+- name: Build
+  run: cmake --build build --parallel
+
+- name: Test
+  run: cd build && ctest --output-on-failure</code></pre>
+
+        <p>After:</p>
+        <pre><code>- name: Build
+  run: cmod build --locked --release
+
+- name: Test
+  run: cmod test --locked --release
+
+- name: Verify
+  run: cmod verify</code></pre>
+
+        <p>No system-level dependency installation. cmod resolves everything from Git.</p>
+
+        <h2>Step 7: Keep CMake Compatibility (Optional)</h2>
+
+        <p>If some consumers still need CMake, cmod can generate a CMakeLists.txt:</p>
+        <pre><code>cmod compile-commands   # For IDE integration
+</code></pre>
+        <p>This generates <code>compile_commands.json</code> that CMake-based IDEs can consume. You can maintain a minimal CMakeLists.txt that wraps cmod for teams that haven't migrated yet.</p>
+
+        <h2>Common Migration Challenges</h2>
+
+        <h3>Dependencies that don't support modules yet</h3>
+        <p>Not all C++ libraries have module interfaces. For header-only libraries, you can use header units as a bridge:</p>
+        <pre><code>import &lt;legacy_header.h&gt;;  // Import as header unit</code></pre>
+        <p>For popular libraries, the community is creating module wrappers. cmod's Git-based dependency model makes it easy to point to a fork with module support.</p>
+
+        <h3>Macro-heavy code</h3>
+        <p>Modules don't export macros (by design — this is a feature, not a bug). If your code relies on macros defined in headers, you'll need to refactor. Common patterns:</p>
+        <ul>
+          <li>Replace <code>#define CONSTANT 42</code> with <code>export constexpr int CONSTANT = 42;</code></li>
+          <li>Replace macro functions with <code>constexpr</code> or <code>consteval</code> functions</li>
+          <li>Replace conditional compilation macros with <code>if constexpr</code></li>
+        </ul>
+
+        <h3>Build time comparison</h3>
+        <p>After migration, expect:</p>
+        <ul>
+          <li><strong>First build:</strong> Slightly slower (dependency cloning + BMI generation)</li>
+          <li><strong>Incremental builds:</strong> Significantly faster (module-aware caching)</li>
+          <li><strong>Clean builds:</strong> Comparable or faster (parallel module compilation)</li>
+        </ul>
+
+        <h2>The Result</h2>
+
+        <p>After migration:</p>
+        <ul>
+          <li>400-line CMakeLists.txt replaced by a 20-line cmod.toml</li>
+          <li>Dependencies resolved from Git, not system packages</li>
+          <li>Lockfile ensures reproducible builds</li>
+          <li>Faster incremental builds via module-aware caching</li>
+          <li>Explicit public API via module exports</li>
+          <li>No more "it works on my machine" debugging</li>
+        </ul>
+
+        <p><a href="../getting-started.html">Get started with cmod</a> and simplify your C++ build.</p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

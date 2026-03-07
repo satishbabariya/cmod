@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cmod — The Package Manager C++ Deserves</title>
+  <meta name="description" content="Cargo-inspired, Git-native package and build tool for modern C++20 modules. No central registry. Deterministic builds. Security built in.">
+  <meta name="keywords" content="cmod, C++, C++20, modules, package manager, build tool, Cargo, Git, LLVM, Clang">
+  <meta property="og:title" content="cmod — The Package Manager C++ Deserves">
+  <meta property="og:description" content="Cargo-inspired, Git-native package and build tool for modern C++20 modules.">
+  <meta property="og:type" content="website">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Navigation -->
+  <nav class="nav" role="navigation" aria-label="Main navigation">
+    <div class="nav__inner">
+      <a href="index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#comparison">Compare</a></li>
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#roadmap">Roadmap</a></li>
+        <li><a href="blog.html">Blog</a></li>
+        <li><a href="docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero__badge">Open Source &middot; Apache-2.0</div>
+      <h1 class="hero__title">
+        The package manager<br><span class="text-gradient">C++ deserves</span>
+      </h1>
+      <p class="hero__subtitle">
+        Cargo-inspired. Git-native. Module-first.<br>
+        Built for C++20 and beyond.
+      </p>
+      <div class="hero__actions">
+        <a href="getting-started.html" class="btn btn--primary">Get Started</a>
+        <a href="https://github.com/satishbabariya/cmod" class="btn btn--secondary" target="_blank" rel="noopener">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          Star on GitHub
+        </a>
+      </div>
+
+      <div class="install-cmd mt-2xl">
+        <span class="install-cmd__prompt">$</span>
+        <span class="install-cmd__text">git clone https://github.com/satishbabariya/cmod.git && cd cmod && cargo build --release</span>
+        <button class="install-cmd__copy" aria-label="Copy command">&#9112;</button>
+      </div>
+
+      <div class="hero__code mt-2xl">
+        <div class="code-block">
+          <div class="code-block__header">
+            <div class="code-block__dots">
+              <span class="code-block__dot code-block__dot--red"></span>
+              <span class="code-block__dot code-block__dot--yellow"></span>
+              <span class="code-block__dot code-block__dot--green"></span>
+            </div>
+            <span class="code-block__title">terminal</span>
+            <button class="code-block__copy">Copy</button>
+          </div>
+<pre><code><span class="code-comment"># Create a new project</span>
+<span class="code-variable">$</span> cmod init my_project
+<span class="code-variable">$</span> <span class="code-keyword">cd</span> my_project
+
+<span class="code-comment"># Add dependencies — straight from Git</span>
+<span class="code-variable">$</span> cmod add github.com/fmtlib/fmt@10.0
+<span class="code-variable">$</span> cmod add github.com/nlohmann/json@3.11
+
+<span class="code-comment"># Build and run</span>
+<span class="code-variable">$</span> cmod build
+<span class="code-string">  Resolving dependencies...</span>
+<span class="code-string">  Compiling fmt v10.2.1</span>
+<span class="code-string">  Compiling json v3.11.3</span>
+<span class="code-string">  Compiling my_project v0.1.0</span>
+<span class="code-string">  Finished in 2.4s</span>
+
+<span class="code-variable">$</span> cmod run
+<span class="code-string">  Hello, modern C++!</span></code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats -->
+  <section class="section">
+    <div class="container">
+      <div class="stats">
+        <div class="stat">
+          <div class="stat__number text-accent">30+</div>
+          <div class="stat__label">CLI Commands</div>
+        </div>
+        <div class="stat">
+          <div class="stat__number text-green">750+</div>
+          <div class="stat__label">Passing Tests</div>
+        </div>
+        <div class="stat">
+          <div class="stat__number text-gradient">8</div>
+          <div class="stat__label">Focused Crates</div>
+        </div>
+        <div class="stat">
+          <div class="stat__number" style="color: var(--color-purple);">21</div>
+          <div class="stat__label">Design RFCs</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features" class="section section--alt">
+    <div class="container">
+      <div class="section__header">
+        <div class="section__label">Features</div>
+        <h2 class="section__title">Everything you need.<br>Nothing you don't.</h2>
+        <p class="section__description">cmod handles dependencies, builds, caching, and security in a single, integrated tool.</p>
+      </div>
+
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-card__icon feature-card__icon--blue">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><line x1="1.05" y1="12" x2="7" y2="12"/><line x1="17.01" y1="12" x2="22.96" y2="12"/></svg>
+          </div>
+          <h3 class="feature-card__title">Git Is Your Registry</h3>
+          <p class="feature-card__text">Dependencies are Git URLs. Publishing is pushing a tag. No accounts, no approval queues, no vendor lock-in. Your repository is your package.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-card__icon feature-card__icon--purple">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+          </div>
+          <h3 class="feature-card__title">Modules First</h3>
+          <p class="feature-card__text">Native support for C++20 modules, partitions, and BMIs. Automatic dependency discovery via clang-scan-deps. Modules compile once, not thousands of times.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-card__icon feature-card__icon--green">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <h3 class="feature-card__title">Deterministic Builds</h3>
+          <p class="feature-card__text">Mandatory lockfiles pin exact Git commits and toolchain versions. Build with --locked and get the same result every time, everywhere.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-card__icon feature-card__icon--orange">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          </div>
+          <h3 class="feature-card__title">Fast Incremental Builds</h3>
+          <p class="feature-card__text">Content-addressed caching with SHA-256 keys. Cached BMIs skip redundant work. Parallel compilation via topological sort of the module graph.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-card__icon feature-card__icon--blue">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+          </div>
+          <h3 class="feature-card__title">Workspace Support</h3>
+          <p class="feature-card__text">Monorepo management with unified dependency resolution. Cross-member builds share BMIs and object files. One command builds everything.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-card__icon feature-card__icon--green">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+          </div>
+          <h3 class="feature-card__title">Security Built In</h3>
+          <p class="feature-card__text">Hash verification, trust-on-first-use, signature checking, SBOM generation, and dependency auditing. Supply chain security from day one.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Config Example -->
+  <section class="section">
+    <div class="container">
+      <div class="section__header">
+        <div class="section__label">Configuration</div>
+        <h2 class="section__title">Simple, readable config</h2>
+        <p class="section__description">One TOML file. No DSL to learn. No Python classes. No Starlark rules.</p>
+      </div>
+
+      <div style="max-width: 640px; margin: 0 auto;">
+        <div class="code-block">
+          <div class="code-block__header">
+            <div class="code-block__dots">
+              <span class="code-block__dot code-block__dot--red"></span>
+              <span class="code-block__dot code-block__dot--yellow"></span>
+              <span class="code-block__dot code-block__dot--green"></span>
+            </div>
+            <span class="code-block__title">cmod.toml</span>
+            <button class="code-block__copy">Copy</button>
+          </div>
+<pre><code><span class="code-keyword">[package]</span>
+<span class="code-variable">name</span> = <span class="code-string">"my_project"</span>
+<span class="code-variable">version</span> = <span class="code-string">"1.0.0"</span>
+<span class="code-variable">edition</span> = <span class="code-string">"2024"</span>
+<span class="code-variable">license</span> = <span class="code-string">"MIT"</span>
+
+<span class="code-keyword">[module]</span>
+<span class="code-variable">name</span> = <span class="code-string">"com.github.yourname.my_project"</span>
+<span class="code-variable">root</span> = <span class="code-string">"src/my_project.cppm"</span>
+
+<span class="code-keyword">[dependencies]</span>
+<span class="code-string">"github.com/fmtlib/fmt"</span> = <span class="code-string">">=10.0"</span>
+<span class="code-string">"github.com/nlohmann/json"</span> = <span class="code-string">"^3.11"</span>
+
+<span class="code-keyword">[toolchain]</span>
+<span class="code-variable">compiler</span> = <span class="code-string">"clang"</span>
+<span class="code-variable">std</span> = <span class="code-string">"c++23"</span>
+
+<span class="code-keyword">[build]</span>
+<span class="code-variable">type</span> = <span class="code-string">"binary"</span></code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Comparison -->
+  <section id="comparison" class="section section--alt">
+    <div class="container">
+      <div class="section__header">
+        <div class="section__label">Comparison</div>
+        <h2 class="section__title">How cmod stacks up</h2>
+        <p class="section__description">An honest comparison with existing C++ tools.</p>
+      </div>
+
+      <div class="comparison-table-wrapper">
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Feature</th>
+              <th class="highlight">cmod</th>
+              <th>CMake</th>
+              <th>Conan</th>
+              <th>vcpkg</th>
+              <th>Bazel</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>C++20 Modules</td>
+              <td class="check">Native</td>
+              <td class="partial">Experimental</td>
+              <td class="cross">No</td>
+              <td class="partial">Partial</td>
+              <td class="partial">Partial</td>
+            </tr>
+            <tr>
+              <td>Package Management</td>
+              <td class="check">Built-in (Git)</td>
+              <td class="cross">None</td>
+              <td>Registry</td>
+              <td>Registry</td>
+              <td>Rules</td>
+            </tr>
+            <tr>
+              <td>Mandatory Lockfile</td>
+              <td class="check">Yes</td>
+              <td class="cross">No</td>
+              <td class="cross">Optional</td>
+              <td class="partial">Partial</td>
+              <td class="partial">Implicit</td>
+            </tr>
+            <tr>
+              <td>Config Format</td>
+              <td class="highlight">TOML</td>
+              <td>CMake DSL</td>
+              <td>Python</td>
+              <td>JSON</td>
+              <td>Starlark</td>
+            </tr>
+            <tr>
+              <td>Dependency Source</td>
+              <td class="highlight">Git URLs</td>
+              <td>Manual</td>
+              <td>Central server</td>
+              <td>Central repo</td>
+              <td>HTTP archives</td>
+            </tr>
+            <tr>
+              <td>Security Built-in</td>
+              <td class="check">Yes</td>
+              <td class="cross">No</td>
+              <td class="partial">Partial</td>
+              <td class="partial">Partial</td>
+              <td>Hermetic</td>
+            </tr>
+            <tr>
+              <td>Workspace / Monorepo</td>
+              <td class="check">Native</td>
+              <td class="partial">Subdirectories</td>
+              <td class="cross">No</td>
+              <td class="cross">No</td>
+              <td class="check">Native</td>
+            </tr>
+            <tr>
+              <td>Setup Complexity</td>
+              <td class="check">Low</td>
+              <td class="partial">Medium</td>
+              <td class="partial">Medium-High</td>
+              <td class="partial">Medium</td>
+              <td class="cross">High</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="text-center text-secondary mt-xl">
+        <a href="blog/03-cmod-vs-existing-tools.html">Read the detailed comparison &rarr;</a>
+      </p>
+    </div>
+  </section>
+
+  <!-- Architecture -->
+  <section id="architecture" class="section">
+    <div class="container">
+      <div class="section__header">
+        <div class="section__label">Architecture</div>
+        <h2 class="section__title">Built in Rust. Modular by design.</h2>
+        <p class="section__description">8 focused crates, each with a single responsibility. Clean dependency flow from CLI down to core.</p>
+      </div>
+
+      <div class="architecture">
+        <div class="arch-layer">
+          <div class="arch-box arch-box--primary">cmod-cli</div>
+        </div>
+        <div class="arch-arrow">&darr;</div>
+        <div class="arch-layer">
+          <div class="arch-box arch-box--green">cmod-resolver</div>
+          <div class="arch-box arch-box--green">cmod-build</div>
+          <div class="arch-box arch-box--green">cmod-workspace</div>
+        </div>
+        <div class="arch-arrow">&darr;</div>
+        <div class="arch-layer">
+          <div class="arch-box arch-box--purple">cmod-cache</div>
+          <div class="arch-box arch-box--purple">cmod-security</div>
+        </div>
+        <div class="arch-arrow">&darr;</div>
+        <div class="arch-layer">
+          <div class="arch-box arch-box--orange">cmod-core</div>
+        </div>
+      </div>
+
+      <div style="max-width: 640px; margin: var(--space-2xl) auto 0;">
+        <div class="code-block">
+          <div class="code-block__header">
+            <div class="code-block__dots">
+              <span class="code-block__dot code-block__dot--red"></span>
+              <span class="code-block__dot code-block__dot--yellow"></span>
+              <span class="code-block__dot code-block__dot--green"></span>
+            </div>
+            <span class="code-block__title">data flow</span>
+          </div>
+<pre><code><span class="code-comment"># Resolution</span>
+cmod.toml <span class="code-operator">&rarr;</span> dependency graph <span class="code-operator">&rarr;</span> cmod.lock
+
+<span class="code-comment"># Build</span>
+lockfile <span class="code-operator">&rarr;</span> module DAG <span class="code-operator">&rarr;</span> Clang invocations <span class="code-operator">&rarr;</span> artifacts
+
+<span class="code-comment"># Cache</span>
+SHA-256 key <span class="code-operator">&rarr;</span> local cache <span class="code-operator">&rarr;</span> remote cache (planned)</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Roadmap -->
+  <section id="roadmap" class="section section--alt">
+    <div class="container">
+      <div class="section__header">
+        <div class="section__label">Roadmap</div>
+        <h2 class="section__title">Where we are. Where we're going.</h2>
+      </div>
+
+      <div style="max-width: 600px; margin: 0 auto;">
+        <div class="roadmap">
+          <div class="roadmap__item">
+            <div class="roadmap__dot roadmap__dot--done"></div>
+            <div class="roadmap__phase">Phase 0</div>
+            <div class="roadmap__title">Foundations</div>
+            <div class="roadmap__desc">cmod.toml parser, Git resolver, lockfile generation, CLI framework with 30+ commands</div>
+            <span class="roadmap__status roadmap__status--done">Complete</span>
+          </div>
+          <div class="roadmap__item">
+            <div class="roadmap__dot roadmap__dot--done"></div>
+            <div class="roadmap__phase">Phase 1</div>
+            <div class="roadmap__title">Build Orchestration</div>
+            <div class="roadmap__desc">LLVM/Clang backend, module DAG construction, build plan IR, parallel execution</div>
+            <span class="roadmap__status roadmap__status--done">Complete</span>
+          </div>
+          <div class="roadmap__item">
+            <div class="roadmap__dot roadmap__dot--done"></div>
+            <div class="roadmap__phase">Phase 2</div>
+            <div class="roadmap__title">Scale</div>
+            <div class="roadmap__desc">Workspace manager, local artifact cache, content-addressed cache keys</div>
+            <span class="roadmap__status roadmap__status--done">Complete</span>
+          </div>
+          <div class="roadmap__item">
+            <div class="roadmap__dot roadmap__dot--done"></div>
+            <div class="roadmap__phase">Phase 3</div>
+            <div class="roadmap__title">Distributed</div>
+            <div class="roadmap__desc">Remote cache protocol (HTTP REST), BMI distribution, distributed build workers with work stealing</div>
+            <span class="roadmap__status roadmap__status--done">Complete</span>
+          </div>
+          <div class="roadmap__item">
+            <div class="roadmap__dot roadmap__dot--done"></div>
+            <div class="roadmap__phase">Phase 4</div>
+            <div class="roadmap__title">Security</div>
+            <div class="roadmap__desc">Cryptographic signing (PGP/SSH/Sigstore), dependency auditing, SBOM generation, policy enforcement</div>
+            <span class="roadmap__status roadmap__status--done">Complete</span>
+          </div>
+          <div class="roadmap__item">
+            <div class="roadmap__dot roadmap__dot--active"></div>
+            <div class="roadmap__phase">Phase 5</div>
+            <div class="roadmap__title">Ecosystem</div>
+            <div class="roadmap__desc">LSP server, plugin sandboxing, module registry, feature resolution, conditional dependencies</div>
+            <span class="roadmap__status roadmap__status--planned">In Progress</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-section">
+    <div class="container">
+      <h2 class="cta-section__title">Ready to try <span class="text-gradient">modern C++ tooling</span>?</h2>
+      <p class="cta-section__text">Get started in under a minute. No accounts, no configuration files to write, no ceremony.</p>
+      <div class="cta-section__actions">
+        <a href="getting-started.html" class="btn btn--primary">Get Started</a>
+        <a href="https://github.com/satishbabariya/cmod" class="btn btn--secondary" target="_blank" rel="noopener">View on GitHub</a>
+      </div>
+      <div class="install-cmd mt-xl">
+        <span class="install-cmd__prompt">$</span>
+        <span class="install-cmd__text">cmod init my_project && cd my_project && cmod build</span>
+        <button class="install-cmd__copy" aria-label="Copy command">&#9112;</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__inner">
+        <div class="footer__brand">
+          <div class="footer__logo">c<span>mod</span></div>
+          <p class="footer__tagline">Cargo-inspired, Git-native package and build tool for modern C++20 modules.</p>
+        </div>
+        <div class="footer__columns">
+          <div class="footer__column">
+            <h4>Product</h4>
+            <ul>
+              <li><a href="getting-started.html">Getting Started</a></li>
+              <li><a href="docs.html">Documentation</a></li>
+              <li><a href="blog.html">Blog</a></li>
+              <li><a href="docs.html#cli">CLI Reference</a></li>
+            </ul>
+          </div>
+          <div class="footer__column">
+            <h4>Community</h4>
+            <ul>
+              <li><a href="https://github.com/satishbabariya/cmod" target="_blank" rel="noopener">GitHub</a></li>
+              <li><a href="https://github.com/satishbabariya/cmod/issues" target="_blank" rel="noopener">Issues</a></li>
+              <li><a href="https://github.com/satishbabariya/cmod/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a></li>
+              <li><a href="https://github.com/satishbabariya/cmod/blob/main/LICENSE" target="_blank" rel="noopener">License</a></li>
+            </ul>
+          </div>
+          <div class="footer__column">
+            <h4>Resources</h4>
+            <ul>
+              <li><a href="https://github.com/satishbabariya/cmod/tree/main/examples" target="_blank" rel="noopener">Examples</a></li>
+              <li><a href="https://github.com/satishbabariya/cmod/tree/main/docs" target="_blank" rel="noopener">Design Specs</a></li>
+              <li><a href="https://github.com/satishbabariya/cmod/tree/main/docs/rfc" target="_blank" rel="noopener">RFCs</a></li>
+              <li><a href="https://github.com/satishbabariya/cmod/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="footer__bottom">
+        <span>Apache-2.0 License</span>
+        <span>Built with Rust. Powered by LLVM.</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>
