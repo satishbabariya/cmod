@@ -84,7 +84,9 @@ pub fn run(
             sec.and_then(|s| s.signing_backend.as_deref()),
         );
         if cfg.is_none() {
-            shell.warn("--sign requested but no signing key configured in [security]");
+            return Err(CmodError::Other(
+                "--sign requested but no signing key configured in [security]".to_string(),
+            ));
         }
         cfg
     } else {
@@ -294,7 +296,7 @@ fn create_signed_tag(
                     }
                 }
                 Err(e) => {
-                    shell.warn(format!("failed to sign tag: {}", e));
+                    return Err(CmodError::Other(format!("failed to sign tag: {}", e)));
                 }
             }
         }

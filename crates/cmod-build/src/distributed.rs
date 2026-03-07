@@ -299,25 +299,30 @@ impl WorkerPool {
             worker.endpoint.clone()
         };
 
-        // Retry with exponential backoff
+        // Retry with exponential backoff.
+        // Reserve the worker slot *before* the network call so concurrent
+        // submitters cannot oversubscribe a worker.
         let mut last_error = None;
         for attempt in 0..self.max_retries {
+            // --- Reserve the slot (pre-call) ---
+            {
+                let mut workers = self
+                    .workers
+                    .lock()
+                    .map_err(|_| CmodError::Other("failed to lock worker pool".to_string()))?;
+                if let Some(worker) = workers.iter_mut().find(|w| w.id == worker_id) {
+                    worker.active_jobs += 1;
+                    if worker.active_jobs >= worker.max_jobs {
+                        worker.status = WorkerStatus::Full;
+                    } else {
+                        worker.status = WorkerStatus::Busy;
+                    }
+                }
+            }
+
             match self.send_task(&endpoint, &task) {
                 Ok(result) => {
-                    // Update the worker's bookkeeping.
-                    {
-                        let mut workers = self.workers.lock().map_err(|_| {
-                            CmodError::Other("failed to lock worker pool".to_string())
-                        })?;
-                        if let Some(worker) = workers.iter_mut().find(|w| w.id == worker_id) {
-                            worker.active_jobs += 1;
-                            if worker.active_jobs >= worker.max_jobs {
-                                worker.status = WorkerStatus::Full;
-                            } else {
-                                worker.status = WorkerStatus::Busy;
-                            }
-                        }
-                    }
+                    // Slot already reserved — commit the rest of the bookkeeping.
 
                     // Store the result so collect_result() can return it.
                     {
@@ -346,6 +351,21 @@ impl WorkerPool {
                     return Ok(());
                 }
                 Err(e) => {
+                    // --- Roll back the reservation on failure ---
+                    {
+                        let mut workers = self.workers.lock().map_err(|_| {
+                            CmodError::Other("failed to lock worker pool".to_string())
+                        })?;
+                        if let Some(worker) = workers.iter_mut().find(|w| w.id == worker_id) {
+                            worker.active_jobs = worker.active_jobs.saturating_sub(1);
+                            if worker.active_jobs == 0 {
+                                worker.status = WorkerStatus::Ready;
+                            } else if worker.active_jobs < worker.max_jobs {
+                                worker.status = WorkerStatus::Busy;
+                            }
+                        }
+                    }
+
                     last_error = Some(e);
                     if attempt + 1 < self.max_retries {
                         let delay = Duration::from_secs(1 << attempt); // 1s, 2s, 4s
@@ -478,6 +498,99 @@ impl WorkerPool {
 
         serde_json::from_str(&body)
             .map_err(|e| CmodError::Other(format!("invalid health response: {}", e)))
+    }
+
+    /// Look up a worker's endpoint URL by ID.
+    pub fn worker_endpoint(&self, worker_id: &str) -> Option<String> {
+        self.workers
+            .lock()
+            .ok()?
+            .iter()
+            .find(|w| w.id == worker_id)
+            .map(|w| w.endpoint.clone())
+    }
+
+    /// Fetch a remote output artifact from a worker and write it to `local_path`.
+    ///
+    /// Downloads from `{endpoint}/outputs/{remote_path}` and verifies the
+    /// SHA-256 hash matches `expected_hash`.  Parent directories are created
+    /// as needed so that downstream link/cache steps can find the file.
+    pub fn fetch_output(
+        &self,
+        endpoint: &str,
+        remote_ref: &RemoteFileRef,
+        local_path: &Path,
+    ) -> Result<(), CmodError> {
+        let url = format!(
+            "{}/outputs/{}",
+            endpoint.trim_end_matches('/'),
+            remote_ref.path
+        );
+
+        let agent = ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(Some(self.task_timeout))
+                .http_status_as_error(false)
+                .build(),
+        );
+
+        let mut req = agent.get(&url);
+        if let Some(ref token) = self.auth_token {
+            req = req.header("Authorization", &format!("Bearer {}", token));
+        }
+
+        let resp = req.call().map_err(|e| {
+            CmodError::Other(format!(
+                "failed to fetch output '{}': {}",
+                remote_ref.path, e
+            ))
+        })?;
+
+        if !(200..300).contains(&resp.status().as_u16()) {
+            return Err(CmodError::Other(format!(
+                "worker returned HTTP {} for output '{}'",
+                resp.status(),
+                remote_ref.path
+            )));
+        }
+
+        // Read the body into memory
+        let body = resp.into_body().read_to_vec().map_err(|e| {
+            CmodError::Other(format!(
+                "failed to read output '{}': {}",
+                remote_ref.path, e
+            ))
+        })?;
+
+        // Verify hash
+        use sha2::{Digest, Sha256};
+        let actual_hash = format!("{:x}", Sha256::digest(&body));
+        if actual_hash != remote_ref.hash {
+            return Err(CmodError::Other(format!(
+                "hash mismatch for '{}': expected {}, got {}",
+                remote_ref.path, remote_ref.hash, actual_hash
+            )));
+        }
+
+        // Ensure parent directory exists and write the file
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CmodError::Other(format!(
+                    "failed to create directory for '{}': {}",
+                    local_path.display(),
+                    e
+                ))
+            })?;
+        }
+        std::fs::write(local_path, &body).map_err(|e| {
+            CmodError::Other(format!(
+                "failed to write output '{}': {}",
+                local_path.display(),
+                e
+            ))
+        })?;
+
+        Ok(())
     }
 
     /// Send a compilation task to a worker and return the result.

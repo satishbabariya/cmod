@@ -104,28 +104,53 @@ pub fn resolve_features(
 /// The resolution algorithm itself handles cycles gracefully via the visited set,
 /// but this function provides an explicit diagnostic for `cmod check`.
 pub fn detect_feature_cycles(manifest: &Manifest) -> Result<(), CmodError> {
+    // Use a proper DFS with a recursion stack to detect true back-edges.
+    // A single "visited" set would falsely flag DAGs with shared sub-features
+    // (diamond pattern) as cyclic.
+    let mut processed = BTreeSet::new();
+
     for feature_name in manifest.features.keys() {
-        let mut visited = BTreeSet::new();
-        let mut stack = vec![feature_name.clone()];
+        if processed.contains(feature_name) {
+            continue;
+        }
 
-        while let Some(current) = stack.pop() {
-            if !visited.insert(current.clone()) {
-                return Err(CmodError::Other(format!(
-                    "cycle detected in feature graph: '{}' is reachable from itself (via '{}')",
-                    current, feature_name
-                )));
-            }
+        let mut in_stack = BTreeSet::new();
+        // Stack holds (node, children_pushed) to simulate recursive DFS.
+        let mut stack: Vec<(String, bool)> = vec![(feature_name.clone(), false)];
 
-            if let Some(sub_features) = manifest.features.get(&current) {
-                for sub in sub_features {
-                    // Only follow feature-to-feature edges (not dep:X or dep/feat)
-                    if !sub.starts_with("dep:")
-                        && !sub.contains('/')
-                        && manifest.features.contains_key(sub)
-                    {
-                        stack.push(sub.clone());
+        while let Some((current, children_pushed)) = stack.last_mut() {
+            if !*children_pushed {
+                if in_stack.contains(current.as_str()) {
+                    return Err(CmodError::Other(format!(
+                        "cycle detected in feature graph: '{}' is reachable from itself (via '{}')",
+                        current, feature_name
+                    )));
+                }
+                if processed.contains(current.as_str()) {
+                    stack.pop();
+                    continue;
+                }
+                in_stack.insert(current.clone());
+                *children_pushed = true;
+
+                // Push children
+                let current_owned = current.clone();
+                if let Some(sub_features) = manifest.features.get(&current_owned) {
+                    for sub in sub_features {
+                        if !sub.starts_with("dep:")
+                            && !sub.contains('/')
+                            && manifest.features.contains_key(sub)
+                        {
+                            stack.push((sub.clone(), false));
+                        }
                     }
                 }
+            } else {
+                // All children processed — mark as done
+                let node = current.clone();
+                in_stack.remove(&node);
+                processed.insert(node);
+                stack.pop();
             }
         }
     }

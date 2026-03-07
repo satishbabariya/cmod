@@ -252,9 +252,19 @@ fn build_module(
         };
 
         if !worker_endpoints.is_empty() {
+            // Resolve auth token from environment variable if configured in manifest.
+            let auth_token = config
+                .manifest
+                .build
+                .as_ref()
+                .and_then(|b| b.distributed.as_ref())
+                .and_then(|d| d.auth_token_env.as_deref())
+                .and_then(|env_name| std::env::var(env_name).ok());
+
             let dist_config = cmod_build::distributed::DistributedConfig {
                 enabled: true,
                 workers: worker_endpoints,
+                auth_token,
                 ..Default::default()
             };
             let pool = cmod_build::distributed::WorkerPool::new(&dist_config);

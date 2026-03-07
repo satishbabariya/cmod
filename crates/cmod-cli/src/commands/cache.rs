@@ -430,7 +430,9 @@ pub fn import_bmi(path: &str, shell: &Shell) -> Result<(), CmodError> {
                 });
             }
             Err(e) => {
-                shell.warn(format!("could not verify BMI signature: {}", e));
+                return Err(CmodError::SecurityViolation {
+                    reason: format!("could not verify BMI signature: {}", e),
+                });
             }
         }
     } else {

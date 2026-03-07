@@ -172,9 +172,13 @@ impl PluginSandbox {
         project_root: PathBuf,
         limits: PluginLimits,
     ) -> Self {
+        // Canonicalize once so symlink comparisons are reliable.
+        let canonical_root = project_root
+            .canonicalize()
+            .unwrap_or_else(|_| project_root.clone());
         PluginSandbox {
             granted: capabilities,
-            project_root,
+            project_root: canonical_root,
             limits,
         }
     }
@@ -192,9 +196,19 @@ impl PluginSandbox {
             });
         }
 
-        // Ensure path is within project root
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        if !canonical.starts_with(&self.project_root) {
+        // Canonicalize the existing parent to defeat symlink escapes.
+        // Do NOT fall back to the unresolved path — if the parent
+        // cannot be canonicalized, deny the access.
+        let parent = path.parent().unwrap_or(path);
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|_| CmodError::SecurityViolation {
+                reason: format!(
+                    "plugin attempted to read path with non-existent parent: {}",
+                    path.display()
+                ),
+            })?;
+        if !canonical_parent.starts_with(&self.project_root) {
             return Err(CmodError::SecurityViolation {
                 reason: format!(
                     "plugin attempted to read outside project: {}",
@@ -214,8 +228,16 @@ impl PluginSandbox {
             });
         }
 
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        if !canonical.starts_with(&self.project_root) {
+        let parent = path.parent().unwrap_or(path);
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|_| CmodError::SecurityViolation {
+                reason: format!(
+                    "plugin attempted to write path with non-existent parent: {}",
+                    path.display()
+                ),
+            })?;
+        if !canonical_parent.starts_with(&self.project_root) {
             return Err(CmodError::SecurityViolation {
                 reason: format!(
                     "plugin attempted to write outside project: {}",

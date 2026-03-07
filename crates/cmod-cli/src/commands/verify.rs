@@ -425,7 +425,16 @@ fn validate_artifact_signatures(
     shell.verbose("Checking", "artifact signatures...");
 
     let signing_config = config.manifest.security.as_ref().and_then(|sec| {
-        resolve_signing_config(sec.signing_key.as_deref(), sec.signing_backend.as_deref())
+        let mut cfg =
+            resolve_signing_config(sec.signing_key.as_deref(), sec.signing_backend.as_deref())?;
+        // Merge OIDC fields from manifest [security] into the resolved config.
+        if cfg.oidc_issuer.is_none() {
+            cfg.oidc_issuer = sec.oidc_issuer.clone();
+        }
+        if cfg.certificate_identity.is_none() {
+            cfg.certificate_identity = sec.certificate_identity.clone();
+        }
+        Some(cfg)
     });
 
     let lockfile = match Lockfile::load(&config.lockfile_path) {

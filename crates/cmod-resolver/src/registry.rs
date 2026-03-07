@@ -295,10 +295,25 @@ impl RegistryClient {
                 reason: format!("registry has no origin remote: {}", e),
             })?;
 
+        // Determine the default branch dynamically instead of assuming "main".
+        let default_branch = repo
+            .head()
+            .ok()
+            .and_then(|h| h.shorthand().map(String::from))
+            .unwrap_or_else(|| "main".to_string());
+
+        let refspec = format!("refs/heads/{0}:refs/heads/{0}", default_branch);
+
         remote
-            .fetch(&["refs/heads/main:refs/heads/main"], None, None)
+            .fetch(&[&refspec], None, None)
             .map_err(|e| CmodError::GitError {
                 reason: format!("failed to fetch registry updates: {}", e),
+            })?;
+
+        // Update the working tree to reflect fetched commits.
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .map_err(|e| CmodError::GitError {
+                reason: format!("failed to checkout after fetch: {}", e),
             })?;
 
         Ok(())

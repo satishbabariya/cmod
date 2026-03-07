@@ -87,47 +87,81 @@ impl CompletionProvider {
             .unwrap_or("")
             .trim();
 
+        // Split on ':' to distinguish module prefix from partition prefix.
+        // e.g., "foo:" → mod_prefix="foo", part_prefix=""
+        //        "foo:ba" → mod_prefix="foo", part_prefix="ba"
+        let (mod_prefix, part_prefix) = if let Some((m, p)) = import_prefix.split_once(':') {
+            (m, Some(p))
+        } else {
+            (import_prefix, None)
+        };
+
         let mut items = Vec::new();
 
         for module in &self.known_modules {
-            if module.name.starts_with(import_prefix) || import_prefix.is_empty() {
-                items.push(serde_json::json!({
-                    "label": &module.name,
-                    "kind": 9, // Module
-                    "detail": module.description.as_deref().unwrap_or("C++ module"),
-                    "insertText": format!("{};", module.name),
-                    "documentation": {
-                        "kind": "markdown",
-                        "value": format!(
-                            "**Module:** `{}`\n\n{}{}",
-                            module.name,
-                            if module.is_local { "Local module\n" } else { "" },
-                            module.description.as_deref().unwrap_or(""),
-                        ),
-                    },
-                }));
+            let mod_matches = module.name.starts_with(mod_prefix) || mod_prefix.is_empty();
 
-                // Also suggest partitions
-                for partition in &module.partitions {
+            if !mod_matches {
+                continue;
+            }
+
+            match part_prefix {
+                Some(pp) => {
+                    // User typed "module:" — show matching partitions only.
+                    if module.name == mod_prefix {
+                        for partition in &module.partitions {
+                            if partition.starts_with(pp) || pp.is_empty() {
+                                items.push(serde_json::json!({
+                                    "label": format!("{}:{}", module.name, partition),
+                                    "kind": 9,
+                                    "detail": "Module partition",
+                                    "insertText": format!("{}:{};", module.name, partition),
+                                }));
+                            }
+                        }
+                    }
+                }
+                None => {
+                    // No colon yet — show whole module and its partitions.
                     items.push(serde_json::json!({
-                        "label": format!("{}:{}", module.name, partition),
-                        "kind": 9,
-                        "detail": "Module partition",
-                        "insertText": format!("{}:{};", module.name, partition),
+                        "label": &module.name,
+                        "kind": 9, // Module
+                        "detail": module.description.as_deref().unwrap_or("C++ module"),
+                        "insertText": format!("{};", module.name),
+                        "documentation": {
+                            "kind": "markdown",
+                            "value": format!(
+                                "**Module:** `{}`\n\n{}{}",
+                                module.name,
+                                if module.is_local { "Local module\n" } else { "" },
+                                module.description.as_deref().unwrap_or(""),
+                            ),
+                        },
                     }));
+
+                    for partition in &module.partitions {
+                        items.push(serde_json::json!({
+                            "label": format!("{}:{}", module.name, partition),
+                            "kind": 9,
+                            "detail": "Module partition",
+                            "insertText": format!("{}:{};", module.name, partition),
+                        }));
+                    }
                 }
             }
         }
 
-        // Add standard library modules
-        for std_mod in &["std", "std.compat"] {
-            if std_mod.starts_with(import_prefix) || import_prefix.is_empty() {
-                items.push(serde_json::json!({
-                    "label": std_mod,
-                    "kind": 9,
-                    "detail": "C++ Standard Library module",
-                    "insertText": format!("{};", std_mod),
-                }));
+        // Add standard library modules (only when not in partition mode)
+        if part_prefix.is_none() {
+            for std_mod in &["std", "std.compat"] {
+                if std_mod.starts_with(mod_prefix) || mod_prefix.is_empty() {
+                    items.push(serde_json::json!({
+                        "label": std_mod,
+                        "kind": 9,
+                        "detail": "C++ Standard Library module",
+                        "insertText": format!("{};", std_mod),
+                    }));
+                }
             }
         }
 
@@ -137,7 +171,16 @@ impl CompletionProvider {
     fn complete_module_declaration(&self, _prefix: &str) -> Vec<Value> {
         let mut items = Vec::new();
 
-        if let Some(ref root) = self.project_root {
+        // Prefer the manifest-backed module name populated by scan_modules().
+        if let Some(local_mod) = self.known_modules.iter().find(|m| m.is_local) {
+            items.push(serde_json::json!({
+                "label": &local_mod.name,
+                "kind": 9,
+                "detail": "Local module name (from cmod.toml)",
+                "insertText": format!("{};", local_mod.name),
+            }));
+        } else if let Some(ref root) = self.project_root {
+            // Fallback: derive from directory name.
             let name = root
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -241,32 +284,58 @@ impl CompletionProvider {
             }
         }
 
-        // Scan source directory for module partitions
-        let src_dir = root.join("src");
-        if src_dir.exists() {
-            if let Ok(sources) = cmod_build::runner::discover_sources(&src_dir) {
-                for source in &sources {
-                    if let Ok(Some(name)) = cmod_build::runner::extract_module_name(source) {
-                        if name.contains(':') {
-                            // This is a partition
-                            if let Some((parent, partition)) = name.split_once(':') {
-                                if let Some(module) =
-                                    self.known_modules.iter_mut().find(|m| m.name == parent)
-                                {
-                                    module.partitions.push(partition.to_string());
-                                }
-                            }
-                        } else if !self.known_modules.iter().any(|m| m.name == name) {
-                            self.known_modules.push(ModuleInfo {
-                                name,
-                                description: None,
-                                is_local: true,
-                                partitions: Vec::new(),
-                                root_path: Some(source.clone()),
-                                version: None,
-                                repository: None,
-                            });
+        // Scan source directories for module partitions.
+        // Use manifest-aware discovery (sources/exclude) when available,
+        // falling back to the default "src" directory.
+        let manifest_path = root.join("cmod.toml");
+        let (src_dirs, exclude) = if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+            if let Ok(manifest) = cmod_core::manifest::Manifest::from_str(&content) {
+                let dirs = manifest
+                    .build
+                    .as_ref()
+                    .map(|b| {
+                        if b.sources.is_empty() {
+                            vec![root.join("src")]
+                        } else {
+                            b.sources.iter().map(|s| root.join(s)).collect()
                         }
+                    })
+                    .unwrap_or_else(|| vec![root.join("src")]);
+                let exc = manifest
+                    .build
+                    .as_ref()
+                    .map(|b| b.exclude.clone())
+                    .unwrap_or_default();
+                (dirs, exc)
+            } else {
+                (vec![root.join("src")], Vec::new())
+            }
+        } else {
+            (vec![root.join("src")], Vec::new())
+        };
+
+        if let Ok(sources) = cmod_build::runner::discover_sources_multi(&src_dirs, &exclude) {
+            for source in &sources {
+                if let Ok(Some(name)) = cmod_build::runner::extract_module_name(source) {
+                    if name.contains(':') {
+                        // This is a partition
+                        if let Some((parent, partition)) = name.split_once(':') {
+                            if let Some(module) =
+                                self.known_modules.iter_mut().find(|m| m.name == parent)
+                            {
+                                module.partitions.push(partition.to_string());
+                            }
+                        }
+                    } else if !self.known_modules.iter().any(|m| m.name == name) {
+                        self.known_modules.push(ModuleInfo {
+                            name,
+                            description: None,
+                            is_local: true,
+                            partitions: Vec::new(),
+                            root_path: Some(source.clone()),
+                            version: None,
+                            repository: None,
+                        });
                     }
                 }
             }

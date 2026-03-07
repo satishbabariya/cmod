@@ -254,9 +254,11 @@ pub struct DistributedBuildConfig {
     /// Scheduling strategy: "least_loaded", "round_robin", "target_affinity".
     #[serde(default)]
     pub scheduler: Option<String>,
-    /// Authentication token for worker communication.
+    /// Environment variable name containing the authentication token for worker
+    /// communication (e.g., `"CMOD_DISTRIBUTED_AUTH_TOKEN"`).  The actual secret
+    /// is read from the environment at runtime — never store tokens in the manifest.
     #[serde(default)]
-    pub auth_token: Option<String>,
+    pub auth_token_env: Option<String>,
     /// Timeout for individual compilation tasks (seconds).
     #[serde(default)]
     pub task_timeout: Option<u64>,
@@ -309,9 +311,11 @@ pub struct Cache {
     /// Maximum total cache size in human-readable form (e.g., "1G", "500M").
     #[serde(default)]
     pub max_size: Option<String>,
-    /// Bearer token for remote cache authentication.
+    /// Environment variable name containing the bearer token for remote cache
+    /// authentication (e.g., `"CMOD_CACHE_AUTH_TOKEN"`).  The actual secret is
+    /// read from the environment at runtime.
     #[serde(default)]
-    pub auth_token: Option<String>,
+    pub auth_token_env: Option<String>,
     /// HTTP timeout in seconds for remote cache operations (default: 30).
     #[serde(default)]
     pub timeout: Option<u64>,

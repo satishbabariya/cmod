@@ -512,7 +512,6 @@ impl BuildRunner {
 
     /// Attempt to execute a build node on a remote worker.
     /// Returns Ok(Some(outcome)) if distributed, Ok(None) if should fall back to local.
-    #[allow(dead_code)]
     fn try_distribute_node(
         &self,
         node: &crate::plan::BuildNode,
@@ -577,11 +576,56 @@ impl BuildRunner {
         loop {
             if let Some(result) = pool.collect_result(&task_id) {
                 if result.success {
+                    // Materialize remote outputs locally so downstream
+                    // link/cache steps can find the files.
+                    let endpoint = pool.worker_endpoint(&worker_id).unwrap_or_default();
+                    for remote_ref in &result.outputs {
+                        // Match remote output path to the corresponding
+                        // local node output by filename.
+                        let remote_name = std::path::Path::new(&remote_ref.path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&remote_ref.path);
+                        let local_path = node
+                            .outputs
+                            .iter()
+                            .find(|p| {
+                                p.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|n| n == remote_name)
+                                    .unwrap_or(false)
+                            })
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                // Fallback: place the file relative to the
+                                // first output's parent directory.
+                                node.outputs
+                                    .first()
+                                    .and_then(|p| p.parent())
+                                    .unwrap_or_else(|| std::path::Path::new("."))
+                                    .join(remote_name)
+                            });
+
+                        if let Err(e) = pool.fetch_output(&endpoint, remote_ref, &local_path) {
+                            self.emit_verbose(
+                                "Distributed",
+                                format!(
+                                    "failed to fetch output '{}' for {}: {}, falling back to local",
+                                    remote_ref.path, node.id, e
+                                ),
+                            );
+                            return Ok(None);
+                        }
+                    }
+
                     self.emit_verbose(
                         "Distributed",
                         format!(
-                            "{} completed on {} in {}ms",
-                            node.id, worker_id, result.duration_ms
+                            "{} completed on {} in {}ms ({} output(s) fetched)",
+                            node.id,
+                            worker_id,
+                            result.duration_ms,
+                            result.outputs.len()
                         ),
                     );
                     return Ok(Some(NodeOutcome::Compiled(result.duration_ms)));
@@ -620,6 +664,23 @@ impl BuildRunner {
         flags_hash: &str,
     ) -> Result<NodeOutcome, CmodError> {
         let start = Instant::now();
+
+        // Attempt distributed compilation for non-link nodes when a worker pool is configured.
+        if self.worker_pool.is_some()
+            && matches!(
+                node.kind,
+                NodeKind::Interface | NodeKind::Implementation | NodeKind::Object
+            )
+        {
+            let project_root = plan
+                .build_dir
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            if let Some(outcome) = self.try_distribute_node(node, project_root)? {
+                return Ok(outcome);
+            }
+            // Fall through to local compilation
+        }
 
         match node.kind {
             NodeKind::Interface => {
@@ -1128,8 +1189,11 @@ pub fn discover_sources_multi(
 ) -> Result<Vec<PathBuf>, CmodError> {
     let patterns: Vec<glob::Pattern> = exclude
         .iter()
-        .filter_map(|p| glob::Pattern::new(p).ok())
-        .collect();
+        .map(|p| {
+            glob::Pattern::new(p)
+                .map_err(|e| CmodError::Other(format!("invalid exclude pattern '{}': {}", p, e)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let mut sources = Vec::new();
 

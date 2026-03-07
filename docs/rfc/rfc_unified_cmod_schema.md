@@ -109,6 +109,11 @@ repository = "https://github.com/user/my_math"
 sign_commits = true                 # Require signed commits
 verify_checksums = true              # Verify artifact checksums
 trusted_sources = ["github.com", "gitlab.com"]  # Trusted domains
+signing_key = "ABCDEF1234567890"    # Signing key (GPG ID, SSH key path, etc.)
+signing_backend = "pgp"             # "pgp", "ssh", or "sigstore"
+signature_policy = "warn"           # "none", "warn", or "require"
+oidc_issuer = "https://accounts.google.com"  # OIDC issuer for Sigstore keyless signing
+certificate_identity = "user@example.com"    # Certificate identity for Sigstore verification
 
 # === Cache Configuration ===
 [cache]
