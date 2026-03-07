@@ -280,13 +280,25 @@ enum Commands {
     },
 
     /// Lint C++ source files for common issues
-    Lint,
+    Lint {
+        /// Treat warnings as errors (non-zero exit code if any warnings)
+        #[arg(long)]
+        deny_warnings: bool,
+
+        /// Lint a specific workspace member
+        #[arg(short, long)]
+        package: Option<String>,
+    },
 
     /// Format C++ source files using clang-format
     Fmt {
         /// Check formatting without modifying files
         #[arg(long)]
         check: bool,
+
+        /// Format a specific workspace member
+        #[arg(short, long)]
+        package: Option<String>,
     },
 
     /// Search for modules by name
@@ -582,8 +594,11 @@ fn main() {
             ToolchainAction::Check => commands::toolchain::check(&shell),
         },
         Commands::Vendor { sync } => commands::vendor::run(sync, &shell),
-        Commands::Lint => commands::lint::run(&shell),
-        Commands::Fmt { check } => commands::fmt::run(check, &shell),
+        Commands::Lint {
+            deny_warnings,
+            package,
+        } => commands::lint::run(deny_warnings, package, &shell),
+        Commands::Fmt { check, package } => commands::fmt::run(check, package, &shell),
         Commands::Search { query, local_only } => {
             commands::search::run(&query, local_only, cli.offline, &shell)
         }

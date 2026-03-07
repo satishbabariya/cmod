@@ -25,6 +25,7 @@ pub mod test;
 pub mod tidy;
 pub mod toolchain;
 pub mod update;
+pub mod util;
 pub mod vendor;
 pub mod verify;
 pub mod workspace;

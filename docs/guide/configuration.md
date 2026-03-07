@@ -202,6 +202,44 @@ timeout = 300                                # Per-test timeout in seconds (0 = 
 | `extra_flags` | list | `[]` | Extra compiler flags applied only to test builds |
 | `timeout` | integer | `300` | Per-test timeout in seconds (`0` = no timeout) |
 
+## `[format]`
+
+Formatting configuration for `cmod fmt`.
+
+```toml
+[format]
+include_dirs = ["tests", "benchmarks"]  # Additional directories to format (merged with src_dirs)
+exclude = ["generated/**"]              # Glob patterns to exclude from formatting
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `include_dirs` | list | `[]` | Extra directories to format (in addition to `src/` and `tests/`) |
+| `exclude` | list | `[]` | Glob patterns to exclude from formatting |
+
+By default, `cmod fmt` scans `src/` and `tests/`. Use `include_dirs` to add more directories.
+
+## `[lint]`
+
+Linting configuration for `cmod lint`.
+
+```toml
+[lint]
+include_dirs = ["tests", "benchmarks"]  # Additional directories to lint (merged with src_dirs)
+exclude = ["generated/**"]              # Glob patterns to exclude from linting
+max_line_length = 100                   # Maximum line length (default: 120)
+clang_tidy = true                       # Enable clang-tidy integration (default: false)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `include_dirs` | list | `[]` | Extra directories to lint (in addition to `src/` and `tests/`) |
+| `exclude` | list | `[]` | Glob patterns to exclude from linting |
+| `max_line_length` | integer | `120` | Maximum line length for the "line too long" rule |
+| `clang_tidy` | boolean | `false` | Enable clang-tidy integration |
+
+By default, `cmod lint` scans `src/` and `tests/`. Use `--deny-warnings` to treat warnings as errors.
+
 ## `[cache]`
 
 Build cache configuration.

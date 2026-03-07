@@ -38,6 +38,12 @@ pub struct Manifest {
     pub test: Option<Test>,
 
     #[serde(default)]
+    pub format: Option<Format>,
+
+    #[serde(default)]
+    pub lint: Option<Lint>,
+
+    #[serde(default)]
     pub workspace: Option<Workspace>,
 
     #[serde(default)]
@@ -281,6 +287,34 @@ pub struct Test {
     /// Default per-test timeout in seconds (overridden by CLI --timeout).
     #[serde(default)]
     pub timeout: Option<u64>,
+}
+
+/// Formatting configuration (`[format]` section in cmod.toml).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Format {
+    /// Additional directories to format (merged with src_dirs).
+    #[serde(default)]
+    pub include_dirs: Vec<String>,
+    /// Glob patterns to exclude from formatting.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+/// Linting configuration (`[lint]` section in cmod.toml).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Lint {
+    /// Additional directories to lint (merged with src_dirs).
+    #[serde(default)]
+    pub include_dirs: Vec<String>,
+    /// Glob patterns to exclude from linting.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Maximum line length for the "line too long" rule. Default: 120.
+    #[serde(default)]
+    pub max_line_length: Option<usize>,
+    /// Enable clang-tidy integration.
+    #[serde(default)]
+    pub clang_tidy: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -830,6 +864,8 @@ pub fn default_manifest(name: &str) -> Manifest {
             distributed: None,
         }),
         test: None,
+        format: None,
+        lint: None,
         workspace: None,
         cache: None,
         metadata: None,
@@ -865,6 +901,8 @@ pub fn default_workspace_manifest(name: &str) -> Manifest {
         toolchain: None,
         build: None,
         test: None,
+        format: None,
+        lint: None,
         workspace: Some(Workspace {
             name: Some(name.to_string()),
             version: None,
@@ -1351,5 +1389,67 @@ win-only = "^3.0"
             r#"cfg(target_env = "musl")"#,
             "x86_64-unknown-linux-gnu"
         ));
+    }
+
+    #[test]
+    fn test_parse_format_section() {
+        let toml_str = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[format]
+include_dirs = ["benchmarks", "examples"]
+exclude = ["generated/**"]
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+        let fmt = manifest.format.unwrap();
+        assert_eq!(fmt.include_dirs, vec!["benchmarks", "examples"]);
+        assert_eq!(fmt.exclude, vec!["generated/**"]);
+    }
+
+    #[test]
+    fn test_parse_lint_section() {
+        let toml_str = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[lint]
+include_dirs = ["benchmarks"]
+exclude = ["vendor/**"]
+max_line_length = 100
+clang_tidy = true
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+        let lint = manifest.lint.unwrap();
+        assert_eq!(lint.include_dirs, vec!["benchmarks"]);
+        assert_eq!(lint.exclude, vec!["vendor/**"]);
+        assert_eq!(lint.max_line_length, Some(100));
+        assert_eq!(lint.clang_tidy, Some(true));
+    }
+
+    #[test]
+    fn test_parse_lint_defaults() {
+        let toml_str = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[lint]
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+        let lint = manifest.lint.unwrap();
+        assert!(lint.include_dirs.is_empty());
+        assert!(lint.exclude.is_empty());
+        assert_eq!(lint.max_line_length, None);
+        assert_eq!(lint.clang_tidy, None);
+    }
+
+    #[test]
+    fn test_format_and_lint_absent_by_default() {
+        let manifest = default_manifest("hello");
+        assert!(manifest.format.is_none());
+        assert!(manifest.lint.is_none());
     }
 }

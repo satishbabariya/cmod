@@ -112,11 +112,21 @@ fn init_module(dir: &Path, name: &str, shell: &Shell) -> Result<(), CmodError> {
         ),
     )?;
 
+    // Create .clang-format if it doesn't exist
+    let clang_format_path = dir.join(".clang-format");
+    if !clang_format_path.exists() {
+        std::fs::write(
+            &clang_format_path,
+            "BasedOnStyle: LLVM\nIndentWidth: 4\nColumnLimit: 120\n",
+        )?;
+    }
+
     shell.status("Created", format!("module '{}' in {}", name, dir.display()));
     shell.verbose("Created", "cmod.toml");
     shell.verbose("Created", "src/lib.cppm");
     shell.verbose("Created", "src/main.cpp");
     shell.verbose("Created", "tests/main.cpp");
+    shell.verbose("Created", ".clang-format");
 
     Ok(())
 }
