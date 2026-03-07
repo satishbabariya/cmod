@@ -204,11 +204,12 @@ cmod plugin list|run               # Manage plugins</code></pre>
           <tbody>
             <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-core</code></td><td style="padding: 8px;">Core types, config parsing, manifest/lockfile, error model</td></tr>
             <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-cli</code></td><td style="padding: 8px;">CLI frontend, clap-based argument parsing, subcommand dispatch</td></tr>
-            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-resolver</code></td><td style="padding: 8px;">Git fetch, semver solving, lockfile generation</td></tr>
-            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-build</code></td><td style="padding: 8px;">Module DAG, build plan IR, Clang invocation, parallel execution</td></tr>
-            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-cache</code></td><td style="padding: 8px;">Content-addressed caching with SHA-256 keys</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-resolver</code></td><td style="padding: 8px;">Git fetch, semver solving, lockfile generation, module registry, feature resolution</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-build</code></td><td style="padding: 8px;">Module DAG, build plan IR, Clang invocation, parallel execution, distributed builds, incremental rebuilds</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-cache</code></td><td style="padding: 8px;">Content-addressed caching with SHA-256 keys, remote cache protocol, BMI distribution</td></tr>
             <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-workspace</code></td><td style="padding: 8px;">Monorepo management, unified dependency resolution</td></tr>
-            <tr><td style="padding: 8px;"><code>cmod-security</code></td><td style="padding: 8px;">Hash/signature verification, TOFU trust, policy enforcement</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;"><code>cmod-security</code></td><td style="padding: 8px;">Hash/signature verification, TOFU trust, policy enforcement, cryptographic signing (PGP/SSH/Sigstore)</td></tr>
+            <tr><td style="padding: 8px;"><code>cmod-lsp</code></td><td style="padding: 8px;">Language Server Protocol server with completion and diagnostics</td></tr>
           </tbody>
         </table>
 

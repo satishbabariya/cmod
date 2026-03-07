@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Plugin Guide** — `docs/guide/plugins.md` with plugin.toml schema, JSON IPC protocol, capability reference, and build hook integration
 - **IDE Integration Guide** — `docs/guide/ide-integration.md` with editor config for Neovim, VS Code, Emacs and custom method reference
 - **Example Plugin** — `examples/plugin/` with hello-plugin demonstrating the JSON IPC protocol
+- **Distributed Builds** — Remote cache protocol with HTTP REST API (`HEAD`/`GET`/`PUT`), BMI distribution via Git repositories (RFC-0011), distributed build worker pool with work stealing and task scheduling (RFC-0012/0013)
+- **Security** — Cryptographic signing backends: OpenPGP (GPG), SSH key signing, Sigstore cosign (RFC-0009); dependency auditing with severity levels; SBOM generation; enhanced hash verification; security policy enforcement
+- **Ecosystem** — Module registry index for discovery (RFC-0015); plugin sandboxing with capability-based permissions (RFC-0018); feature resolution and optional dependency activation; conditional dependency expressions with transitive feature propagation (RFC-0017)
+- **Build** — Incremental rebuild detection via persistent build state with per-node content hashes; Cargo-style colored build output with Shell abstraction; build timing visualization in graph output; support for multiple source directories and exclude patterns; additional include directories and extra compiler flags
+- **Test** — Comprehensive test overhaul with parallel execution, structured output, and workspace support; test count grew from 270+ to 750+
+- **CLI** — Plugin sandboxing command; enhanced status output
+- **Docs** — Comprehensive user-facing documentation; enhanced examples documentation; 8 new blog posts; complete marketing website
+
+### Fixed
+
+- Edge case bugs in `run`, `tidy`, `add`, and `init` commands
+- Workspace run command and path-dep import checking
+- Windows build: normalized path separators in workspace member names, proper file URL generation
+- Eliminated remaining `eprintln` calls in favor of Shell abstraction
 
 ## [0.1.0] - 2025-01-01
 

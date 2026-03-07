@@ -78,14 +78,15 @@
 
         <h2>The Workspace Architecture</h2>
 
-        <p>cmod is organized as a Cargo workspace with 7 crates, mirroring the layered architecture:</p>
+        <p>cmod is organized as a Cargo workspace with 8 crates, mirroring the layered architecture:</p>
 
         <pre><code>cmod-cli        → CLI frontend, subcommand dispatch
-cmod-resolver   → Git operations, semver solving
-cmod-build      → DAG construction, Clang invocation
-cmod-cache      → Content-addressed artifact cache
+cmod-resolver   → Git operations, semver solving, registry, features
+cmod-build      → DAG construction, Clang invocation, distributed builds
+cmod-cache      → Content-addressed artifact cache, remote cache, BMI distribution
 cmod-workspace  → Monorepo management
-cmod-security   → Verification, trust model
+cmod-security   → Verification, trust model, cryptographic signing
+cmod-lsp        → Language Server Protocol server
 cmod-core       → Core types, config parsing, error model</code></pre>
 
         <p>Each crate has a single responsibility and a narrow public API. Dependencies flow strictly downward — the CLI depends on everything, core depends on nothing. This isn't accidental; it's enforced by Cargo's dependency rules.</p>
@@ -110,7 +111,7 @@ cmod-core       → Core types, config parsing, error model</code></pre>
         <p>Early in development, we modeled module identifiers as plain strings. Rust's type system made it painfully obvious when we were comparing a module name with a file path or a Git URL. We introduced the <code>ModuleId</code> newtype, and an entire class of bugs disappeared.</p>
 
         <h3>2. Test infrastructure is excellent</h3>
-        <p>Rust's built-in test framework, combined with Cargo's test runner, makes it trivial to write and run tests. We have 270+ tests covering everything from TOML parsing edge cases to full resolution workflows. Running <code>cargo test</code> takes seconds.</p>
+        <p>Rust's built-in test framework, combined with Cargo's test runner, makes it trivial to write and run tests. We have 737+ tests covering everything from TOML parsing edge cases to full resolution workflows. Running <code>cargo test</code> takes seconds.</p>
 
         <h3>3. Cross-compilation works</h3>
         <p>Because cmod compiles to native code, we can cross-compile for any target Rust supports. Our CI builds binaries for Linux (x86_64, aarch64), macOS (x86_64, aarch64), and Windows — from a single workflow.</p>
