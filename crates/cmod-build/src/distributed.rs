@@ -156,6 +156,8 @@ pub struct WorkerPool {
     strategy: SchedulerStrategy,
     _task_queue: Arc<Mutex<VecDeque<RemoteTask>>>,
     results: Arc<Mutex<BTreeMap<String, RemoteTaskResult>>>,
+    /// Maps task_id → worker_id so collect_result can release the correct slot.
+    task_workers: Arc<Mutex<BTreeMap<String, String>>>,
     auth_token: Option<String>,
     task_timeout: Duration,
     round_robin_idx: Arc<Mutex<usize>>,
@@ -186,6 +188,7 @@ impl WorkerPool {
             strategy: config.scheduler,
             _task_queue: Arc::new(Mutex::new(VecDeque::new())),
             results: Arc::new(Mutex::new(BTreeMap::new())),
+            task_workers: Arc::new(Mutex::new(BTreeMap::new())),
             auth_token: config.auth_token.clone(),
             task_timeout: Duration::from_secs(config.task_timeout),
             round_robin_idx: Arc::new(Mutex::new(0)),
@@ -259,32 +262,92 @@ impl WorkerPool {
 
     /// Submit a task to a worker.
     pub fn submit_task(&self, worker_id: &str, task: RemoteTask) -> Result<(), CmodError> {
-        let mut workers = self
-            .workers
-            .lock()
-            .map_err(|_| CmodError::Other("failed to lock worker pool".to_string()))?;
+        let task_id = task.task_id.clone();
 
-        let worker = workers
-            .iter_mut()
-            .find(|w| w.id == worker_id)
-            .ok_or_else(|| CmodError::Other(format!("worker '{}' not found", worker_id)))?;
+        // Extract the endpoint while holding the workers lock briefly.
+        let endpoint = {
+            let workers = self
+                .workers
+                .lock()
+                .map_err(|_| CmodError::Other("failed to lock worker pool".to_string()))?;
+            let worker = workers
+                .iter()
+                .find(|w| w.id == worker_id)
+                .ok_or_else(|| CmodError::Other(format!("worker '{}' not found", worker_id)))?;
+            worker.endpoint.clone()
+        };
 
-        self.send_task(&worker.endpoint, &task)?;
+        // Perform the (potentially slow) HTTP call without holding any lock.
+        let result = self.send_task(&endpoint, &task)?;
 
-        worker.active_jobs += 1;
-        if worker.active_jobs >= worker.max_jobs {
-            worker.status = WorkerStatus::Full;
-        } else {
-            worker.status = WorkerStatus::Busy;
+        // Update the worker's bookkeeping.
+        {
+            let mut workers = self
+                .workers
+                .lock()
+                .map_err(|_| CmodError::Other("failed to lock worker pool".to_string()))?;
+            if let Some(worker) = workers.iter_mut().find(|w| w.id == worker_id) {
+                worker.active_jobs += 1;
+                if worker.active_jobs >= worker.max_jobs {
+                    worker.status = WorkerStatus::Full;
+                } else {
+                    worker.status = WorkerStatus::Busy;
+                }
+            }
+        }
+
+        // Store the result so collect_result() can return it.
+        {
+            let mut results = self
+                .results
+                .lock()
+                .map_err(|_| CmodError::Other("failed to lock results".to_string()))?;
+            results.insert(task_id.clone(), result);
+        }
+
+        // Record which worker owns this task for slot release in collect_result().
+        {
+            let mut tw = self
+                .task_workers
+                .lock()
+                .map_err(|_| CmodError::Other("failed to lock task workers".to_string()))?;
+            tw.insert(task_id, worker_id.to_string());
         }
 
         Ok(())
     }
 
     /// Collect a completed task result from a worker.
+    ///
+    /// Removes the result from the map **and** releases the originating
+    /// worker's slot (decrements `active_jobs`, transitions status away
+    /// from `Full` when appropriate).
     pub fn collect_result(&self, task_id: &str) -> Option<RemoteTaskResult> {
-        let mut results = self.results.lock().ok()?;
-        results.remove(task_id)
+        let result = {
+            let mut results = self.results.lock().ok()?;
+            results.remove(task_id)?
+        };
+
+        // Look up which worker owned this task and release its slot.
+        let worker_id = {
+            let mut tw = self.task_workers.lock().ok()?;
+            tw.remove(task_id)
+        };
+
+        if let Some(worker_id) = worker_id {
+            if let Ok(mut workers) = self.workers.lock() {
+                if let Some(worker) = workers.iter_mut().find(|w| w.id == worker_id) {
+                    worker.active_jobs = worker.active_jobs.saturating_sub(1);
+                    if worker.active_jobs == 0 {
+                        worker.status = WorkerStatus::Ready;
+                    } else if worker.active_jobs < worker.max_jobs {
+                        worker.status = WorkerStatus::Busy;
+                    }
+                }
+            }
+        }
+
+        Some(result)
     }
 
     /// Get the list of all registered workers.
@@ -342,8 +405,12 @@ impl WorkerPool {
             .map_err(|e| CmodError::Other(format!("invalid health response: {}", e)))
     }
 
-    /// Send a compilation task to a worker.
-    fn send_task(&self, endpoint: &str, task: &RemoteTask) -> Result<(), CmodError> {
+    /// Send a compilation task to a worker and return the result.
+    fn send_task(
+        &self,
+        endpoint: &str,
+        task: &RemoteTask,
+    ) -> Result<RemoteTaskResult, CmodError> {
         let url = format!("{}/tasks", endpoint.trim_end_matches('/'));
 
         let agent = ureq::Agent::new_with_config(
@@ -373,7 +440,13 @@ impl WorkerPool {
             )));
         }
 
-        Ok(())
+        let resp_body: String = resp
+            .into_body()
+            .read_to_string()
+            .map_err(|e| CmodError::Other(format!("failed to read task response: {}", e)))?;
+
+        serde_json::from_str(&resp_body)
+            .map_err(|e| CmodError::Other(format!("invalid task response: {}", e)))
     }
 }
 

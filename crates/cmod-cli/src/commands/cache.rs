@@ -315,10 +315,14 @@ pub fn export_bmi(module: &str, key: &str, output: &str, shell: &Shell) -> Resul
 
     if let Some(ref cfg) = signing_config {
         shell.verbose("Signing", "BMI package will be signed");
-        let package_json = serde_json::to_string(&package)
-            .map_err(|e| CmodError::Other(format!("failed to serialize for signing: {}", e)))?;
 
-        match cmod_security::signing::sign_data(cfg, package_json.as_bytes()) {
+        // Serialize the canonical bytes (pretty JSON, signature absent) — these
+        // are the exact bytes that import_bmi will reconstruct for verification.
+        let canonical_json = serde_json::to_string_pretty(&package).map_err(|e| {
+            CmodError::Other(format!("failed to serialize for signing: {}", e))
+        })?;
+
+        match cmod_security::signing::sign_data(cfg, canonical_json.as_bytes()) {
             Ok(result) => {
                 package.metadata.signature = Some(result.signature.clone());
 
@@ -326,7 +330,7 @@ pub fn export_bmi(module: &str, key: &str, output: &str, shell: &Shell) -> Resul
                 let sig_path = output_path.join("bmi_package.sig");
                 std::fs::write(&sig_path, &result.signature)?;
 
-                // Re-write package JSON with signature
+                // Write package JSON with embedded signature
                 let updated_json = serde_json::to_string_pretty(&package).map_err(|e| {
                     CmodError::Other(format!("failed to serialize BMI package: {}", e))
                 })?;
@@ -378,11 +382,35 @@ pub fn import_bmi(path: &str, shell: &Shell) -> Result<(), CmodError> {
             )
         });
 
-        match cmod_security::signing::verify_file(
-            &pkg_json_path,
-            &sig_path,
-            signing_config.as_ref(),
-        ) {
+        // Read the persisted JSON and the detached signature.
+        let pkg_json = std::fs::read_to_string(&pkg_json_path)?;
+        let signature = std::fs::read_to_string(&sig_path)?;
+
+        // Reconstruct the canonical bytes that export_bmi signed: pretty JSON
+        // with the signature field set to None.
+        let verify_result = match serde_json::from_str::<cmod_cache::BmiPackage>(&pkg_json) {
+            Ok(mut pkg) => {
+                pkg.metadata.signature = None;
+                let canonical_json =
+                    serde_json::to_string_pretty(&pkg).map_err(|e| {
+                        CmodError::Other(format!(
+                            "failed to serialize BMI package for verification: {}",
+                            e,
+                        ))
+                    })?;
+                Ok(cmod_security::signing::verify_signature(
+                    &signature,
+                    canonical_json.as_bytes(),
+                    signing_config.as_ref(),
+                ))
+            }
+            Err(e) => Err(CmodError::Other(format!(
+                "failed to parse BMI package JSON: {}",
+                e
+            ))),
+        };
+
+        match verify_result {
             Ok(cmod_security::signing::VerifyStatus::Valid { signer, backend }) => {
                 shell.verbose(
                     "Signature",

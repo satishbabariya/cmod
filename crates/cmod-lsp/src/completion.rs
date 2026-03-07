@@ -59,7 +59,8 @@ impl CompletionProvider {
             None => return Vec::new(),
         };
 
-        let prefix = &current_line[..character.min(current_line.len())];
+        let byte_offset = utf16_offset_to_byte_offset(current_line, character);
+        let prefix = &current_line[..byte_offset];
 
         // Import statement completion
         if prefix.trim_start().starts_with("import") {
@@ -284,6 +285,21 @@ impl Default for CompletionProvider {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Convert an LSP UTF-16 code-unit offset into a byte offset within a UTF-8 string.
+///
+/// Returns `s.len()` when `utf16_offset` is at or past the end of the string,
+/// and always lands on a valid UTF-8 char boundary.
+fn utf16_offset_to_byte_offset(s: &str, utf16_offset: usize) -> usize {
+    let mut utf16_count = 0;
+    for (byte_idx, ch) in s.char_indices() {
+        if utf16_count >= utf16_offset {
+            return byte_idx;
+        }
+        utf16_count += ch.len_utf16();
+    }
+    s.len()
 }
 
 #[cfg(test)]
