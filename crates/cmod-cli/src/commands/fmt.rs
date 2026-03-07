@@ -8,8 +8,9 @@ pub fn run(check: bool, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    let src_dir = config.src_dir();
-    let sources = runner::discover_sources(&src_dir)?;
+    let src_dirs = config.src_dirs();
+    let exclude = config.exclude_patterns();
+    let sources = runner::discover_sources_multi(&src_dirs, &exclude)?;
 
     if sources.is_empty() {
         shell.warn("no source files found to format");

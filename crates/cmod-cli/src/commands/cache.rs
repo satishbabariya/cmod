@@ -318,9 +318,8 @@ pub fn export_bmi(module: &str, key: &str, output: &str, shell: &Shell) -> Resul
 
         // Serialize the canonical bytes (pretty JSON, signature absent) — these
         // are the exact bytes that import_bmi will reconstruct for verification.
-        let canonical_json = serde_json::to_string_pretty(&package).map_err(|e| {
-            CmodError::Other(format!("failed to serialize for signing: {}", e))
-        })?;
+        let canonical_json = serde_json::to_string_pretty(&package)
+            .map_err(|e| CmodError::Other(format!("failed to serialize for signing: {}", e)))?;
 
         match cmod_security::signing::sign_data(cfg, canonical_json.as_bytes()) {
             Ok(result) => {
@@ -391,13 +390,12 @@ pub fn import_bmi(path: &str, shell: &Shell) -> Result<(), CmodError> {
         let verify_result = match serde_json::from_str::<cmod_cache::BmiPackage>(&pkg_json) {
             Ok(mut pkg) => {
                 pkg.metadata.signature = None;
-                let canonical_json =
-                    serde_json::to_string_pretty(&pkg).map_err(|e| {
-                        CmodError::Other(format!(
-                            "failed to serialize BMI package for verification: {}",
-                            e,
-                        ))
-                    })?;
+                let canonical_json = serde_json::to_string_pretty(&pkg).map_err(|e| {
+                    CmodError::Other(format!(
+                        "failed to serialize BMI package for verification: {}",
+                        e,
+                    ))
+                })?;
                 Ok(cmod_security::signing::verify_signature(
                     &signature,
                     canonical_json.as_bytes(),

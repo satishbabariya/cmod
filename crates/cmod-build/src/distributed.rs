@@ -406,11 +406,7 @@ impl WorkerPool {
     }
 
     /// Send a compilation task to a worker and return the result.
-    fn send_task(
-        &self,
-        endpoint: &str,
-        task: &RemoteTask,
-    ) -> Result<RemoteTaskResult, CmodError> {
+    fn send_task(&self, endpoint: &str, task: &RemoteTask) -> Result<RemoteTaskResult, CmodError> {
         let url = format!("{}/tasks", endpoint.trim_end_matches('/'));
 
         let agent = ureq::Agent::new_with_config(

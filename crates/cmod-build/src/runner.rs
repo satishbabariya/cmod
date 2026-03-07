@@ -275,12 +275,14 @@ impl BuildRunner {
         target: &str,
         profile: Profile,
         build_type: BuildType,
+        package_name: Option<&str>,
     ) -> Result<PathBuf, CmodError> {
         // Validate the graph
         graph.validate()?;
 
         // Generate the build plan
-        let plan = BuildPlan::from_graph(graph, build_dir, target, profile, build_type)?;
+        let plan =
+            BuildPlan::from_graph(graph, build_dir, target, profile, build_type, package_name)?;
 
         // Ensure output directories exist
         fs::create_dir_all(build_dir.join("pcm"))?;
@@ -299,9 +301,11 @@ impl BuildRunner {
         target: &str,
         profile: Profile,
         build_type: BuildType,
+        package_name: Option<&str>,
     ) -> Result<(PathBuf, BuildStats), CmodError> {
         graph.validate()?;
-        let plan = BuildPlan::from_graph(graph, build_dir, target, profile, build_type)?;
+        let plan =
+            BuildPlan::from_graph(graph, build_dir, target, profile, build_type, package_name)?;
         fs::create_dir_all(build_dir.join("pcm"))?;
         fs::create_dir_all(build_dir.join("obj"))?;
         self.execute_plan(&plan)
@@ -1077,6 +1081,65 @@ pub fn discover_sources(src_dir: &Path) -> Result<Vec<PathBuf>, CmodError> {
     Ok(sources)
 }
 
+/// Discover C++ source files from multiple directories, applying exclude patterns.
+///
+/// Each `src_dir` is walked recursively. Files matching any `exclude` glob pattern
+/// (checked against both the relative path within the source dir and the filename)
+/// are omitted. Results are sorted and deduplicated.
+pub fn discover_sources_multi(
+    src_dirs: &[PathBuf],
+    exclude: &[String],
+) -> Result<Vec<PathBuf>, CmodError> {
+    let patterns: Vec<glob::Pattern> = exclude
+        .iter()
+        .filter_map(|p| glob::Pattern::new(p).ok())
+        .collect();
+
+    let mut sources = Vec::new();
+
+    for src_dir in src_dirs {
+        if !src_dir.exists() {
+            continue;
+        }
+
+        for entry in walkdir::WalkDir::new(src_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if !matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx")
+            ) {
+                continue;
+            }
+
+            // Check exclude patterns against relative path and filename
+            let rel_path = path.strip_prefix(src_dir).unwrap_or(path);
+            let rel_str = rel_path.to_string_lossy();
+            let filename = path
+                .file_name()
+                .map(|f| f.to_string_lossy())
+                .unwrap_or_default();
+
+            let excluded = patterns
+                .iter()
+                .any(|pat| pat.matches(&rel_str) || pat.matches(&filename));
+
+            if !excluded {
+                sources.push(path.to_path_buf());
+            }
+        }
+    }
+
+    sources.sort();
+    sources.dedup();
+    Ok(sources)
+}
+
 /// Classify a source file as a module interface or implementation based on content.
 ///
 /// Scans the entire file for module declarations, skipping comments and
@@ -1519,5 +1582,77 @@ mod tests {
             extract_module_name_from_content("int main() {}\n").unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn test_discover_sources_multi_single_dir() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.cppm"), "export module mylib;").unwrap();
+        fs::write(src.join("main.cpp"), "int main() {}").unwrap();
+
+        let sources = discover_sources_multi(&[src], &[]).unwrap();
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn test_discover_sources_multi_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let dir_a = tmp.path().join("dirA");
+        let dir_b = tmp.path().join("dirB");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        fs::write(dir_a.join("a.cppm"), "export module a;").unwrap();
+        fs::write(dir_b.join("b.cpp"), "int b() {}").unwrap();
+
+        let sources = discover_sources_multi(&[dir_a, dir_b], &[]).unwrap();
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn test_discover_sources_multi_exclude_filename() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.cpp"), "void lib() {}").unwrap();
+        fs::write(src.join("lib_test.cc"), "void test() {}").unwrap();
+        fs::write(src.join("other_test.cc"), "void test2() {}").unwrap();
+
+        let sources = discover_sources_multi(&[src], &["*_test.cc".to_string()]).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].to_str().unwrap().contains("lib.cpp"));
+    }
+
+    #[test]
+    fn test_discover_sources_multi_exclude_dir_pattern() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let test_dir = src.join("test");
+        fs::create_dir_all(&test_dir).unwrap();
+        fs::write(src.join("lib.cpp"), "void lib() {}").unwrap();
+        fs::write(test_dir.join("check.cpp"), "void check() {}").unwrap();
+
+        let sources = discover_sources_multi(&[src], &["test/**".to_string()]).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].to_str().unwrap().contains("lib.cpp"));
+    }
+
+    #[test]
+    fn test_discover_sources_multi_nonexistent_dir() {
+        let sources = discover_sources_multi(&[PathBuf::from("/nonexistent/path")], &[]).unwrap();
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn test_discover_sources_multi_dedup() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.cpp"), "void lib() {}").unwrap();
+
+        // Pass the same dir twice — should deduplicate
+        let sources = discover_sources_multi(&[src.clone(), src], &[]).unwrap();
+        assert_eq!(sources.len(), 1);
     }
 }

@@ -249,19 +249,19 @@ fn validate_sources(
 
     shell.verbose("Checking", "source files...");
 
-    let src_dir = config.src_dir();
-    if !src_dir.exists() {
-        errors.push(format!(
-            "source directory '{}' does not exist",
-            src_dir.display()
-        ));
+    let src_dirs = config.src_dirs();
+    let exclude = config.exclude_patterns();
+    let any_exists = src_dirs.iter().any(|d| d.exists());
+    if !any_exists {
+        let dirs: Vec<_> = src_dirs.iter().map(|d| d.display().to_string()).collect();
+        errors.push(format!("no source directories exist: {}", dirs.join(", ")));
         return;
     }
 
-    match cmod_build::runner::discover_sources(&src_dir) {
+    match cmod_build::runner::discover_sources_multi(&src_dirs, &exclude) {
         Ok(sources) => {
             if sources.is_empty() {
-                errors.push("no C++ source files found in src/".to_string());
+                errors.push("no C++ source files found in source directories".to_string());
             } else {
                 shell.verbose("Sources", format!("found {} source files", sources.len()));
                 for s in &sources {

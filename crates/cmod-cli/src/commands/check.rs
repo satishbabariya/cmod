@@ -148,15 +148,16 @@ fn validate_module_graph(
         return;
     }
 
-    let src_dir = config.src_dir();
-    if !src_dir.exists() {
+    let src_dirs = config.src_dirs();
+    let exclude = config.exclude_patterns();
+    if !src_dirs.iter().any(|d| d.exists()) {
         return; // No sources — already checked elsewhere
     }
 
     shell.verbose("Building", "module graph for semantic validation...");
 
     // Discover and classify sources
-    let sources = match runner::discover_sources(&src_dir) {
+    let sources = match runner::discover_sources_multi(&src_dirs, &exclude) {
         Ok(s) => s,
         Err(e) => {
             warnings.push(format!("could not discover sources: {}", e));

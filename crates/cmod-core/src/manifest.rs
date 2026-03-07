@@ -231,6 +231,12 @@ pub struct Build {
     /// Extra compiler flags.
     #[serde(default)]
     pub extra_flags: Vec<String>,
+    /// Source directories (relative to project root). Defaults to `["src"]`.
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// Glob patterns for files to exclude from source discovery.
+    #[serde(default)]
+    pub exclude: Vec<String>,
     /// Distributed build configuration.
     #[serde(default)]
     pub distributed: Option<DistributedBuildConfig>,
@@ -798,6 +804,8 @@ pub fn default_manifest(name: &str) -> Manifest {
             incremental: Some(true),
             include_dirs: Vec::new(),
             extra_flags: Vec::new(),
+            sources: Vec::new(),
+            exclude: Vec::new(),
             distributed: None,
         }),
         test: None,
@@ -1132,6 +1140,40 @@ sysroot = "/opt/aarch64-sysroot"
             tc.sysroot.as_deref(),
             Some(Path::new("/opt/aarch64-sysroot"))
         );
+    }
+
+    #[test]
+    fn test_parse_build_sources_and_exclude() {
+        let toml_str = r#"
+[package]
+name = "jolt"
+version = "0.1.0"
+
+[build]
+type = "static-lib"
+sources = ["Jolt/", "extra/src/"]
+exclude = ["*_test.cc", "test/**"]
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+        let build = manifest.build.unwrap();
+        assert_eq!(build.sources, vec!["Jolt/", "extra/src/"]);
+        assert_eq!(build.exclude, vec!["*_test.cc", "test/**"]);
+    }
+
+    #[test]
+    fn test_parse_build_sources_defaults_empty() {
+        let toml_str = r#"
+[package]
+name = "simple"
+version = "0.1.0"
+
+[build]
+type = "binary"
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+        let build = manifest.build.unwrap();
+        assert!(build.sources.is_empty());
+        assert!(build.exclude.is_empty());
     }
 
     // --- cfg() evaluator tests ---

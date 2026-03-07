@@ -23,4 +23,5 @@ hex = { workspace = true }
 walkdir = { workspace = true }
 tempfile = { workspace = true }
 crossbeam-channel = { workspace = true }
+glob = { workspace = true }
 ureq = { workspace = true }

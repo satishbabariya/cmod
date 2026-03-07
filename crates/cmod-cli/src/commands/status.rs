@@ -28,9 +28,11 @@ pub fn run(shell: &Shell) -> Result<(), CmodError> {
     println!("  Profile: {:?}", config.profile);
 
     // Source files
-    let src_dir = config.src_dir();
-    if src_dir.exists() {
-        match runner::discover_sources(&src_dir) {
+    let src_dirs = config.src_dirs();
+    let exclude = config.exclude_patterns();
+    let any_exists = src_dirs.iter().any(|d| d.exists());
+    if any_exists {
+        match runner::discover_sources_multi(&src_dirs, &exclude) {
             Ok(sources) => {
                 println!("  Sources: {} files", sources.len());
                 if verbose {
@@ -45,7 +47,7 @@ pub fn run(shell: &Shell) -> Result<(), CmodError> {
             Err(_) => println!("  Sources: error scanning"),
         }
     } else {
-        println!("  Sources: no src/ directory");
+        println!("  Sources: no source directories found");
     }
 
     // Dependencies

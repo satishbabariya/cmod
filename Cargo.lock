@@ -192,6 +192,7 @@ dependencies = [
  "cmod-cache",
  "cmod-core",
  "crossbeam-channel",
+ "glob",
  "hex",
  "serde",
  "serde_json",
