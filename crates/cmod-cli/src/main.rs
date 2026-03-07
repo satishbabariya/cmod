@@ -212,6 +212,10 @@ enum Commands {
         /// Highlight the critical path (longest compile chain)
         #[arg(long)]
         critical_path: bool,
+
+        /// Annotate nodes with build timing (color-coded by duration)
+        #[arg(long)]
+        timing: bool,
     },
 
     /// Audit dependencies for security and quality issues
@@ -512,7 +516,8 @@ fn main() {
             filter,
             status,
             critical_path,
-        } => commands::graph::run(format, filter, status, critical_path, &shell),
+            timing,
+        } => commands::graph::run(format, filter, status, critical_path, timing, &shell),
         Commands::Audit => commands::audit::run(&shell),
         Commands::Status => commands::status::run(&shell),
         Commands::Explain { module } => commands::explain::run(module, &shell),

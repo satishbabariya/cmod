@@ -98,6 +98,40 @@ pub fn resolve_features(
     Ok(result)
 }
 
+/// Detect cycles in the feature dependency graph.
+///
+/// Returns an error if any feature chain forms a cycle (e.g., A enables B enables A).
+/// The resolution algorithm itself handles cycles gracefully via the visited set,
+/// but this function provides an explicit diagnostic for `cmod check`.
+pub fn detect_feature_cycles(manifest: &Manifest) -> Result<(), CmodError> {
+    for feature_name in manifest.features.keys() {
+        let mut visited = BTreeSet::new();
+        let mut stack = vec![feature_name.clone()];
+
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.clone()) {
+                return Err(CmodError::Other(format!(
+                    "cycle detected in feature graph: '{}' is reachable from itself (via '{}')",
+                    current, feature_name
+                )));
+            }
+
+            if let Some(sub_features) = manifest.features.get(&current) {
+                for sub in sub_features {
+                    // Only follow feature-to-feature edges (not dep:X or dep/feat)
+                    if !sub.starts_with("dep:")
+                        && !sub.contains('/')
+                        && manifest.features.contains_key(sub)
+                    {
+                        stack.push(sub.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Check if a dependency should be included (non-optional, or activated optional).
 pub fn should_include_dep(name: &str, dep: &Dependency, resolved: &ResolvedFeatures) -> bool {
     match dep {
@@ -267,6 +301,28 @@ mod tests {
             .activated_optional_deps
             .insert("opt_dep".to_string());
         assert!(should_include_dep("opt_dep", &dep, &resolved));
+    }
+
+    #[test]
+    fn test_detect_feature_cycle() {
+        let mut features = BTreeMap::new();
+        features.insert("a".to_string(), vec!["b".to_string()]);
+        features.insert("b".to_string(), vec!["a".to_string()]);
+
+        let manifest = test_manifest(features, BTreeMap::new());
+        let result = detect_feature_cycles(&manifest);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cycle"));
+    }
+
+    #[test]
+    fn test_detect_no_feature_cycle() {
+        let mut features = BTreeMap::new();
+        features.insert("a".to_string(), vec!["b".to_string()]);
+        features.insert("b".to_string(), vec!["dep:lib".to_string()]);
+
+        let manifest = test_manifest(features, BTreeMap::new());
+        assert!(detect_feature_cycles(&manifest).is_ok());
     }
 
     #[test]

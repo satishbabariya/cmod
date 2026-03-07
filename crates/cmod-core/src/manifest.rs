@@ -287,6 +287,14 @@ pub struct Workspace {
     pub dependencies: BTreeMap<String, Dependency>,
     #[serde(default)]
     pub resolver: Option<String>,
+    /// Dependency overrides for development (replace git deps with local paths).
+    ///
+    /// ```toml
+    /// [workspace.patch]
+    /// fmt = { path = "../my-local-fmt" }
+    /// ```
+    #[serde(default)]
+    pub patch: BTreeMap<String, Dependency>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -851,6 +859,7 @@ pub fn default_workspace_manifest(name: &str) -> Manifest {
             exclude: vec![],
             dependencies: BTreeMap::new(),
             resolver: Some("2".to_string()),
+            patch: BTreeMap::new(),
         }),
         cache: None,
         metadata: None,

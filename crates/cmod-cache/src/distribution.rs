@@ -252,6 +252,122 @@ impl BmiDelta {
     }
 }
 
+/// Remote BMI distributor that fetches precompiled modules from HTTP endpoints.
+pub struct BmiDistributor {
+    /// Base URL for the BMI distribution server.
+    base_url: String,
+    /// HTTP timeout in seconds.
+    timeout_secs: u64,
+}
+
+impl BmiDistributor {
+    pub fn new(base_url: &str) -> Self {
+        BmiDistributor {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            timeout_secs: 30,
+        }
+    }
+
+    pub fn with_timeout(mut self, secs: u64) -> Self {
+        self.timeout_secs = secs;
+        self
+    }
+
+    /// Fetch a remote BMI index for a module.
+    pub fn fetch_index(&self, module_name: &str) -> Result<BmiIndex, CmodError> {
+        let url = format!("{}/bmi/{}/index.json", self.base_url, module_name);
+
+        let agent = ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(Some(std::time::Duration::from_secs(self.timeout_secs)))
+                .http_status_as_error(false)
+                .build(),
+        );
+
+        let resp = agent
+            .get(&url)
+            .call()
+            .map_err(|e| CmodError::Other(format!("failed to fetch BMI index: {}", e)))?;
+
+        if resp.status().as_u16() != 200 {
+            return Err(CmodError::Other(format!(
+                "BMI index not found for '{}' (HTTP {})",
+                module_name,
+                resp.status()
+            )));
+        }
+
+        let body: String = resp
+            .into_body()
+            .read_to_string()
+            .map_err(|e| CmodError::Other(format!("failed to read BMI index: {}", e)))?;
+
+        serde_json::from_str(&body)
+            .map_err(|e| CmodError::Other(format!("failed to parse BMI index: {}", e)))
+    }
+
+    /// Fetch a precompiled BMI variant and save it to a local directory.
+    pub fn fetch_variant(
+        &self,
+        module_name: &str,
+        variant: &BmiVariant,
+        output_dir: &Path,
+    ) -> Result<PathBuf, CmodError> {
+        let variant_dir = output_dir.join(&variant.directory);
+        fs::create_dir_all(&variant_dir)?;
+
+        // Fetch the metadata file
+        let metadata_url = format!(
+            "{}/bmi/{}/{}/metadata.json",
+            self.base_url, module_name, variant.directory
+        );
+        self.download_file(&metadata_url, &variant_dir.join("metadata.json"))?;
+
+        // Fetch the package manifest
+        let package_url = format!(
+            "{}/bmi/{}/{}/bmi_package.json",
+            self.base_url, module_name, variant.directory
+        );
+        self.download_file(&package_url, &variant_dir.join("bmi_package.json"))?;
+
+        Ok(variant_dir)
+    }
+
+    /// Download a single file from a URL to a local path.
+    fn download_file(&self, url: &str, dest: &Path) -> Result<(), CmodError> {
+        let agent = ureq::Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(Some(std::time::Duration::from_secs(self.timeout_secs)))
+                .http_status_as_error(false)
+                .build(),
+        );
+
+        let resp = agent
+            .get(url)
+            .call()
+            .map_err(|e| CmodError::Other(format!("failed to download {}: {}", url, e)))?;
+
+        if resp.status().as_u16() != 200 {
+            return Err(CmodError::Other(format!(
+                "download failed for {} (HTTP {})",
+                url,
+                resp.status()
+            )));
+        }
+
+        let body: String = resp
+            .into_body()
+            .read_to_string()
+            .map_err(|e| CmodError::Other(format!("failed to read response body: {}", e)))?;
+
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(dest, body)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

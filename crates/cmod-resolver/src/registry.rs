@@ -630,6 +630,88 @@ mod tests {
     }
 
     #[test]
+    fn test_publish_module_creates_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().to_path_buf();
+
+        // Create the registry index directory structure
+        let index_dir = cache_dir.join("registry").join("index");
+        std::fs::create_dir_all(&index_dir).unwrap();
+        let empty_index = RegistryIndex::new("test", "Test registry");
+        empty_index.save(&index_dir.join("index.json")).unwrap();
+
+        let client = RegistryClient::new("file:///unused", cache_dir);
+
+        let params = PublishModuleParams {
+            name: "github.user.mylib".into(),
+            version: "1.0.0".into(),
+            tag: "v1.0.0".into(),
+            commit: "abc123".into(),
+            description: Some("My library".into()),
+            license: Some("MIT".into()),
+            repository: "https://github.com/user/mylib".into(),
+        };
+
+        client.publish_module(&params).unwrap();
+
+        let index = client.cached_index().unwrap().unwrap();
+        assert!(index.modules.contains_key("github.user.mylib"));
+        let entry = &index.modules["github.user.mylib"];
+        assert_eq!(entry.versions.len(), 1);
+        assert_eq!(entry.versions[0].version, "1.0.0");
+        assert_eq!(entry.description.as_deref(), Some("My library"));
+    }
+
+    #[test]
+    fn test_publish_module_appends_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().to_path_buf();
+
+        let index_dir = cache_dir.join("registry").join("index");
+        std::fs::create_dir_all(&index_dir).unwrap();
+        let mut index = RegistryIndex::new("test", "Test");
+        index.upsert_module(RegistryEntry {
+            name: "github.user.mylib".into(),
+            description: Some("Old desc".into()),
+            repository: "https://github.com/user/mylib".into(),
+            versions: vec![RegistryVersion {
+                version: "0.1.0".into(),
+                tag: "v0.1.0".into(),
+                commit: "old".into(),
+                min_cpp_standard: None,
+                published_at: "0".into(),
+                yanked: false,
+            }],
+            keywords: vec![],
+            category: None,
+            license: None,
+            authors: vec![],
+            updated_at: "0".into(),
+            verified: false,
+            deprecated: None,
+        });
+        index.save(&index_dir.join("index.json")).unwrap();
+
+        let client = RegistryClient::new("file:///unused", cache_dir);
+        let params = PublishModuleParams {
+            name: "github.user.mylib".into(),
+            version: "1.0.0".into(),
+            tag: "v1.0.0".into(),
+            commit: "new123".into(),
+            description: Some("Updated desc".into()),
+            license: Some("MIT".into()),
+            repository: "https://github.com/user/mylib".into(),
+        };
+        client.publish_module(&params).unwrap();
+
+        let updated = client.cached_index().unwrap().unwrap();
+        let entry = &updated.modules["github.user.mylib"];
+        assert_eq!(entry.versions.len(), 2);
+        assert_eq!(entry.versions[1].version, "1.0.0");
+        assert_eq!(entry.description.as_deref(), Some("Updated desc"));
+    }
+
+    #[test]
     fn test_search_excludes_deprecated() {
         let mut index = RegistryIndex::new("test", "");
         index.upsert_module(RegistryEntry {

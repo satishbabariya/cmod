@@ -78,7 +78,7 @@ impl DiagnosticsEngine {
         if file_name == "cmod.toml" {
             diagnostics.extend(self.diagnose_manifest(file_path));
         } else if is_cpp_source(&file_name) {
-            diagnostics.extend(self.diagnose_source(file_path));
+            diagnostics.extend(self.diagnose_source_from_file(file_path));
         }
 
         diagnostics
@@ -145,15 +145,27 @@ impl DiagnosticsEngine {
     }
 
     /// Diagnose a C++ source file for module-related issues.
-    fn diagnose_source(&self, path: &Path) -> Vec<Value> {
-        let mut diagnostics = Vec::new();
-
+    fn diagnose_source_from_file(&self, path: &Path) -> Vec<Value> {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(_) => return diagnostics,
+            Err(_) => return Vec::new(),
         };
+        self.diagnose_source_content(&content)
+    }
+
+    /// Diagnose C++ source content for module-related issues.
+    ///
+    /// This is the in-memory variant used by `didChange` where the file
+    /// may not yet be saved to disk.
+    pub fn diagnose_source(&self, content: &str, _path: &Path) -> Vec<Value> {
+        self.diagnose_source_content(content)
+    }
+
+    fn diagnose_source_content(&self, content: &str) -> Vec<Value> {
+        let mut diagnostics = Vec::new();
 
         let lines: Vec<&str> = content.lines().collect();
+        let mut module_decls: Vec<(u32, String)> = Vec::new();
 
         for (line_num, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
@@ -197,6 +209,33 @@ impl DiagnosticsEngine {
                     DiagnosticSeverity::Error,
                     "module declaration should end with semicolon",
                     "cmod-syntax",
+                ));
+            }
+
+            // Track duplicate module declarations
+            if trimmed.starts_with("export module ") && trimmed.ends_with(';') {
+                let decl_name = trimmed
+                    .trim_start_matches("export module ")
+                    .trim_end_matches(';')
+                    .trim();
+                if !decl_name.is_empty() {
+                    module_decls.push((line_num as u32, decl_name.to_string()));
+                }
+            }
+        }
+
+        // Report duplicate module declarations
+        if module_decls.len() > 1 {
+            for (line, name) in &module_decls[1..] {
+                diagnostics.push(make_diagnostic(
+                    *line,
+                    0,
+                    DiagnosticSeverity::Error,
+                    &format!(
+                        "duplicate module declaration '{}'; only one export module declaration is allowed per file",
+                        name
+                    ),
+                    "cmod-duplicate-module",
                 ));
             }
         }
@@ -424,9 +463,7 @@ mod tests {
     #[test]
     fn test_diagnose_source_empty_import() {
         let engine = DiagnosticsEngine::new();
-        let tmp = tempfile::NamedTempFile::with_suffix(".cpp").unwrap();
-        std::fs::write(tmp.path(), "import ;\n").unwrap();
-        let diagnostics = engine.diagnose_source(tmp.path());
+        let diagnostics = engine.diagnose_source_content("import ;\n");
         assert!(diagnostics.iter().any(|d| {
             d.get("message")
                 .and_then(|m| m.as_str())
@@ -478,6 +515,25 @@ mod tests {
         assert_eq!(diags.len(), 2);
         assert_eq!(diags[0].file, "src/a.cpp");
         assert_eq!(diags[1].severity, "warning");
+    }
+
+    #[test]
+    fn test_diagnose_duplicate_module_declaration() {
+        let engine = DiagnosticsEngine::new();
+        let diagnostics =
+            engine.diagnose_source_content("export module mymod;\nexport module other;\n");
+        assert!(diagnostics.iter().any(|d| {
+            d.get("code").and_then(|c| c.as_str()).unwrap_or("") == "cmod-duplicate-module"
+        }));
+    }
+
+    #[test]
+    fn test_diagnose_no_duplicate_single_declaration() {
+        let engine = DiagnosticsEngine::new();
+        let diagnostics = engine.diagnose_source_content("export module mymod;\nimport std;\n");
+        assert!(!diagnostics.iter().any(|d| {
+            d.get("code").and_then(|c| c.as_str()).unwrap_or("") == "cmod-duplicate-module"
+        }));
     }
 
     #[test]

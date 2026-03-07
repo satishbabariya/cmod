@@ -124,6 +124,27 @@ impl WorkspaceManager {
         Ok(all_deps)
     }
 
+    /// Apply workspace dependency patches to the unified dependency map.
+    ///
+    /// Patches override dependency sources (e.g., replacing a git dep with a
+    /// local path for development). Defined in `[workspace.patch]` in `cmod.toml`.
+    pub fn apply_patches(&self, deps: &mut BTreeMap<String, Dependency>) {
+        if let Some(ws) = &self.root_manifest.workspace {
+            for (name, patch_dep) in &ws.patch {
+                if deps.contains_key(name) {
+                    deps.insert(name.clone(), patch_dep.clone());
+                }
+            }
+        }
+    }
+
+    /// Collect all dependencies with patches applied.
+    pub fn all_dependencies_patched(&self) -> Result<BTreeMap<String, Dependency>, CmodError> {
+        let mut deps = self.all_dependencies()?;
+        self.apply_patches(&mut deps);
+        Ok(deps)
+    }
+
     /// Find a member by name.
     pub fn find_member(&self, name: &str) -> Option<&WorkspaceMember> {
         self.members.iter().find(|m| m.name == name)

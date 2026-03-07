@@ -156,7 +156,6 @@ impl BuildRunner {
     ///
     /// Searches each BMI directory for an `index.json` matching the given module name,
     /// then checks for a variant compatible with the current compiler settings.
-    #[allow(dead_code)]
     fn find_precompiled_bmi(&self, module_name: &str) -> Option<PathBuf> {
         for bmi_dir in &self.bmi_dirs {
             let index_path = bmi_dir.join("index.json");
@@ -211,6 +210,30 @@ impl BuildRunner {
         }
 
         None
+    }
+
+    /// Restore a node's outputs from a precompiled BMI variant directory.
+    ///
+    /// Copies `.pcm` and `.o` files from the variant directory to the node's
+    /// expected output locations. Returns `true` on success.
+    fn restore_bmi_from_dir(&self, variant_dir: &Path, node: &BuildNode) -> bool {
+        for output in &node.outputs {
+            let file_name = match output.file_name().and_then(|f| f.to_str()) {
+                Some(n) => n,
+                None => return false,
+            };
+            let src = variant_dir.join(file_name);
+            if !src.exists() {
+                return false;
+            }
+            if let Some(parent) = output.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if fs::copy(&src, output).is_err() {
+                return false;
+            }
+        }
+        !node.outputs.is_empty()
     }
 
     /// Emit a normal status message through Shell, or fall back to eprintln.
@@ -619,6 +642,19 @@ impl BuildRunner {
                     if self.try_cache_restore(&module_id, &key, node) {
                         self.emit_verbose("Cached", format!("interface: {}", source.display()));
                         return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
+                    }
+                }
+
+                // Try precompiled BMI from configured BMI directories
+                if let Some(module_name) = &node.module_name {
+                    if let Some(variant_dir) = self.find_precompiled_bmi(module_name) {
+                        if self.restore_bmi_from_dir(&variant_dir, node) {
+                            self.emit_verbose(
+                                "Precompiled",
+                                format!("interface: {}", source.display()),
+                            );
+                            return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
+                        }
                     }
                 }
 

@@ -3,7 +3,7 @@ use std::process::Command;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::shell::Shell;
-use cmod_resolver::registry::{validate_for_publishing, GovernancePolicy};
+use cmod_resolver::registry::{validate_for_publishing, GovernancePolicy, PublishModuleParams};
 use cmod_security::signing::{resolve_signing_config, sign_data};
 
 /// Run `cmod publish` — prepare and tag a release.
@@ -130,6 +130,13 @@ pub fn run(
         shell.status("Pushed", format!("tag '{}' to origin", tag));
     } else {
         shell.note(format!("run `git push origin {}` to publish", tag));
+    }
+
+    // Step 8: Publish to registry if configured
+    if let Some(ref publish) = config.manifest.publish {
+        if let Some(ref registry_url) = publish.registry {
+            publish_to_registry(name, version, &tag, &config, registry_url, shell);
+        }
     }
 
     shell.status("Published", format!("{} v{}", name, version));
@@ -313,6 +320,68 @@ fn push_tag(tag: &str) -> Result<(), CmodError> {
     Ok(())
 }
 
+/// Publish module metadata to a registry after tagging.
+fn publish_to_registry(
+    name: &str,
+    version: &str,
+    tag: &str,
+    config: &Config,
+    registry_url: &str,
+    shell: &Shell,
+) {
+    let cache_dir = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from(".cache"))
+        .join("cmod");
+    let client = cmod_resolver::RegistryClient::new(registry_url, cache_dir);
+
+    // Resolve the current commit hash for the tag
+    let commit = resolve_head_commit().unwrap_or_else(|| "unknown".to_string());
+
+    // Derive repository URL from module name (reverse-domain → Git URL)
+    let repository = config
+        .manifest
+        .module
+        .as_ref()
+        .map(|m| format!("https://{}", m.name.replace('.', "/")))
+        .unwrap_or_else(|| format!("https://{}", name.replace('.', "/")));
+
+    let params = PublishModuleParams {
+        name: name.to_string(),
+        version: version.to_string(),
+        tag: tag.to_string(),
+        commit,
+        description: config.manifest.package.description.clone(),
+        license: config.manifest.package.license.clone(),
+        repository,
+    };
+
+    match client.publish_module(&params) {
+        Ok(()) => {
+            shell.status(
+                "Registry",
+                format!("published {} v{} to registry", name, version),
+            );
+        }
+        Err(e) => {
+            shell.warn(format!("failed to publish to registry: {}", e));
+            shell.note("the git tag was created successfully; registry publish can be retried");
+        }
+    }
+}
+
+/// Resolve HEAD commit hash.
+fn resolve_head_commit() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +440,16 @@ mod tests {
         let shell = cmod_core::shell::Shell::new(cmod_core::shell::Verbosity::Normal);
         let result = validate_governance(&config, &shell);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_head_commit_returns_hash() {
+        // We're in a git repo, so this should return a commit hash
+        let commit = resolve_head_commit();
+        assert!(commit.is_some());
+        let hash = commit.unwrap();
+        assert!(hash.len() >= 7); // At least a short hash
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

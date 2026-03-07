@@ -197,10 +197,7 @@ impl LspServer {
                 self.handle_did_open(msg.params.as_ref());
                 None
             }
-            "textDocument/didChange" => {
-                self.handle_did_change(msg.params.as_ref());
-                None
-            }
+            "textDocument/didChange" => self.handle_did_change(msg.params.as_ref()),
             "textDocument/didSave" => self.handle_did_save(msg.params.as_ref()),
             "textDocument/completion" => {
                 let items = self.handle_completion(msg.params.as_ref());
@@ -258,25 +255,47 @@ impl LspServer {
         }
     }
 
-    fn handle_did_change(&self, params: Option<&Value>) {
-        if let Some(params) = params {
-            let uri = params
-                .get("textDocument")
-                .and_then(|d| d.get("uri"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+    fn handle_did_change(&self, params: Option<&Value>) -> Option<Vec<JsonRpcMessage>> {
+        let params = params?;
+        let uri = params
+            .get("textDocument")
+            .and_then(|d| d.get("uri"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
-            // For full sync, take the last content change
-            if let Some(changes) = params.get("contentChanges").and_then(|v| v.as_array()) {
-                if let Some(last) = changes.last() {
-                    if let Some(text) = last.get("text").and_then(|v| v.as_str()) {
-                        if let Ok(mut docs) = self.documents.lock() {
-                            docs.insert(uri.to_string(), text.to_string());
-                        }
-                    }
-                }
+        // For full sync, take the last content change
+        let text = params
+            .get("contentChanges")
+            .and_then(|v| v.as_array())
+            .and_then(|changes| changes.last())
+            .and_then(|last| last.get("text"))
+            .and_then(|v| v.as_str());
+
+        if let Some(text) = text {
+            if let Ok(mut docs) = self.documents.lock() {
+                docs.insert(uri.to_string(), text.to_string());
             }
+
+            // Run lightweight source-level diagnostics on the changed content
+            let path = uri_to_path(uri);
+            let diagnostics = self.diagnostics.diagnose_source(text, &path);
+
+            let notification = JsonRpcMessage {
+                jsonrpc: "2.0".to_string(),
+                id: None,
+                method: Some("textDocument/publishDiagnostics".to_string()),
+                params: Some(serde_json::json!({
+                    "uri": uri,
+                    "diagnostics": diagnostics,
+                })),
+                result: None,
+                error: None,
+            };
+
+            return Some(vec![notification]);
         }
+
+        None
     }
 
     fn handle_did_save(&self, params: Option<&Value>) -> Option<Vec<JsonRpcMessage>> {
@@ -651,6 +670,48 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: JsonRpcMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.method.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn test_did_change_publishes_diagnostics() {
+        let mut server = LspServer::new();
+        // First open a file
+        let open_params = serde_json::json!({
+            "textDocument": {
+                "uri": "file:///tmp/test.cppm",
+                "text": "export module test;\n"
+            }
+        });
+        server.handle_did_open(Some(&open_params));
+
+        // Now change to have a duplicate module declaration
+        let change_msg = JsonRpcMessage {
+            jsonrpc: "2.0".into(),
+            id: None,
+            method: Some("textDocument/didChange".into()),
+            params: Some(serde_json::json!({
+                "textDocument": { "uri": "file:///tmp/test.cppm" },
+                "contentChanges": [{
+                    "text": "export module test;\nexport module other;\n"
+                }]
+            })),
+            result: None,
+            error: None,
+        };
+
+        let responses = server.handle_message(change_msg);
+        assert!(responses.is_some());
+        let msgs = responses.unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(
+            msgs[0].method.as_deref(),
+            Some("textDocument/publishDiagnostics")
+        );
+        // Should contain a duplicate-module diagnostic
+        let diags = msgs[0].params.as_ref().unwrap()["diagnostics"]
+            .as_array()
+            .unwrap();
+        assert!(diags.iter().any(|d| d["code"] == "cmod-duplicate-module"));
     }
 
     #[test]

@@ -206,10 +206,31 @@ impl CompletionProvider {
                 }
 
                 // Add dependency modules
-                for name in manifest.dependencies.keys() {
+                for (name, dep) in &manifest.dependencies {
+                    let is_optional = matches!(
+                        dep,
+                        cmod_core::manifest::Dependency::Detailed(d) if d.optional
+                    );
+                    let dep_features = match dep {
+                        cmod_core::manifest::Dependency::Detailed(d) if !d.features.is_empty() => {
+                            Some(d.features.join(", "))
+                        }
+                        _ => None,
+                    };
+                    let description = if is_optional {
+                        Some(format!(
+                            "optional dependency{}",
+                            dep_features
+                                .as_ref()
+                                .map(|f| format!(" (features: {})", f))
+                                .unwrap_or_default()
+                        ))
+                    } else {
+                        dep_features.map(|f| format!("features: {}", f))
+                    };
                     self.known_modules.push(ModuleInfo {
                         name: name.clone(),
-                        description: None,
+                        description,
                         is_local: false,
                         partitions: Vec::new(),
                         root_path: None,

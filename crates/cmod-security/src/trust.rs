@@ -14,6 +14,9 @@ pub struct TrustDb {
     /// Trusted module entries keyed by module name.
     #[serde(default)]
     pub modules: BTreeMap<String, TrustedModule>,
+    /// Revoked signing key identifiers (fingerprints, emails, key IDs).
+    #[serde(default)]
+    pub revoked_keys: Vec<String>,
 }
 
 /// A trusted module entry.
@@ -119,6 +122,22 @@ impl TrustDb {
     /// Remove a trust entry entirely.
     pub fn remove(&mut self, module_name: &str) -> bool {
         self.modules.remove(module_name).is_some()
+    }
+
+    /// Check whether a signing key has been revoked.
+    pub fn is_key_revoked(&self, key_id: &str) -> bool {
+        self.revoked_keys.iter().any(|k| k == key_id)
+    }
+
+    /// Revoke a signing key by identifier.
+    ///
+    /// Returns `true` if the key was newly added to the revocation list.
+    pub fn revoke_key(&mut self, key_id: &str) -> bool {
+        if self.is_key_revoked(key_id) {
+            return false;
+        }
+        self.revoked_keys.push(key_id.to_string());
+        true
     }
 
     /// List all trusted (non-revoked) modules.
@@ -244,5 +263,33 @@ mod tests {
     fn test_revoke_nonexistent() {
         let mut db = TrustDb::default();
         assert!(!db.revoke("nonexistent"));
+    }
+
+    #[test]
+    fn test_key_revocation() {
+        let mut db = TrustDb::default();
+        assert!(!db.is_key_revoked("ABCD1234"));
+
+        assert!(db.revoke_key("ABCD1234"));
+        assert!(db.is_key_revoked("ABCD1234"));
+
+        // Duplicate revoke returns false
+        assert!(!db.revoke_key("ABCD1234"));
+    }
+
+    #[test]
+    fn test_revoked_keys_persist() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("trust.toml");
+
+        let mut db = TrustDb::default();
+        db.revoke_key("key1");
+        db.revoke_key("key2");
+        db.save(&path).unwrap();
+
+        let loaded = TrustDb::load(&path).unwrap();
+        assert!(loaded.is_key_revoked("key1"));
+        assert!(loaded.is_key_revoked("key2"));
+        assert!(!loaded.is_key_revoked("key3"));
     }
 }

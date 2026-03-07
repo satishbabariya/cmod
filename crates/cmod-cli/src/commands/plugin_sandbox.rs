@@ -251,6 +251,47 @@ impl PluginSandbox {
     pub fn limits(&self) -> &PluginLimits {
         &self.limits
     }
+
+    /// Check if plugin output size is within limits.
+    ///
+    /// Returns an error if the output exceeds `max_output_mb`.
+    pub fn check_output_size(&self, output_bytes: u64) -> Result<(), CmodError> {
+        if self.limits.max_output_mb > 0 {
+            let max_bytes = self.limits.max_output_mb * 1024 * 1024;
+            if output_bytes > max_bytes {
+                return Err(CmodError::SecurityViolation {
+                    reason: format!(
+                        "plugin output size ({}MB) exceeds limit ({}MB)",
+                        output_bytes / (1024 * 1024),
+                        self.limits.max_output_mb
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Truncate plugin output to the maximum allowed size.
+    ///
+    /// Returns the (possibly truncated) output and whether truncation occurred.
+    pub fn enforce_output_limit(&self, output: &str) -> (String, bool) {
+        if self.limits.max_output_mb == 0 {
+            return (output.to_string(), false);
+        }
+        let max_bytes = (self.limits.max_output_mb * 1024 * 1024) as usize;
+        if output.len() > max_bytes {
+            let truncated = &output[..max_bytes];
+            (
+                format!(
+                    "{}\n... [output truncated at {}MB limit]",
+                    truncated, self.limits.max_output_mb
+                ),
+                true,
+            )
+        } else {
+            (output.to_string(), false)
+        }
+    }
 }
 
 /// Load and validate a plugin manifest from a directory.
@@ -482,5 +523,50 @@ max_memory_mb = 256
         let json = serde_json::to_string(&manifest).unwrap();
         let parsed: PluginManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.plugin.name, "test");
+    }
+
+    #[test]
+    fn test_check_output_size_within_limit() {
+        let limits = PluginLimits {
+            max_output_mb: 1,
+            ..PluginLimits::default()
+        };
+        let sandbox = PluginSandbox::new(BTreeSet::new(), PathBuf::from("/tmp"), limits);
+        assert!(sandbox.check_output_size(500_000).is_ok());
+    }
+
+    #[test]
+    fn test_check_output_size_exceeds_limit() {
+        let limits = PluginLimits {
+            max_output_mb: 1,
+            ..PluginLimits::default()
+        };
+        let sandbox = PluginSandbox::new(BTreeSet::new(), PathBuf::from("/tmp"), limits);
+        assert!(sandbox.check_output_size(2 * 1024 * 1024).is_err());
+    }
+
+    #[test]
+    fn test_enforce_output_limit_no_truncation() {
+        let limits = PluginLimits {
+            max_output_mb: 1,
+            ..PluginLimits::default()
+        };
+        let sandbox = PluginSandbox::new(BTreeSet::new(), PathBuf::from("/tmp"), limits);
+        let (output, truncated) = sandbox.enforce_output_limit("short output");
+        assert_eq!(output, "short output");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_enforce_output_limit_unlimited() {
+        let limits = PluginLimits {
+            max_output_mb: 0,
+            ..PluginLimits::default()
+        };
+        let sandbox = PluginSandbox::new(BTreeSet::new(), PathBuf::from("/tmp"), limits);
+        let big = "x".repeat(10_000_000);
+        let (output, truncated) = sandbox.enforce_output_limit(&big);
+        assert_eq!(output.len(), big.len());
+        assert!(!truncated);
     }
 }
