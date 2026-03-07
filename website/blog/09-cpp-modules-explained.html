@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>C++20 Modules Explained for Practical Developers — cmod Blog</title>
+  <meta name="description" content="A no-nonsense guide to C++20 modules: what they are, how they differ from headers, and why they matter.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--tutorial">Tutorial</span>
+        <h1 class="article__title">C++20 Modules Explained for Practical Developers</h1>
+        <p class="article__meta">January 2026 &middot; 11 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p>C++20 modules are the biggest change to C++ compilation since the language was standardized in 1998. They replace the textual <code>#include</code> mechanism with a proper module system that's faster, safer, and more explicit. Yet adoption remains slow, partly because the tooling hasn't kept up and partly because the concepts are poorly explained.</p>
+
+        <p>This guide cuts through the confusion. No committee language, no corner cases. Just what you need to know to start using modules in real projects.</p>
+
+        <h2>The Problem with Headers</h2>
+
+        <p>Before understanding modules, you need to understand what's wrong with the system they replace.</p>
+
+        <p>When you write <code>#include &lt;vector&gt;</code>, the preprocessor literally copies the contents of that header file into your source file. For a typical standard library header, that's thousands of lines. For a project that includes the same header in 100 translation units, that's the same code parsed 100 times.</p>
+
+        <p>The consequences:</p>
+        <ul>
+          <li><strong>Slow compilation:</strong> Large projects spend most of their compile time re-parsing the same headers</li>
+          <li><strong>Macro pollution:</strong> Macros defined in one header leak into every file that includes it (directly or transitively)</li>
+          <li><strong>Include order matters:</strong> Different include orderings can produce different compilation results</li>
+          <li><strong>No encapsulation:</strong> Everything in a header is visible to consumers, even "internal" details</li>
+          <li><strong>ODR violations:</strong> The same entity can be defined differently in different translation units, causing undefined behavior</li>
+        </ul>
+
+        <h2>What Modules Replace</h2>
+
+        <p>Modules replace the <code>#include</code> mechanism with <code>import</code> declarations. Instead of textual inclusion, modules are compiled once into a Binary Module Interface (BMI) and then imported by consumers.</p>
+
+        <p>Old way (headers):</p>
+        <pre><code>// math.h — header file
+#pragma once
+int add(int a, int b);
+double sqrt(double x);
+
+// main.cpp
+#include "math.h"  // Textual copy-paste
+int main() {
+    return add(1, 2);
+}</code></pre>
+
+        <p>New way (modules):</p>
+        <pre><code>// math.cppm — module interface unit
+export module math;
+
+export int add(int a, int b);
+export double sqrt(double x);
+
+// main.cpp
+import math;  // Import the compiled BMI
+int main() {
+    return add(1, 2);
+}</code></pre>
+
+        <h2>Key Concepts</h2>
+
+        <h3>Module Interface Units (.cppm)</h3>
+        <p>A module interface unit declares what a module exports. It's the public API of your module. By convention, these files use the <code>.cppm</code> extension.</p>
+
+        <pre><code>// com.github.user.mylib.cppm
+export module com.github.user.mylib;
+
+// Only exported symbols are visible to consumers
+export int public_function();
+
+// This is NOT exported — internal to the module
+int internal_helper();</code></pre>
+
+        <p>The <code>export</code> keyword is explicit. Only what you mark as <code>export</code> is visible to consumers. Everything else is truly private — not just "private by convention" like with headers.</p>
+
+        <h3>Module Implementation Units (.cpp)</h3>
+        <p>Implementation units contain the definitions for exported symbols:</p>
+
+        <pre><code>// mylib.cpp
+module com.github.user.mylib;
+
+int public_function() {
+    return internal_helper() * 2;
+}
+
+int internal_helper() {
+    return 21;
+}</code></pre>
+
+        <p>Note: no <code>export</code> keyword here. Implementation units implement the module but don't add to its interface.</p>
+
+        <h3>Module Partitions</h3>
+        <p>Large modules can be split into partitions. Each partition is a sub-unit of the parent module:</p>
+
+        <pre><code>// math:ops.cppm — partition interface
+export module math:ops;
+
+export int add(int a, int b);
+export int multiply(int a, int b);
+
+// math:stats.cppm — another partition
+export module math:stats;
+
+export double mean(const std::vector&lt;double&gt;&amp; v);
+
+// math.cppm — primary module interface
+export module math;
+
+export import :ops;    // Re-export the ops partition
+export import :stats;  // Re-export the stats partition</code></pre>
+
+        <p>Consumers just write <code>import math;</code> and get everything. Partitions are an implementation detail.</p>
+
+        <h3>Binary Module Interfaces (BMIs)</h3>
+        <p>When a module interface is compiled, the compiler produces a BMI — a binary representation of the module's exported symbols. BMIs are analogous to precompiled headers, but they're part of the language standard and much more reliable.</p>
+
+        <p>BMIs enable fast compilation because:</p>
+        <ul>
+          <li>Each module is compiled once, not once per consumer</li>
+          <li>BMIs are binary, so importing is much faster than parsing text</li>
+          <li>No macro pollution or include-order sensitivity</li>
+        </ul>
+
+        <h2>The Build Order Problem</h2>
+
+        <p>Here's the catch that makes module adoption hard: <strong>modules introduce build ordering requirements.</strong></p>
+
+        <p>With headers, you can compile all <code>.cpp</code> files in any order (or in parallel) because headers are resolved by the preprocessor. With modules, if <code>main.cpp</code> imports <code>math</code>, then <code>math.cppm</code> must be compiled first to produce the BMI that <code>main.cpp</code> needs.</p>
+
+        <p>This means the build system must:</p>
+        <ol>
+          <li>Discover the module dependency graph</li>
+          <li>Determine the correct compilation order (topological sort)</li>
+          <li>Compile modules in dependency order</li>
+          <li>Compile consumers only after their dependencies' BMIs are ready</li>
+        </ol>
+
+        <p>This is exactly what cmod does. It uses <code>clang-scan-deps</code> to discover the module graph automatically, then constructs a DAG and compiles in the correct order.</p>
+
+        <h2>How cmod Handles Modules</h2>
+
+        <p>cmod makes modules practical by automating the hard parts:</p>
+
+        <pre><code># cmod discovers all module dependencies automatically
+cmod build
+
+# See the module graph
+cmod graph --format dot
+
+# Understand build order
+cmod explain my_module</code></pre>
+
+        <p>Behind the scenes, cmod:</p>
+        <ol>
+          <li>Runs <code>clang-scan-deps</code> on all source files to discover <code>import</code> and <code>export module</code> declarations</li>
+          <li>Constructs a DAG of module dependencies</li>
+          <li>Performs a topological sort to determine compilation order</li>
+          <li>Compiles modules in order, passing BMI paths to dependent compilations</li>
+          <li>Caches BMIs for incremental builds</li>
+        </ol>
+
+        <h2>Module Naming in cmod</h2>
+
+        <p>cmod uses reverse-domain notation for module names, derived from the Git URL:</p>
+
+        <pre><code>github.com/fmtlib/fmt       → com.github.fmtlib.fmt
+github.com/user/my_project  → com.github.user.my_project</code></pre>
+
+        <p>This prevents naming collisions globally — no two repositories can have the same module name because no two repositories have the same URL.</p>
+
+        <h2>Modules vs. Header Units</h2>
+
+        <p>C++20 also introduces "header units" as a migration path. A header unit wraps an existing header as if it were a module:</p>
+
+        <pre><code>import &lt;vector&gt;;     // Import the vector header as a header unit
+import "legacy.h";   // Import a project header as a header unit</code></pre>
+
+        <p>Header units are useful for gradual migration, but they don't provide the full benefits of modules (no encapsulation, no guaranteed macro isolation). cmod supports header units but encourages proper module interfaces for new code.</p>
+
+        <h2>A Complete Example</h2>
+
+        <pre><code># Create a library project
+cmod init mylib
+cd mylib</code></pre>
+
+        <p>The module interface (<code>src/mylib.cppm</code>):</p>
+        <pre><code>export module com.github.user.mylib;
+
+export namespace mylib {
+    int add(int a, int b);
+    int multiply(int a, int b);
+}</code></pre>
+
+        <p>The implementation (<code>src/mylib.cpp</code>):</p>
+        <pre><code>module com.github.user.mylib;
+
+namespace mylib {
+    int add(int a, int b) { return a + b; }
+    int multiply(int a, int b) { return a * b; }
+}</code></pre>
+
+        <p>The manifest (<code>cmod.toml</code>):</p>
+        <pre><code>[package]
+name = "mylib"
+version = "0.1.0"
+
+[module]
+name = "com.github.user.mylib"
+root = "src/mylib.cppm"
+
+[build]
+type = "library"</code></pre>
+
+        <p>Build and test:</p>
+        <pre><code>cmod build
+cmod test</code></pre>
+
+        <h2>When to Adopt Modules</h2>
+
+        <p>Modules are ready for new projects today. For existing projects, consider:</p>
+
+        <ul>
+          <li><strong>New projects:</strong> Use modules from the start. cmod makes this easy.</li>
+          <li><strong>Active projects with good test coverage:</strong> Migrate incrementally, starting with leaf libraries.</li>
+          <li><strong>Legacy projects without tests:</strong> Wait until you have test coverage, then migrate.</li>
+          <li><strong>Projects that must support pre-C++20 compilers:</strong> Wait, or maintain dual interfaces.</li>
+        </ul>
+
+        <p>The ecosystem is moving toward modules. Starting now means you're ahead of the curve, not behind it.</p>
+
+        <p><a href="../getting-started.html">Get started with cmod</a> and build your first module-based C++ project.</p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

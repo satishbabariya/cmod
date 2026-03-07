@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Understanding cmod's Content-Addressed Cache — cmod Blog</title>
+  <meta name="description" content="Deep dive into how cmod's SHA-256 artifact cache works: cache keys, invalidation, and the path to distributed caching.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--technical">Technical</span>
+        <h1 class="article__title">Understanding cmod's Content-Addressed Cache</h1>
+        <p class="article__meta">February 2026 &middot; 7 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p>Compilation is expensive. A medium-sized C++ project might take minutes to build from scratch. When you're iterating on code, most of that time is wasted recompiling modules that haven't changed. cmod's artifact cache eliminates this waste through content-addressed storage.</p>
+
+        <h2>Content-Addressed Storage Explained</h2>
+
+        <p>In a content-addressed system, each artifact is stored under a key derived from its contents and inputs. If the inputs haven't changed, the key is the same, and the cached artifact is returned instead of recompiling.</p>
+
+        <p>This is fundamentally different from timestamp-based caching (like Make uses). Timestamps can lie — touching a file changes its timestamp without changing its content, and clock skew between machines makes timestamps unreliable. Content hashes are deterministic and portable.</p>
+
+        <h2>What Goes Into a Cache Key</h2>
+
+        <p>cmod computes cache keys using SHA-256 hashes of:</p>
+
+        <ul>
+          <li><strong>Source file content:</strong> The SHA-256 hash of the source file itself</li>
+          <li><strong>Compiler identity:</strong> Compiler path, version string, and target triple</li>
+          <li><strong>Compilation flags:</strong> Optimization level, warnings, feature flags</li>
+          <li><strong>Dependency BMI hashes:</strong> The cache keys of all imported modules</li>
+          <li><strong>C++ standard:</strong> c++20, c++23, etc.</li>
+        </ul>
+
+        <pre><code>// Conceptual cache key computation
+cache_key = SHA256(
+    source_content_hash,
+    compiler_version,
+    target_triple,
+    optimization_level,
+    cpp_standard,
+    sorted(dependency_bmi_hashes),
+)</code></pre>
+
+        <p>The dependency BMI hashes are critical. If module <code>A</code> imports module <code>B</code>, and <code>B</code>'s source changes, then <code>B</code>'s cache key changes, which changes <code>A</code>'s cache key (because it includes <code>B</code>'s BMI hash). This cascading invalidation is automatic and precise — only modules actually affected by a change are recompiled.</p>
+
+        <h2>Cache Structure</h2>
+
+        <p>The local cache lives at <code>~/.cache/cmod/</code> (or <code>$XDG_CACHE_HOME/cmod/</code>) and is organized by hash prefix for efficient lookup:</p>
+
+        <pre><code>~/.cache/cmod/
+├── artifacts/
+│   ├── 3f/
+│   │   └── 3f7c4d8a1b...  # BMI or object file
+│   ├── a0/
+│   │   └── a0b8a4e19f...
+│   └── ...
+└── metadata/
+    └── cache.db            # Index for fast lookups</code></pre>
+
+        <h2>Cache Operations</h2>
+
+        <pre><code># See cache status
+cmod cache status
+  Cache location: ~/.cache/cmod
+  Total size: 142 MB
+  Entries: 847
+  Hit rate: 94.2% (last session)
+
+# Remove old entries (keep last 30 days)
+cmod cache gc
+
+# Clear everything
+cmod cache clean
+
+# Build without cache (for verification)
+cmod build --no-cache</code></pre>
+
+        <h2>Why This Matters for Incremental Builds</h2>
+
+        <p>Consider a project with 50 modules. You change one leaf module. With content-addressed caching:</p>
+
+        <ol>
+          <li>The changed module is recompiled (cache miss)</li>
+          <li>Its direct dependents are recompiled (their cache keys changed because the dependency hash changed)</li>
+          <li>Everything else is a cache hit</li>
+        </ol>
+
+        <p>In practice, this means a typical edit-compile-test cycle touches 2-5 modules instead of 50. The build goes from 30 seconds to 2 seconds.</p>
+
+        <h2>Cache Correctness Guarantees</h2>
+
+        <p>A cache is only useful if it's correct. cmod's content-addressed approach provides strong guarantees:</p>
+
+        <ul>
+          <li><strong>No false hits:</strong> If the cache key matches, the output is guaranteed correct. The key includes every input that affects the output.</li>
+          <li><strong>No stale entries:</strong> There's no concept of "stale" in a content-addressed cache. An entry is either the right one (key matches) or doesn't exist.</li>
+          <li><strong>Safe concurrent access:</strong> Cache writes use atomic file operations (write to temp file, then rename). Multiple cmod instances can share the same cache safely.</li>
+          <li><strong>Portable across machines:</strong> Because keys are content-based (not path-based), cache entries are valid on any machine with the same compiler and configuration.</li>
+        </ul>
+
+        <h2>The Path to Distributed Caching</h2>
+
+        <p>Content-addressed caching naturally extends to distributed (remote) caching. Because cache keys are deterministic and machine-independent, a cache entry produced on one machine is valid on any machine with the same compiler setup.</p>
+
+        <p>Phase 3 of cmod's roadmap includes remote cache support:</p>
+
+        <pre><code># Push local cache to remote (planned)
+cmod cache push --remote s3://my-cache-bucket
+
+# Pull from remote cache (planned)
+cmod cache pull --remote s3://my-cache-bucket
+
+# Build with remote cache enabled (planned)
+cmod build --cache-remote s3://my-cache-bucket</code></pre>
+
+        <p>The workflow: when a developer builds locally, cache entries are pushed to a shared remote cache. When a CI job or another developer builds the same code, they get cache hits from the remote cache instead of recompiling. This is the same principle behind Bazel's remote execution and sccache, but integrated directly into the build tool.</p>
+
+        <h2>Comparison with Other Caching Approaches</h2>
+
+        <h3>vs. ccache/sccache</h3>
+        <p>ccache and sccache cache individual compiler invocations. They work at the file level and don't understand module dependencies. cmod's cache is module-aware — it knows that changing module B invalidates module A's cache, even if A's source hasn't changed. This is more precise and correct.</p>
+
+        <h3>vs. Bazel's remote cache</h3>
+        <p>Bazel's approach is similar in principle (content-addressed, deterministic keys), but requires Bazel's entire build system. cmod provides the same caching benefits with a much simpler tool and configuration.</p>
+
+        <h3>vs. precompiled headers (PCH)</h3>
+        <p>PCH are a compiler-specific optimization that predates modules. They're fragile (sensitive to include order and macro state), non-portable, and don't compose well. Module BMIs are a language-level feature with well-defined semantics.</p>
+
+        <h2>Practical Tips</h2>
+
+        <ul>
+          <li><strong>Commit your lockfile:</strong> This ensures all team members resolve the same dependency versions, maximizing cache hit rates</li>
+          <li><strong>Standardize compiler versions:</strong> Different compiler versions produce different cache keys. Pin your toolchain in <code>cmod.toml</code></li>
+          <li><strong>Use the same optimization flags:</strong> Debug and release builds have different cache keys (by design). Don't mix them</li>
+          <li><strong>Run <code>cmod cache gc</code> periodically:</strong> Remove entries older than 30 days to keep cache size manageable</li>
+        </ul>
+
+        <p>cmod's content-addressed cache turns C++ compilation from a slow, repetitive process into a fast, incremental one. Combined with C++20 modules and deterministic builds, it makes C++ development feel as responsive as working in a language with a REPL.</p>
+
+        <p><a href="../getting-started.html">Get started with cmod</a> and see the cache in action.</p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

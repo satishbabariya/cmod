@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started — cmod</title>
+  <meta name="description" content="Get started with cmod in under a minute. Install, create a project, add dependencies, and build.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Navigation -->
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="index.html#features">Features</a></li>
+        <li><a href="index.html#comparison">Compare</a></li>
+        <li><a href="blog.html">Blog</a></li>
+        <li><a href="docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--tutorial">Tutorial</span>
+        <h1 class="article__title">Getting Started with cmod</h1>
+        <p class="article__meta">From zero to building in under a minute</p>
+      </div>
+
+      <div class="article__body">
+        <h2>Prerequisites</h2>
+        <ul>
+          <li><strong>Rust 1.74+</strong> &mdash; Install from <a href="https://rustup.rs">rustup.rs</a></li>
+          <li><strong>Clang 18+</strong> with <code>clang-scan-deps</code> &mdash; for C++ module compilation</li>
+          <li><strong>Git 2.25+</strong></li>
+        </ul>
+
+        <h2>Install cmod</h2>
+        <pre><code>git clone https://github.com/satishbabariya/cmod.git
+cd cmod
+cargo build --release
+
+# Add to your PATH
+export PATH="$PWD/target/release:$PATH"</code></pre>
+
+        <h2>Create Your First Project</h2>
+        <pre><code># Initialize a new project
+cmod init hello
+cd hello</code></pre>
+
+        <p>This creates a clean project structure with a <code>cmod.toml</code> manifest and a <code>src/</code> directory.</p>
+
+        <pre><code>hello/
+├── cmod.toml
+└── src/
+    └── main.cpp</code></pre>
+
+        <p>Build and run:</p>
+        <pre><code>cmod build
+cmod run</code></pre>
+
+        <h2>Add Dependencies</h2>
+        <p>Dependencies are Git URLs. No registry needed.</p>
+
+        <pre><code># Add fmt library
+cmod add github.com/fmtlib/fmt@10.0
+
+# Add JSON library
+cmod add github.com/nlohmann/json@3.11
+
+# Resolve and build
+cmod resolve
+cmod build</code></pre>
+
+        <p>cmod clones the repositories, resolves the best matching version from Git tags, pins the exact commit hash in <code>cmod.lock</code>, and compiles everything.</p>
+
+        <h2>The Lockfile</h2>
+        <p>After resolving, check in your <code>cmod.lock</code> to version control. This guarantees reproducible builds across your team and CI.</p>
+        <pre><code># In CI, always use --locked
+cmod build --locked</code></pre>
+
+        <h2>Explore Your Dependencies</h2>
+        <pre><code># Dependency tree
+cmod deps --tree
+
+# Visual graph (DOT format)
+cmod graph --format dot > deps.dot
+
+# Why is a module included?
+cmod deps --why fmt</code></pre>
+
+        <h2>Test, Lint, Format</h2>
+        <pre><code>cmod test              # Run tests
+cmod test --release    # Release-mode tests
+cmod lint              # Run clang-tidy
+cmod fmt               # Format with clang-format
+cmod fmt --check       # Check without modifying</code></pre>
+
+        <h2>IDE Integration</h2>
+        <pre><code># Generate compile_commands.json
+cmod compile-commands</code></pre>
+        <p>This enables full code intelligence in any LSP-compatible editor: VS Code, CLion, Neovim, etc.</p>
+
+        <h2>Work Offline</h2>
+        <pre><code># Build without network access
+cmod build --offline</code></pre>
+
+        <h2>Set Up a Workspace</h2>
+        <p>For monorepo-style projects with multiple modules:</p>
+        <pre><code>cmod init my_workspace --workspace
+cd my_workspace
+
+cmod workspace add core
+cmod workspace add app
+cmod workspace add tests
+
+# Build everything
+cmod build</code></pre>
+
+        <h2>Verify &amp; Audit</h2>
+        <pre><code># Verify dependency integrity
+cmod verify
+
+# Audit for security issues
+cmod audit
+
+# Generate SBOM
+cmod sbom --output sbom.json</code></pre>
+
+        <h2>Common Workflows</h2>
+
+        <h3>Daily development</h3>
+        <pre><code>cmod build            # Incremental build
+cmod test             # Run tests
+cmod run -- arg1      # Run with arguments</code></pre>
+
+        <h3>CI pipeline</h3>
+        <pre><code>cmod build --locked --release
+cmod test --release
+cmod verify
+cmod sbom --output sbom.json</code></pre>
+
+        <h3>Update dependencies</h3>
+        <pre><code>cmod update              # Update all
+cmod update fmt          # Update specific dep
+cmod update --patch      # Patch-level only
+cmod tidy --apply        # Remove unused deps</code></pre>
+
+        <h2>Next Steps</h2>
+        <ul>
+          <li>Browse the <a href="https://github.com/satishbabariya/cmod/tree/main/examples">example projects</a></li>
+          <li>Read the <a href="docs.html">full documentation</a></li>
+          <li>Check out the <a href="blog.html">blog</a> for deep-dives</li>
+          <li>Run <code>cmod --help</code> for the complete command reference</li>
+        </ul>
+      </div>
+    </div>
+  </article>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0 License</span>
+        <span><a href="index.html">Home</a> &middot; <a href="blog.html">Blog</a> &middot; <a href="docs.html">Docs</a> &middot; <a href="https://github.com/satishbabariya/cmod" target="_blank" rel="noopener">GitHub</a></span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

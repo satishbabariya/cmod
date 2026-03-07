@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Git as a Package Registry: How and Why — cmod Blog</title>
+  <meta name="description" content="The design rationale behind using Git repositories as the sole package registry for cmod.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--technical">Technical</span>
+        <h1 class="article__title">Git as a Package Registry: How and Why</h1>
+        <p class="article__meta">December 2025 &middot; 9 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p>Every major package manager in every popular language has a central registry. npm has npmjs.com. Python has PyPI. Rust has crates.io. Even C++ tools like Conan and vcpkg maintain curated central repositories of packages.</p>
+
+        <p>cmod takes a fundamentally different approach: <strong>Git is the registry.</strong> There is no central server, no account to create, no approval queue to wait in. Your Git repository is your package.</p>
+
+        <p>This isn't laziness or a missing feature. It's a deliberate architectural decision with significant advantages for the C++ ecosystem specifically. Here's why.</p>
+
+        <h2>The Problems with Central Registries</h2>
+
+        <p>Central registries have served the JavaScript and Python ecosystems well, but they come with structural problems that are particularly acute for C++:</p>
+
+        <h3>Single point of failure</h3>
+        <p>When npm goes down, the JavaScript ecosystem halts. When PyPI has issues, CI pipelines break worldwide. A central registry is a critical dependency for every project that uses it. For C++ — which runs nuclear power plants, medical devices, and flight control systems — this centralized fragility is unacceptable.</p>
+
+        <h3>Name squatting and typosquatting</h3>
+        <p>Central registries create a flat namespace where names are first-come, first-served. This leads to name squatting (reserving popular names) and typosquatting attacks (publishing malicious packages with names like <code>lod4sh</code> instead of <code>lodash</code>). The npm ecosystem has been hit by this repeatedly.</p>
+
+        <h3>Supply chain attacks via account compromise</h3>
+        <p>When identity is tied to a registry account rather than a repository, compromising one account can push malicious code to millions of downstream users. The <code>event-stream</code> and <code>ua-parser-js</code> incidents in npm demonstrate this risk.</p>
+
+        <h3>Governance and politics</h3>
+        <p>Who decides what gets published? Who moderates? Who pays for the infrastructure? Central registries inevitably become political, with questions about moderation, funding, and control that distract from the technical mission.</p>
+
+        <h2>Why Git Works as a Registry</h2>
+
+        <p>Git repositories already have everything a package registry needs:</p>
+
+        <ul>
+          <li><strong>Identity:</strong> A Git URL is a globally unique, human-readable identifier. <code>github.com/fmtlib/fmt</code> is unambiguous.</li>
+          <li><strong>Versioning:</strong> Git tags map directly to semantic versions. Tag <code>v10.2.1</code> means version <code>10.2.1</code>.</li>
+          <li><strong>History:</strong> Full version history with commit hashes provides cryptographic identity for every state of the code.</li>
+          <li><strong>Distribution:</strong> Git hosting is commoditized. GitHub, GitLab, Bitbucket, Codeberg, self-hosted Gitea — the infrastructure exists and is battle-tested.</li>
+          <li><strong>Authentication:</strong> SSH keys and tokens already control access. Private dependencies work with the same authentication you use for your own code.</li>
+          <li><strong>Redundancy:</strong> Every clone is a full copy. If GitHub goes down, your local clone still has everything.</li>
+        </ul>
+
+        <h2>How cmod Uses Git</h2>
+
+        <h3>Module identity</h3>
+        <p>In cmod, a module's identity is derived from its Git URL using reverse-domain notation:</p>
+        <pre><code>github.com/fmtlib/fmt  →  com.github.fmtlib.fmt
+gitlab.com/org/lib     →  com.gitlab.org.lib</code></pre>
+
+        <p>This eliminates name collisions entirely. There's no race to register names. Your repository URL <em>is</em> your package name.</p>
+
+        <h3>Version resolution</h3>
+        <p>cmod resolves versions by listing Git tags that match semver patterns:</p>
+        <pre><code>[dependencies]
+"github.com/fmtlib/fmt" = ">=10.0"</code></pre>
+
+        <p>cmod fetches the repository's tag list, finds all tags matching the constraint, and selects the best version. The resolved commit hash is written to <code>cmod.lock</code>:</p>
+        <pre><code>[[dependencies]]
+url = "github.com/fmtlib/fmt"
+version = "10.2.1"
+commit = "a0b8a4e19f..."</code></pre>
+
+        <h3>Cloning and caching</h3>
+        <p>On first resolution, cmod performs a shallow clone of each dependency. Subsequent builds use the cached clone and only fetch new tags when running <code>cmod update</code>. This means:</p>
+        <ul>
+          <li>First build: clones are fetched (fast — shallow clones)</li>
+          <li>Subsequent builds: no network access needed</li>
+          <li>CI with <code>--locked</code>: dependencies come from exact commit hashes, no tag resolution needed</li>
+        </ul>
+
+        <h3>Branch and path dependencies</h3>
+        <p>For development workflows, cmod supports branch pinning and local path dependencies:</p>
+        <pre><code>[dependencies]
+# Pin to a branch (useful during development)
+"github.com/user/experimental" = { branch = "feature-x" }
+
+# Local path (for monorepo or co-development)
+"../shared-lib" = { path = "../shared-lib" }</code></pre>
+
+        <h2>Publishing Is Pushing a Tag</h2>
+
+        <p>In a central registry world, publishing requires:</p>
+        <ol>
+          <li>Create an account</li>
+          <li>Set up authentication tokens</li>
+          <li>Run a publish command</li>
+          <li>Wait for the registry to process and index</li>
+          <li>Hope nobody squatted your name</li>
+        </ol>
+
+        <p>In cmod, publishing is:</p>
+        <pre><code>git tag v1.0.0
+git push origin v1.0.0</code></pre>
+
+        <p>That's it. Anyone who adds your repository URL as a dependency can now resolve <code>^1.0.0</code> and get your tagged release. The <code>cmod publish</code> command automates this:</p>
+        <pre><code>cmod publish            # Creates and pushes a Git tag
+cmod publish --dry-run  # Preview what would happen</code></pre>
+
+        <h2>Addressing Common Concerns</h2>
+
+        <h3>"How do you discover packages?"</h3>
+        <p>The same way you discover Git repositories: search engines, GitHub search, awesome lists, word of mouth, documentation links. The <code>cmod search</code> command queries GitHub's search API to find modules by name or description. A future community-maintained index could aggregate module metadata without being a single point of failure.</p>
+
+        <h3>"What about private dependencies?"</h3>
+        <p>Private dependencies work seamlessly because cmod uses the same Git authentication you already have configured. If you can <code>git clone</code> a repository, cmod can resolve it as a dependency. SSH keys, deploy tokens, and credential helpers all work.</p>
+
+        <h3>"Isn't cloning slow?"</h3>
+        <p>cmod uses shallow clones and caches aggressively. After first resolution, builds require zero network access. In practice, the initial clone of typical C++ libraries takes seconds, not minutes — and it only happens once per dependency per machine.</p>
+
+        <h3>"What if a repository is deleted?"</h3>
+        <p>This is a real concern, but it applies to central registries too (the <code>left-pad</code> incident proved this). cmod mitigates this with:</p>
+        <ul>
+          <li><strong>Lockfiles with commit hashes:</strong> Even if tags are moved, the exact commit is pinned</li>
+          <li><strong>Vendor command:</strong> <code>cmod vendor</code> copies all dependency source code into your project for fully offline builds</li>
+          <li><strong>Local cache:</strong> Once cloned, dependencies persist in the local cache</li>
+        </ul>
+
+        <h2>The Go Precedent</h2>
+
+        <p>cmod isn't the first tool to use this approach. Go modules use a similar model: module identity is a URL, versions are Git tags, and there's no mandatory central registry. The Go module proxy exists as an optimization layer, not a requirement. This model has worked at massive scale for the Go ecosystem since 2019.</p>
+
+        <p>cmod takes this further by adding mandatory lockfiles, cryptographic verification, and the security guarantees that C++'s use in critical infrastructure demands.</p>
+
+        <h2>Looking Forward</h2>
+
+        <p>The Git-as-registry model opens up possibilities that central registries can't easily provide:</p>
+        <ul>
+          <li><strong>Federated discovery:</strong> Community-maintained indexes can aggregate metadata without controlling distribution</li>
+          <li><strong>Mirror flexibility:</strong> Teams can mirror dependencies to internal Git servers for air-gapped environments</li>
+          <li><strong>Zero vendor lock-in:</strong> Moving from GitHub to GitLab or self-hosted infrastructure requires no ecosystem migration</li>
+        </ul>
+
+        <p>Git is the most successful version control system ever built. It's already the backbone of open-source collaboration. Using it as a package registry isn't a compromise — it's a recognition that the infrastructure we need already exists.</p>
+
+        <p><a href="../getting-started.html">Get started with cmod</a> and experience Git-native dependency management for yourself.</p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

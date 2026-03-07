@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Blog — cmod</title>
+  <meta name="description" content="Articles, tutorials, and deep-dives about cmod — the modern C++ package manager.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="index.html#features">Features</a></li>
+        <li><a href="index.html#comparison">Compare</a></li>
+        <li><a href="blog.html">Blog</a></li>
+        <li><a href="docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <section class="hero" style="padding-bottom: var(--space-2xl);">
+    <div class="container">
+      <h1 class="hero__title">Blog</h1>
+      <p class="hero__subtitle">Articles, tutorials, and deep-dives on modern C++ tooling</p>
+    </div>
+  </section>
+
+  <section class="section" style="padding-top: 0;">
+    <div class="container">
+      <div class="blog-grid">
+
+        <!-- New posts first (most recent) -->
+        <a href="blog/13-cmod-and-ai-assisted-development.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--ecosystem">Ecosystem</span>
+          <h3 class="blog-card__title">cmod and AI-Assisted C++ Development</h3>
+          <p class="blog-card__excerpt">How structured project manifests and deterministic builds make C++ projects more accessible to AI coding assistants and LLM-based tools.</p>
+          <div class="blog-card__meta">March 2026 &middot; 8 min read</div>
+        </a>
+
+        <a href="blog/12-migrating-cmake-to-cmod.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--tutorial">Tutorial</span>
+          <h3 class="blog-card__title">Migrating a CMake Project to cmod</h3>
+          <p class="blog-card__excerpt">A step-by-step walkthrough of converting a real-world CMake project with external dependencies into a clean cmod project.</p>
+          <div class="blog-card__meta">March 2026 &middot; 10 min read</div>
+        </a>
+
+        <a href="blog/11-workspace-monorepo-patterns.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--technical">Technical</span>
+          <h3 class="blog-card__title">Monorepo Patterns with cmod Workspaces</h3>
+          <p class="blog-card__excerpt">How to structure large C++ codebases with cmod workspaces: shared dependencies, inter-member builds, and CI strategies.</p>
+          <div class="blog-card__meta">February 2026 &middot; 9 min read</div>
+        </a>
+
+        <a href="blog/10-understanding-cmod-cache.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--technical">Technical</span>
+          <h3 class="blog-card__title">Understanding cmod's Content-Addressed Cache</h3>
+          <p class="blog-card__excerpt">Deep dive into how cmod's SHA-256 artifact cache works: cache keys, invalidation strategy, and the path to distributed caching.</p>
+          <div class="blog-card__meta">February 2026 &middot; 7 min read</div>
+        </a>
+
+        <a href="blog/09-cpp-modules-explained.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--tutorial">Tutorial</span>
+          <h3 class="blog-card__title">C++20 Modules Explained for Practical Developers</h3>
+          <p class="blog-card__excerpt">A no-nonsense guide to C++20 modules: what they are, how they differ from headers, and why they change everything about C++ builds.</p>
+          <div class="blog-card__meta">January 2026 &middot; 11 min read</div>
+        </a>
+
+        <a href="blog/08-deterministic-builds-matter.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--technical">Technical</span>
+          <h3 class="blog-card__title">Why Deterministic Builds Matter</h3>
+          <p class="blog-card__excerpt">How cmod's mandatory lockfiles, pinned commits, and toolchain versioning eliminate "works on my machine" forever.</p>
+          <div class="blog-card__meta">January 2026 &middot; 7 min read</div>
+        </a>
+
+        <a href="blog/07-building-cmod-in-rust.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--technical">Technical</span>
+          <h3 class="blog-card__title">Building a C++ Tool in Rust: Lessons Learned</h3>
+          <p class="blog-card__excerpt">Why we chose Rust to build a C++ package manager, and what we learned about cross-language tooling along the way.</p>
+          <div class="blog-card__meta">December 2025 &middot; 8 min read</div>
+        </a>
+
+        <a href="blog/06-git-as-registry.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--technical">Technical</span>
+          <h3 class="blog-card__title">Git as a Package Registry: How and Why</h3>
+          <p class="blog-card__excerpt">The design rationale behind using Git repositories as the sole package registry, and how it solves problems that central registries create.</p>
+          <div class="blog-card__meta">December 2025 &middot; 9 min read</div>
+        </a>
+
+        <!-- Original posts -->
+        <a href="blog/05-supply-chain-security-for-cpp.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--security">Security</span>
+          <h3 class="blog-card__title">Supply Chain Security for C++</h3>
+          <p class="blog-card__excerpt">How cmod addresses software supply chain security with hash verification, TOFU trust, mandatory lockfiles, and SBOM generation.</p>
+          <div class="blog-card__meta">November 2025 &middot; 8 min read</div>
+        </a>
+
+        <a href="blog/04-getting-started-with-cmod.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--tutorial">Tutorial</span>
+          <h3 class="blog-card__title">Getting Started with cmod</h3>
+          <p class="blog-card__excerpt">A hands-on tutorial: install cmod, create your first project, add dependencies, build, test, and explore your dependency graph.</p>
+          <div class="blog-card__meta">November 2025 &middot; 6 min read</div>
+        </a>
+
+        <a href="blog/03-cmod-vs-existing-tools.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--comparison">Comparison</span>
+          <h3 class="blog-card__title">cmod vs Existing Tools</h3>
+          <p class="blog-card__excerpt">An honest comparison of cmod with CMake, Conan, vcpkg, and Bazel across module support, dependency management, and developer experience.</p>
+          <div class="blog-card__meta">October 2025 &middot; 10 min read</div>
+        </a>
+
+        <a href="blog/02-why-cpp-needs-a-modern-package-manager.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--technical">Technical</span>
+          <h3 class="blog-card__title">Why C++ Needs a Modern Package Manager</h3>
+          <p class="blog-card__excerpt">C++ powers the world's most critical software, yet it still lacks a unified package manager. Here's why that matters and what we can do about it.</p>
+          <div class="blog-card__meta">October 2025 &middot; 9 min read</div>
+        </a>
+
+        <a href="blog/01-introducing-cmod.html" class="blog-card" style="text-decoration: none; color: inherit;">
+          <span class="blog-card__tag blog-card__tag--announcement">Announcement</span>
+          <h3 class="blog-card__title">Introducing cmod</h3>
+          <p class="blog-card__excerpt">C++ has modules now. It deserves a build tool that knows it. Meet cmod: Cargo-inspired, Git-native, built for C++20 and beyond.</p>
+          <div class="blog-card__meta">October 2025 &middot; 7 min read</div>
+        </a>
+
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0 License</span>
+        <span><a href="index.html">Home</a> &middot; <a href="blog.html">Blog</a> &middot; <a href="docs.html">Docs</a> &middot; <a href="https://github.com/satishbabariya/cmod" target="_blank" rel="noopener">GitHub</a></span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>
