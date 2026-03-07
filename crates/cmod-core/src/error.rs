@@ -64,6 +64,19 @@ pub enum CmodError {
     #[error("module scan failed: {reason}")]
     ModuleScanFailed { reason: String },
 
+    // Test errors
+    #[error("test failed: {reason}")]
+    TestFailed { reason: String },
+
+    #[error("{count} test(s) failed")]
+    TestsFailed { count: usize },
+
+    #[error("test timed out after {timeout_secs}s: {test_name}")]
+    TestTimeout {
+        test_name: String,
+        timeout_secs: u64,
+    },
+
     // Git errors
     #[error("git operation failed: {reason}")]
     GitError { reason: String },
@@ -96,7 +109,10 @@ impl CmodError {
         match self {
             CmodError::BuildFailed { .. }
             | CmodError::CompilerNotFound { .. }
-            | CmodError::ModuleScanFailed { .. } => EXIT_BUILD_FAILURE,
+            | CmodError::ModuleScanFailed { .. }
+            | CmodError::TestFailed { .. }
+            | CmodError::TestsFailed { .. }
+            | CmodError::TestTimeout { .. } => EXIT_BUILD_FAILURE,
 
             CmodError::DependencyNotFound { .. }
             | CmodError::DependencyAlreadyExists { .. }

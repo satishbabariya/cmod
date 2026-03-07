@@ -155,6 +155,42 @@ enum Commands {
         /// Build in release mode
         #[arg(long)]
         release: bool,
+
+        /// Test name filter (positional, optional)
+        #[arg(value_name = "TESTNAME")]
+        name: Option<String>,
+
+        /// Filter tests by glob pattern
+        #[arg(long, short = 'f')]
+        filter: Option<String>,
+
+        /// Maximum parallel test execution jobs (0 = auto)
+        #[arg(long, short, default_value = "0")]
+        jobs: usize,
+
+        /// Continue running after test failures
+        #[arg(long)]
+        no_fail_fast: bool,
+
+        /// Per-test timeout in seconds (0 = no timeout)
+        #[arg(long, default_value = "0")]
+        timeout: u64,
+
+        /// Test a specific workspace member
+        #[arg(short, long)]
+        package: Option<String>,
+
+        /// Enable LLVM source-based code coverage
+        #[arg(long)]
+        coverage: bool,
+
+        /// Enable sanitizers (comma-separated: address, undefined, thread, memory)
+        #[arg(long, value_delimiter = ',')]
+        sanitize: Vec<String>,
+
+        /// Output format for test results (human, json, junit, tap)
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
     },
 
     /// Update dependencies
@@ -481,13 +517,33 @@ fn main() {
             distributed,
             workers,
         ),
-        Commands::Test { release } => commands::test::run(
+        Commands::Test {
+            release,
+            name,
+            filter,
+            jobs,
+            no_fail_fast,
+            timeout,
+            package,
+            coverage,
+            sanitize,
+            format,
+        } => commands::test::run(
             release,
             cli.locked,
             cli.offline,
             &shell,
             cli.target,
             cli.no_cache,
+            name,
+            filter,
+            jobs,
+            no_fail_fast,
+            timeout,
+            package,
+            coverage,
+            sanitize,
+            format,
         ),
         Commands::Update { name, patch } => commands::update::run(name, patch, &shell),
         Commands::Deps {

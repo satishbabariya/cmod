@@ -272,6 +272,15 @@ pub struct Test {
     pub test_patterns: Vec<String>,
     #[serde(default)]
     pub exclude_patterns: Vec<String>,
+    /// Custom test runner command.
+    #[serde(default)]
+    pub runner: Option<String>,
+    /// Additional compiler flags for test compilation.
+    #[serde(default)]
+    pub extra_flags: Vec<String>,
+    /// Default per-test timeout in seconds (overridden by CLI --timeout).
+    #[serde(default)]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

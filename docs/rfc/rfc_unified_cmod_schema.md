@@ -75,6 +75,9 @@ exclude = ["*_test.cc", "test/**"]  # Glob patterns to exclude from source disco
 framework = "catch2"                # catch2, gtest, custom
 test_patterns = ["tests/**/*.cpp"]
 exclude_patterns = ["tests/integration/**"]
+runner = ""                         # Custom test runner command (empty = direct execution)
+extra_flags = ["-fsanitize=address"] # Extra compiler flags for test builds only
+timeout = 300                       # Per-test timeout in seconds (0 = no timeout)
 
 # === Publishing Configuration ===
 [publish]

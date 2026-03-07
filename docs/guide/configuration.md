@@ -181,14 +181,26 @@ task_timeout = 300                                   # Per-task timeout in secon
 
 ## `[test]`
 
-Test configuration.
+Test configuration. See the [Testing guide](testing.md) for full details.
 
 ```toml
 [test]
-framework = "catch2"                         # Test framework hint
+framework = "catch2"                         # Test framework hint: "catch2", "gtest", "custom"
 test_patterns = ["tests/**/*.cpp"]           # File patterns for test discovery
 exclude_patterns = ["tests/bench_*.cpp"]     # Patterns to exclude from tests
+runner = "valgrind --leak-check=full"        # Custom test runner command (empty = direct execution)
+extra_flags = ["-fsanitize=address"]         # Extra compiler flags for test builds only
+timeout = 300                                # Per-test timeout in seconds (0 = no timeout)
 ```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `framework` | string | `"custom"` | Framework hint: `"catch2"`, `"gtest"`, `"custom"` |
+| `test_patterns` | list | `["tests/**/*.cpp"]` | Glob patterns for test file discovery |
+| `exclude_patterns` | list | `[]` | Glob patterns to exclude from test discovery |
+| `runner` | string | `""` | Custom test runner command; receives test binary path as argument |
+| `extra_flags` | list | `[]` | Extra compiler flags applied only to test builds |
+| `timeout` | integer | `300` | Per-test timeout in seconds (`0` = no timeout) |
 
 ## `[cache]`
 
