@@ -1,0 +1,21 @@
+[package]
+name = "with-tests"
+version = "0.1.0"
+edition = "2023"
+description = "Example demonstrating cmod test"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
+
+[module]
+name = "local.with_tests"
+root = "src/lib.cppm"
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "binary"
+
+[test]
+test_patterns = ["tests/**/*.cpp"]

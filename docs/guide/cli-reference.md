@@ -88,21 +88,39 @@ cmod build --release --timings # Release build with timing info
 
 ### `cmod test`
 
-Build and run module tests.
+Build and run module tests. See the [Testing guide](testing.md) for full details.
 
 ```
-cmod test [--release]
+cmod test [TESTNAME] [OPTIONS]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--release` | Build tests in release mode |
+| Argument/Option | Short | Description |
+|-----------------|-------|-------------|
+| `[TESTNAME]` | | Positional filter: run only tests whose name contains this string |
+| `--release` | | Build tests in release mode |
+| `--filter <GLOB>` | | Filter test files by glob pattern |
+| `--jobs <N>` | `-j` | Number of test binaries to run in parallel (0 = auto) |
+| `--no-fail-fast` | | Continue running after a failure |
+| `--timeout <SECS>` | | Per-test timeout in seconds (overrides `[test].timeout`) |
+| `--package <NAME>` | `-p` | Run tests for a specific workspace member |
+| `--coverage` | | Instrument builds for code coverage |
+| `--sanitize <LIST>` | | Enable sanitizers: `address`, `undefined`, `thread`, `memory` |
+| `--format <FMT>` | | Output format: `human` (default), `json`, `junit`, `tap` |
 
 **Examples:**
 
 ```bash
 cmod test                      # Run tests in debug mode
 cmod test --release            # Run tests in release mode
+cmod test math                 # Run only tests matching "math"
+cmod test --filter "test_*"    # Filter by glob pattern
+cmod test -j 4                 # Run 4 tests in parallel
+cmod test --no-fail-fast       # Run all tests even if some fail
+cmod test --timeout 60         # 60-second per-test timeout
+cmod test -p my-lib            # Test a specific workspace member
+cmod test --coverage           # Generate code coverage report
+cmod test --sanitize address   # Run with AddressSanitizer
+cmod test --format junit       # Output as JUnit XML
 ```
 
 ### `cmod run`

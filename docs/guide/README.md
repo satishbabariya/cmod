@@ -19,6 +19,7 @@ Complete documentation for **cmod** — a Cargo-inspired, Git-native package and
 - **[Dependencies](dependencies.md)** — Version constraints, lockfiles, vendoring, features
 - **[C++20 Modules](modules.md)** — Module naming, partitions, build graph
 - **[Building](building.md)** — Build profiles, parallelism, hooks, IDE integration
+- **[Testing](testing.md)** — Test discovery, frameworks, coverage, sanitizers, CI integration
 - **[Workspaces](workspaces.md)** — Monorepos, shared dependencies, multi-member builds
 - **[Caching](caching.md)** — Local and remote build cache management
 - **[Security](security.md)** — Trust model, verification, signing, auditing
