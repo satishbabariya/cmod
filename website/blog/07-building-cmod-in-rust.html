@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building a C++ Tool in Rust: Lessons Learned — cmod Blog</title>
+  <meta name="description" content="Why we chose Rust to build a C++ package manager, and what we learned about cross-language tooling.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--technical">Technical</span>
+        <h1 class="article__title">Building a C++ Tool in Rust: Lessons Learned</h1>
+        <p class="article__meta">December 2025 &middot; 8 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p>"Why would you build a C++ tool in Rust?" It's the first question we get, and it deserves a thoughtful answer.</p>
+
+        <p>cmod is a package manager and build orchestrator for C++20 modules, but its implementation is entirely in Rust. This isn't a philosophical statement about language superiority — it's a pragmatic engineering decision. Here's what led us here and what we've learned.</p>
+
+        <h2>Why Not C++?</h2>
+
+        <p>The obvious choice for a C++ tool would be C++ itself. But consider what cmod actually does:</p>
+
+        <ul>
+          <li>Parses TOML configuration files</li>
+          <li>Resolves complex dependency graphs with semver constraints</li>
+          <li>Invokes Git operations (clone, fetch, tag listing)</li>
+          <li>Constructs DAGs and performs topological sorts</li>
+          <li>Orchestrates parallel subprocess invocations</li>
+          <li>Manages a content-addressed file cache</li>
+          <li>Handles cryptographic hashing for verification</li>
+        </ul>
+
+        <p>None of these operations require C++ features like templates, RTTI, or direct memory manipulation. They do require reliable error handling, safe concurrency, and fast string processing — areas where Rust excels.</p>
+
+        <h2>Why Rust Specifically</h2>
+
+        <h3>Cargo as a role model</h3>
+        <p>cmod is explicitly Cargo-inspired. Building it in Rust means we can study Cargo's implementation directly, borrow architectural patterns, and leverage the same ecosystem of libraries (serde, clap, toml, sha2) that Cargo uses. The Rust ecosystem has first-class libraries for every operation cmod needs.</p>
+
+        <h3>Error handling</h3>
+        <p>A package manager must handle errors gracefully: network failures, corrupt caches, invalid manifests, version conflicts, missing compilers. Rust's <code>Result</code> type and the <code>?</code> operator make exhaustive error handling the path of least resistance. Every error in cmod is typed, contextual, and produces a clear message with an exit code.</p>
+
+        <pre><code>pub enum CmodError {
+    ManifestParse { path: PathBuf, source: toml::de::Error },
+    ResolutionConflict { dep: String, constraints: Vec<String> },
+    GitCloneFailed { url: String, source: git2::Error },
+    BuildFailed { module: String, exit_code: i32 },
+    SecurityViolation { reason: String },
+    // ...
+}</code></pre>
+
+        <h3>Safe concurrency</h3>
+        <p>cmod compiles modules in parallel, respecting the DAG ordering. Rust's ownership system guarantees at compile time that our parallel build runner can't have data races. The <code>Send</code> and <code>Sync</code> traits ensure that shared state is correctly synchronized. We've never had a concurrency bug in the build runner — the compiler won't let us.</p>
+
+        <h3>Single binary distribution</h3>
+        <p>Rust compiles to a single static binary with no runtime dependencies. This is crucial for a developer tool that needs to work across different systems. No Python version conflicts, no shared library issues, no JVM to install. Just download the binary and run it.</p>
+
+        <h2>The Workspace Architecture</h2>
+
+        <p>cmod is organized as a Cargo workspace with 7 crates, mirroring the layered architecture:</p>
+
+        <pre><code>cmod-cli        → CLI frontend, subcommand dispatch
+cmod-resolver   → Git operations, semver solving
+cmod-build      → DAG construction, Clang invocation
+cmod-cache      → Content-addressed artifact cache
+cmod-workspace  → Monorepo management
+cmod-security   → Verification, trust model
+cmod-core       → Core types, config parsing, error model</code></pre>
+
+        <p>Each crate has a single responsibility and a narrow public API. Dependencies flow strictly downward — the CLI depends on everything, core depends on nothing. This isn't accidental; it's enforced by Cargo's dependency rules.</p>
+
+        <h2>Key Libraries We Rely On</h2>
+
+        <ul>
+          <li><strong>clap</strong> — CLI argument parsing with derive macros. Our 30+ commands are defined declaratively.</li>
+          <li><strong>serde + toml</strong> — Zero-effort TOML serialization/deserialization for manifests and lockfiles.</li>
+          <li><strong>semver</strong> — Semantic version parsing and constraint matching.</li>
+          <li><strong>sha2</strong> — SHA-256 hashing for cache keys and verification.</li>
+          <li><strong>git2</strong> — libgit2 bindings for Git operations.</li>
+          <li><strong>petgraph</strong> — Graph data structures for the module DAG.</li>
+          <li><strong>tempfile</strong> — Safe temporary file handling for atomic cache writes.</li>
+        </ul>
+
+        <p>The Rust ecosystem gave us battle-tested implementations for every component we needed.</p>
+
+        <h2>Lessons Learned</h2>
+
+        <h3>1. The type system catches design errors</h3>
+        <p>Early in development, we modeled module identifiers as plain strings. Rust's type system made it painfully obvious when we were comparing a module name with a file path or a Git URL. We introduced the <code>ModuleId</code> newtype, and an entire class of bugs disappeared.</p>
+
+        <h3>2. Test infrastructure is excellent</h3>
+        <p>Rust's built-in test framework, combined with Cargo's test runner, makes it trivial to write and run tests. We have 270+ tests covering everything from TOML parsing edge cases to full resolution workflows. Running <code>cargo test</code> takes seconds.</p>
+
+        <h3>3. Cross-compilation works</h3>
+        <p>Because cmod compiles to native code, we can cross-compile for any target Rust supports. Our CI builds binaries for Linux (x86_64, aarch64), macOS (x86_64, aarch64), and Windows — from a single workflow.</p>
+
+        <h3>4. Interacting with C++ tooling requires care</h3>
+        <p>cmod invokes Clang as a subprocess for actual compilation. Parsing Clang's output, handling its error messages, and managing the <code>clang-scan-deps</code> JSON output required careful string handling. Rust's strong typing prevented several potential parsing bugs that would have been silent errors in a dynamically-typed language.</p>
+
+        <h3>5. The Rust community is welcoming</h3>
+        <p>Building a C++ tool in Rust means our contributor base spans both communities. We've had contributions from C++ developers who learned Rust through the project, and from Rust developers curious about C++ modules. The cross-pollination has been valuable.</p>
+
+        <h2>Would We Choose Rust Again?</h2>
+
+        <p>Absolutely. The initial learning curve is real, but the payoff is substantial:</p>
+
+        <ul>
+          <li>Zero runtime crashes in production use</li>
+          <li>No concurrency bugs despite heavy parallelism</li>
+          <li>Single-binary distribution across all major platforms</li>
+          <li>Excellent test infrastructure</li>
+          <li>A thriving ecosystem of libraries</li>
+          <li>Compiler-enforced correctness that lets us refactor fearlessly</li>
+        </ul>
+
+        <p>cmod proves that the best language for building a tool isn't always the language the tool targets. What matters is choosing the right tool for the job — and for building a reliable, concurrent, cross-platform developer tool, Rust is hard to beat.</p>
+
+        <p><a href="https://github.com/satishbabariya/cmod" target="_blank" rel="noopener">Explore the cmod source code</a> and see the architecture for yourself.</p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monorepo Patterns with cmod Workspaces — cmod Blog</title>
+  <meta name="description" content="How to structure large C++ codebases with cmod workspaces: shared dependencies, inter-member builds, and CI strategies.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--technical">Technical</span>
+        <h1 class="article__title">Monorepo Patterns with cmod Workspaces</h1>
+        <p class="article__meta">February 2026 &middot; 9 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p>As C++ projects grow, they naturally split into multiple libraries, applications, and test suites. Managing these as separate repositories creates dependency hell. Managing them as a single monolithic build creates a different kind of hell. cmod workspaces provide a middle path: a monorepo structure with clear boundaries between components.</p>
+
+        <h2>What Is a cmod Workspace?</h2>
+
+        <p>A workspace is a collection of cmod members (libraries and binaries) that share a single <code>cmod.lock</code> and can depend on each other via path dependencies. Think of it as Cargo workspaces for C++.</p>
+
+        <pre><code>my_project/
+├── cmod.toml          # Workspace root
+├── cmod.lock          # Shared lockfile
+├── core/
+│   ├── cmod.toml      # Library member
+│   └── src/
+├── networking/
+│   ├── cmod.toml      # Library member
+│   └── src/
+├── app/
+│   ├── cmod.toml      # Binary member
+│   └── src/
+└── tests/
+    ├── cmod.toml      # Test member
+    └── src/</code></pre>
+
+        <h2>Setting Up a Workspace</h2>
+
+        <pre><code># Initialize the workspace
+cmod init my_project --workspace
+cd my_project
+
+# Add members
+cmod workspace add core
+cmod workspace add networking
+cmod workspace add app
+cmod workspace add tests</code></pre>
+
+        <p>The root <code>cmod.toml</code> declares the workspace:</p>
+        <pre><code>[workspace]
+members = [
+    "core",
+    "networking",
+    "app",
+    "tests"
+]</code></pre>
+
+        <p>Each member has its own <code>cmod.toml</code> with its specific dependencies and configuration.</p>
+
+        <h2>Pattern 1: The Layered Architecture</h2>
+
+        <p>The most common monorepo pattern is layered dependencies, where higher-level components depend on lower-level ones:</p>
+
+        <pre><code># core/cmod.toml — no internal deps
+[package]
+name = "core"
+version = "0.1.0"
+
+[module]
+name = "com.github.org.project.core"
+root = "src/core.cppm"
+
+[build]
+type = "library"
+
+# networking/cmod.toml — depends on core
+[dependencies]
+core = { workspace = true }
+"github.com/some/tls-lib" = "^2.0"
+
+# app/cmod.toml — depends on both
+[dependencies]
+core = { workspace = true }
+networking = { workspace = true }
+"github.com/fmtlib/fmt" = "^10.0"</code></pre>
+
+        <p>The <code>{ workspace = true }</code> syntax tells cmod to resolve the dependency from within the workspace. cmod automatically figures out the correct path and build order.</p>
+
+        <h2>Pattern 2: Shared Dependencies</h2>
+
+        <p>One of the biggest advantages of workspaces is unified dependency resolution. When multiple members depend on the same external library, the workspace ensures they all use the same version:</p>
+
+        <pre><code># Both core and app depend on fmt
+# core/cmod.toml
+[dependencies]
+"github.com/fmtlib/fmt" = ">=10.0"
+
+# app/cmod.toml
+[dependencies]
+"github.com/fmtlib/fmt" = ">=10.1"
+
+# Resolution: workspace resolves to fmt 10.2.1 (satisfies both)
+# Only one copy is compiled and cached</code></pre>
+
+        <p>Without workspaces, each project would resolve independently, potentially getting different versions and definitely compiling fmt twice.</p>
+
+        <h2>Pattern 3: The Test Harness</h2>
+
+        <p>A dedicated test member that depends on all other members for integration testing:</p>
+
+        <pre><code># tests/cmod.toml
+[package]
+name = "integration-tests"
+version = "0.1.0"
+
+[dependencies]
+core = { workspace = true }
+networking = { workspace = true }
+app = { workspace = true }
+
+[build]
+type = "binary"  # Test binary</code></pre>
+
+        <p>Run all tests across the workspace:</p>
+        <pre><code># Build and test everything
+cmod test
+
+# Test only the networking member
+cmod test -p networking
+
+# Build everything, test nothing
+cmod build</code></pre>
+
+        <h2>Pattern 4: Plugin Architecture</h2>
+
+        <p>For projects with a plugin system, the workspace can contain the core engine and several plugins:</p>
+
+        <pre><code>game_engine/
+├── cmod.toml
+├── engine/           # Core engine library
+├── renderer-vulkan/  # Vulkan rendering plugin
+├── renderer-metal/   # Metal rendering plugin
+├── physics/          # Physics plugin
+├── audio/            # Audio plugin
+└── editor/           # Editor application</code></pre>
+
+        <p>Each plugin depends on the engine's public API but not on other plugins. The editor depends on everything. This structure enforces architectural boundaries that would be easy to violate in a flat project.</p>
+
+        <h2>Workspace Build Behavior</h2>
+
+        <p>When you run <code>cmod build</code> at the workspace root:</p>
+
+        <ol>
+          <li>cmod loads the workspace manifest and discovers all members</li>
+          <li>Each member's dependencies are resolved against the shared lockfile</li>
+          <li>The combined dependency graph (workspace members + external deps) is constructed</li>
+          <li>Compilation proceeds in topological order</li>
+          <li>BMIs and object files are shared across members</li>
+        </ol>
+
+        <p>The shared BMI cache is key: if <code>core</code> and <code>networking</code> both import <code>fmt</code>, the <code>fmt</code> BMI is compiled once and reused. This can significantly reduce build times for large workspaces.</p>
+
+        <h2>Managing Workspace Dependencies</h2>
+
+        <pre><code># Add a dependency to a specific member
+cd networking
+cmod add github.com/some/lib@2.0
+
+# List workspace members
+cmod workspace list
+  core         v0.1.0  library
+  networking   v0.1.0  library
+  app          v0.1.0  binary
+  tests        v0.1.0  binary
+
+# Visualize cross-member dependencies
+cmod deps --tree
+  app v0.1.0
+  ├── core v0.1.0 (workspace)
+  ├── networking v0.1.0 (workspace)
+  │   └── core v0.1.0 (workspace)
+  └── fmt v10.2.1 (github.com/fmtlib/fmt)
+
+# Remove unused deps across workspace
+cmod tidy --apply</code></pre>
+
+        <h2>CI Strategies for Workspaces</h2>
+
+        <h3>Full workspace build (recommended for most teams)</h3>
+        <pre><code># CI pipeline
+cmod build --locked --release
+cmod test --locked --release
+cmod verify</code></pre>
+
+        <h3>Affected-member builds (for very large workspaces)</h3>
+        <p>For workspaces with dozens of members, you can build only what's affected by a change:</p>
+        <pre><code># Build only members affected by changes in core/
+cmod build -p core -p networking -p app --locked</code></pre>
+
+        <h2>Best Practices</h2>
+
+        <ul>
+          <li><strong>Keep members focused:</strong> Each member should have a single, clear responsibility. If a member is doing too much, split it.</li>
+          <li><strong>Minimize cross-member dependencies:</strong> The dependency graph between members should be a clean DAG. Circular dependencies are not allowed.</li>
+          <li><strong>Share the lockfile:</strong> The workspace lockfile (<code>cmod.lock</code>) should be committed to version control. It ensures all members resolve to the same dependency versions.</li>
+          <li><strong>Version members together:</strong> For simplicity, keep all members at the same version. If they need independent versioning, consider separate repositories.</li>
+          <li><strong>Use workspace-level commands:</strong> Run <code>cmod build</code>, <code>cmod test</code>, and <code>cmod clean</code> from the workspace root to operate on everything at once.</li>
+        </ul>
+
+        <h2>When to Use a Workspace vs. Separate Repos</h2>
+
+        <p>Use a workspace when:</p>
+        <ul>
+          <li>Components are developed and released together</li>
+          <li>There are frequent cross-component changes</li>
+          <li>You want unified dependency resolution</li>
+          <li>The team is small enough to own the entire codebase</li>
+        </ul>
+
+        <p>Use separate repositories when:</p>
+        <ul>
+          <li>Components have independent release cycles</li>
+          <li>Different teams own different components</li>
+          <li>Components are reused across unrelated projects</li>
+          <li>You need fine-grained access control</li>
+        </ul>
+
+        <p>cmod supports both models. Workspace members can depend on external Git repositories, and standalone projects can depend on workspace members via path or Git URL.</p>
+
+        <p><a href="../getting-started.html">Get started with cmod workspaces</a> and structure your C++ monorepo the right way.</p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>
