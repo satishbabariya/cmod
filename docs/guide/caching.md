@@ -18,9 +18,7 @@ A cache key is computed from:
 - **Target triple** — e.g., `x86_64-unknown-linux-gnu`
 - **Build flags** — any extra compiler flags
 
-The key format is: `<compiler>-<version>-std<standard>-<stdlib>-<target>`
-
-If any component changes, a new cache entry is created.
+These components are concatenated and hashed with SHA-256. The resulting cache key is the 64-character hex string produced by `hex::encode()` — not a human-readable dash-separated string. If any component changes, the hash differs and a new cache entry is created.
 
 ## Local Cache
 

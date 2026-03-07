@@ -163,6 +163,9 @@ Here's the structure from the `examples/workspace/` project:
 name = "workspace-example"
 version = "0.1.0"
 edition = "2023"
+description = "Multi-member workspace example"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
 
 [workspace]
 members = ["core", "utils", "app"]
@@ -174,10 +177,18 @@ members = ["core", "utils", "app"]
 [package]
 name = "core"
 version = "0.1.0"
+edition = "2023"
+description = "Core data types for the workspace example"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
 
 [module]
 name = "local.core"
 root = "src/lib.cppm"
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
 
 [build]
 type = "static-lib"
@@ -189,6 +200,10 @@ type = "static-lib"
 [package]
 name = "app"
 version = "0.1.0"
+edition = "2023"
+description = "Application binary for the workspace example"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
 
 [module]
 name = "local.app"
@@ -197,6 +212,10 @@ root = "src/lib.cppm"
 [dependencies]
 core = { path = "../core" }
 utils = { path = "../utils" }
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
 
 [build]
 type = "binary"

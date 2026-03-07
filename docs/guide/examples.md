@@ -38,6 +38,7 @@ name = "hello"
 version = "0.1.0"
 edition = "2023"
 description = "Minimal cmod binary example"
+authors = ["cmod contributors"]
 license = "Apache-2.0"
 
 [module]
@@ -118,10 +119,18 @@ library/
 [package]
 name = "math-lib"
 version = "0.1.0"
+edition = "2023"
+description = "Static library example with module partitions"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
 
 [module]
 name = "local.math"
 root = "src/lib.cppm"
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
 
 [build]
 type = "static-lib"
@@ -171,6 +180,10 @@ Shows how to use Git-hosted dependencies with version constraints and branch pin
 [package]
 name = "with-deps"
 version = "0.1.0"
+edition = "2023"
+description = "Example using Git dependencies (fmt + json)"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
 
 [module]
 name = "local.with_deps"
@@ -179,6 +192,10 @@ root = "src/lib.cppm"
 [dependencies]
 "github.com/satishbabariya/fmt-cmod" = "^0.1"
 "github.com/satishbabariya/json-cmod" = { version = "^0.1", branch = "develop" }
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
 
 [build]
 type = "binary"
@@ -231,6 +248,10 @@ workspace/
 [package]
 name = "workspace-example"
 version = "0.1.0"
+edition = "2023"
+description = "Multi-member workspace example"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
 
 [workspace]
 members = ["core", "utils", "app"]
@@ -290,10 +311,18 @@ path-deps/
 [package]
 name = "path-deps"
 version = "0.1.0"
+edition = "2023"
+description = "Example using local path dependencies"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
 
 [dependencies]
 geometry = { path = "libs/geometry" }
 colors = { path = "libs/colors" }
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
 
 [build]
 type = "binary"
