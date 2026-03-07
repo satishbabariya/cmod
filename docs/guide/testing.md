@@ -20,7 +20,7 @@ cmod treats testing as a first-class workflow. The `cmod test` command discovers
 
 By convention, test sources live in a `tests/` directory at the project root:
 
-```
+```text
 my-project/
   cmod.toml
   src/
@@ -59,7 +59,7 @@ timeout = 300                                # Per-test timeout in seconds (0 = 
 
 ## CLI Reference
 
-```
+```text
 cmod test [TESTNAME] [OPTIONS]
 ```
 
@@ -258,7 +258,7 @@ cmod test -p utils          # Test only the "utils" member
 
 Per-member summary example:
 
-```
+```text
 --- core: 5 passed, 0 failed (0.42s)
 --- utils: 3 passed, 1 failed (0.31s)
 --- app: 2 passed, 0 failed (0.18s)
@@ -316,7 +316,7 @@ The `--format` flag controls how test results are reported.
 
 Human-readable colored terminal output:
 
-```
+```text
 Running 3 tests...
 
   PASS  test_basic (0.02s)
@@ -367,7 +367,7 @@ JUnit XML format, compatible with most CI systems:
 
 Test Anything Protocol (TAP) format:
 
-```
+```tap
 TAP version 13
 1..3
 ok 1 - test_basic (0.02s)
