@@ -140,7 +140,7 @@ This isn't about being clever or cutting corners. It's about recognizing that de
 
 ## The Road Ahead
 
-cmod's foundation is solid: 30+ CLI commands, Git-based resolution, mandatory lockfiles, LLVM/Clang build backend, workspace support, and artifact caching — all backed by 737+ tests.
+cmod's foundation is solid: 30+ CLI commands, Git-based resolution, mandatory lockfiles, LLVM/Clang build backend, workspace support, and artifact caching — all backed by 750+ tests.
 
 What's coming next will make it production-ready for teams of any size:
 

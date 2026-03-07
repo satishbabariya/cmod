@@ -168,11 +168,11 @@ CLI → Resolver → Workspace → Build Orchestrator → LLVM/Clang → Cache �
 | Foundations — manifest, resolver, lockfile, CLI | **Complete** |
 | Builds — LLVM/Clang backend, module DAG, build runner | **Complete** |
 | Scale — workspace, local cache | **Complete** |
-| Distributed — remote cache, BMI distribution, distributed workers | In Progress |
-| Security — cryptographic signing, auditing, SBOM, policy enforcement | In Progress |
+| Distributed — remote cache, BMI distribution, distributed workers | **Complete** |
+| Security — cryptographic signing, auditing, SBOM, policy enforcement | **Complete** |
 | Ecosystem — LSP server, plugin sandboxing, module registry, features | In Progress |
 
-**737+ tests passing.** 8 focused crates. 21 design RFCs.
+**750+ tests passing.** 8 focused crates. 21 design RFCs.
 
 ---
 
