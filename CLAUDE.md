@@ -78,29 +78,44 @@ cmod/
 │   │       ├── lib.rs
 │   │       ├── git.rs                     # Git operations (clone, fetch, tags)
 │   │       ├── resolver.rs                # Resolution algorithm + lockfile generation
-│   │       └── version.rs                 # Semver constraint parsing + solving
+│   │       ├── version.rs                 # Semver constraint parsing + solving
+│   │       ├── registry.rs               # Module registry index + discovery (RFC-0015)
+│   │       ├── features.rs               # Feature resolution + optional deps
+│   │       └── conditional.rs            # Conditional deps + feature propagation (RFC-0017)
 │   ├── cmod-build/                        # Build orchestration
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── compiler.rs                # CompilerBackend trait + ClangBackend
 │   │       ├── graph.rs                   # ModuleGraph DAG + topological sort
 │   │       ├── plan.rs                    # BuildPlan IR generation
-│   │       └── runner.rs                  # Build execution + source discovery
+│   │       ├── runner.rs                  # Build execution + source discovery
+│   │       ├── incremental.rs             # Incremental rebuild detection
+│   │       └── distributed.rs            # Distributed build workers (RFC-0012/0013)
 │   ├── cmod-cache/                        # Artifact caching
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── cache.rs                   # ArtifactCache (store/get/evict/clean)
-│   │       └── key.rs                     # CacheKey computation (SHA-256)
+│   │       ├── key.rs                     # CacheKey computation (SHA-256)
+│   │       ├── bmi.rs                    # BMI metadata + packaging
+│   │       ├── distribution.rs           # Git-based BMI distribution (RFC-0011)
+│   │       └── remote.rs                 # Remote cache protocol (HTTP REST)
 │   ├── cmod-workspace/                    # Workspace management
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       └── workspace.rs               # WorkspaceManager (load/validate/add member)
-│   └── cmod-security/                     # Supply-chain integrity
+│   ├── cmod-security/                     # Supply-chain integrity
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── trust.rs                   # TOFU trust model
+│   │       ├── verify.rs                  # Hash/signature verification
+│   │       ├── policy.rs                  # Security policy enforcement
+│   │       ├── signing.rs                # Cryptographic signing (PGP/SSH/Sigstore, RFC-0009)
+│   │       ├── hash.rs                   # Hash computation + verification
+│   │       ├── audit.rs                  # Dependency auditing
+│   │       └── sbom.rs                   # SBOM generation
+│   └── cmod-lsp/                          # Language Server Protocol (RFC-0010/0016)
 │       └── src/
-│           ├── lib.rs
-│           ├── trust.rs                   # TOFU trust model
-│           ├── verify.rs                  # Hash/signature verification
-│           └── policy.rs                  # Security policy enforcement
+│           └── lib.rs                     # LSP server with completion + diagnostics
 ├── examples/                              # Example C++ projects
 │   ├── README.md                          # Index of all examples
 │   ├── hello/                             # Minimal binary, no deps
@@ -159,11 +174,12 @@ Key data flows:
 |---|---|---|
 | `cmod-core` | `Config`, `Manifest`, `Lockfile`, `CmodError`, `ModuleId` | Config loading, TOML parsing, error model, core types |
 | `cmod-cli` | `Cli`, `Commands` | clap-based CLI, subcommand dispatch |
-| `cmod-resolver` | `Resolver`, `ResolvedDep` | Git fetch, semver solving, lockfile generation |
-| `cmod-build` | `ModuleGraph`, `BuildPlan`, `BuildRunner`, `ClangBackend` | DAG construction, Clang invocation, build execution |
-| `cmod-cache` | `ArtifactCache`, `CacheKey` | Content-addressed caching, SHA-256 keys |
+| `cmod-resolver` | `Resolver`, `ResolvedDep`, `RegistryIndex` | Git fetch, semver solving, lockfile generation, registry, features |
+| `cmod-build` | `ModuleGraph`, `BuildPlan`, `BuildRunner`, `ClangBackend` | DAG construction, Clang invocation, build execution, distributed builds |
+| `cmod-cache` | `ArtifactCache`, `CacheKey`, `RemoteCache` | Content-addressed caching, SHA-256 keys, remote cache, BMI distribution |
 | `cmod-workspace` | `WorkspaceManager`, `WorkspaceMember` | Monorepo loading, unified deps, member management |
-| `cmod-security` | `TrustStore`, `Verifier`, `SecurityPolicy` | TOFU trust, hash/signature verification, policy enforcement |
+| `cmod-security` | `TrustStore`, `Verifier`, `SecurityPolicy`, `SigningBackend` | TOFU trust, hash/signature verification, policy enforcement, signing |
+| `cmod-lsp` | LSP server | Completion, diagnostics, IDE integration |
 
 ## CLI Commands
 
@@ -250,7 +266,7 @@ Module names follow reverse-domain Git path format: `com.github.user.my_math`.
 | Phase | Status | Key Deliverables |
 |---|---|---|
 | 0 — Foundations | **Implemented** | `cmod.toml` parser, Git resolver, lockfile, CLI commands |
-| 1 — Builds | **Implemented** | LLVM/Clang backend, module DAG, build plan IR, build runner |
+| 1 — Builds | **Implemented** | LLVM/Clang backend, module DAG, build plan IR, build runner, incremental rebuilds |
 | 2 — Scale | **Implemented** | Workspace manager, local cache, cache keys |
 | 3 — Distributed | **Implemented** | Remote cache protocol (HTTP), artifact push/pull, BMI distribution |
 | 4 — Security | **Implemented** | GPG/SSH/Sigstore signing, TOFU trust model, `--locked --verify` modes |
@@ -272,7 +288,7 @@ RFCs are organized by priority tier. When contributing, respect this ordering:
 - The implementation is in Rust, organized as a Cargo workspace under `crates/`.
 - Follow Cargo-idiomatic Rust conventions (snake_case, standard module layout).
 - Each crate has a focused responsibility — do not merge or split crates without updating this doc.
-- All cross-crate dependencies flow downward: `cli → {resolver, build, cache, workspace, security} → core`.
+- All cross-crate dependencies flow downward: `cli → {resolver, build, cache, workspace, security, lsp} → core`.
 - `cmod-core` has no internal crate dependencies and is the foundation.
 - Run `cargo test` after making changes. All tests must pass.
 - Run `cargo check` before committing to catch compilation errors early.
