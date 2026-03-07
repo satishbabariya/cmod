@@ -326,6 +326,139 @@ impl ModuleGraph {
         path
     }
 
+    /// Return a topological ordering biased by critical-path priority.
+    ///
+    /// Nodes on the longest weighted path (by `timings`) are scheduled first
+    /// among ready nodes, allowing the build engine to start critical work
+    /// earlier and reduce overall wall-clock time.
+    pub fn critical_path_order(
+        &self,
+        timings: &BTreeMap<String, u64>,
+    ) -> Result<Vec<String>, CmodError> {
+        let order = self.topological_order()?;
+
+        // Compute longest-path-to-sink (bottom-up weight) for each node.
+        // Process in reverse topological order.
+        let mut weight: BTreeMap<&str, u64> = BTreeMap::new();
+
+        for node_id in order.iter().rev() {
+            let node_time = timings.get(node_id.as_str()).copied().unwrap_or(1);
+            let node = match self.nodes.get(node_id.as_str()) {
+                Some(n) => n,
+                None => {
+                    weight.insert(node_id.as_str(), node_time);
+                    continue;
+                }
+            };
+
+            // Find the maximum weight among dependents (successors)
+            let max_successor_weight = self
+                .dependents(&node.name)
+                .iter()
+                .filter_map(|dep_id| weight.get(dep_id))
+                .copied()
+                .max()
+                .unwrap_or(0);
+
+            weight.insert(node_id.as_str(), node_time + max_successor_weight);
+        }
+
+        // Sort the topological order by weight (descending) while preserving
+        // dependency constraints. We use a priority-based Kahn's algorithm.
+        let module_names = self.module_names();
+        let mut mod_in_degree: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut mod_reverse_deps: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+
+        for name in &module_names {
+            mod_in_degree.entry(name.as_str()).or_insert(0);
+            mod_reverse_deps.entry(name.as_str()).or_default();
+        }
+
+        let mut edge_set: BTreeMap<(&str, &str), bool> = BTreeMap::new();
+        for node in self.nodes.values() {
+            for import in &node.imports {
+                if import != &node.name && module_names.contains(import) {
+                    let key = (import.as_str(), node.name.as_str());
+                    if let std::collections::btree_map::Entry::Vacant(e) = edge_set.entry(key) {
+                        e.insert(true);
+                        mod_reverse_deps
+                            .entry(import.as_str())
+                            .or_default()
+                            .insert(node.name.as_str());
+                        *mod_in_degree.entry(node.name.as_str()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        // Use a BinaryHeap to always pick the highest-weight ready module
+        use std::collections::BinaryHeap;
+        let mut heap: BinaryHeap<(u64, &str)> = BinaryHeap::new();
+        for (&name, &deg) in &mod_in_degree {
+            if deg == 0 {
+                let w = self
+                    .nodes
+                    .values()
+                    .filter(|n| n.name.as_str() == name)
+                    .filter_map(|n| weight.get(n.id.as_str()))
+                    .copied()
+                    .max()
+                    .unwrap_or(0);
+                heap.push((w, name));
+            }
+        }
+
+        let mut result = Vec::new();
+        while let Some((_, module)) = heap.pop() {
+            // Expand this module into its node IDs (partition→interface→impl→legacy)
+            let mut partitions = Vec::new();
+            let mut interface = Vec::new();
+            let mut impls = Vec::new();
+            let mut legacy = Vec::new();
+
+            for node in self.nodes.values() {
+                if node.name.as_str() != module {
+                    continue;
+                }
+                match node.kind {
+                    ModuleUnitKind::PartitionUnit => partitions.push(node.id.clone()),
+                    ModuleUnitKind::InterfaceUnit => interface.push(node.id.clone()),
+                    ModuleUnitKind::ImplementationUnit => impls.push(node.id.clone()),
+                    ModuleUnitKind::LegacyUnit => legacy.push(node.id.clone()),
+                }
+            }
+            partitions.sort();
+            interface.sort();
+            impls.sort();
+            legacy.sort();
+            result.extend(partitions);
+            result.extend(interface);
+            result.extend(impls);
+            result.extend(legacy);
+
+            if let Some(dependents) = mod_reverse_deps.get(module) {
+                for &dep in dependents {
+                    if let Some(deg) = mod_in_degree.get_mut(dep) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            let w = self
+                                .nodes
+                                .values()
+                                .filter(|n| n.name.as_str() == dep)
+                                .filter_map(|n| weight.get(n.id.as_str()))
+                                .copied()
+                                .max()
+                                .unwrap_or(0);
+                            heap.push((w, dep));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
     /// Get the set of modules that would need rebuilding if the given module changes.
     ///
     /// This includes the module itself plus all transitive dependents.
@@ -564,6 +697,37 @@ mod tests {
         assert_eq!(graph.roots(), vec!["only"]);
         assert!(graph.dependents("only").is_empty());
         assert!(graph.validate().is_ok());
+    }
+
+    #[test]
+    fn test_critical_path_order_diamond() {
+        // Diamond: base → left, base → right, left → top, right → top
+        // Timings: base=1, left=10, right=2, top=1
+        // Critical path: base → left → top (weight 12)
+        // So left should be scheduled before right among ready nodes.
+        let mut graph = ModuleGraph::new();
+        graph.add_node(make_node("base", &[]));
+        graph.add_node(make_node("left", &["base"]));
+        graph.add_node(make_node("right", &["base"]));
+        graph.add_node(make_node("top", &["left", "right"]));
+
+        let mut timings = BTreeMap::new();
+        timings.insert("base".to_string(), 1);
+        timings.insert("left".to_string(), 10);
+        timings.insert("right".to_string(), 2);
+        timings.insert("top".to_string(), 1);
+
+        let order = graph.critical_path_order(&timings).unwrap();
+        assert_eq!(order.len(), 4);
+
+        // base must come first
+        assert_eq!(order[0], "base");
+        // left should come before right (higher critical-path weight)
+        let left_pos = order.iter().position(|n| n == "left").unwrap();
+        let right_pos = order.iter().position(|n| n == "right").unwrap();
+        assert!(left_pos < right_pos);
+        // top must come last
+        assert_eq!(order[3], "top");
     }
 
     #[test]

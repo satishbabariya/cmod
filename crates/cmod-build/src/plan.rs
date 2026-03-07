@@ -52,6 +52,7 @@ impl BuildPlan {
         target: &str,
         profile: Profile,
         build_type: BuildType,
+        package_name: Option<&str>,
     ) -> Result<Self, CmodError> {
         let order = graph.topological_order()?;
         let mut nodes = Vec::new();
@@ -155,11 +156,9 @@ impl BuildPlan {
         }
 
         // Add the link node
-        let output_name = graph
-            .nodes
-            .values()
-            .last()
-            .map(|n| n.name.clone())
+        let output_name = package_name
+            .map(|s| s.to_string())
+            .or_else(|| graph.nodes.values().next().map(|n| n.package.clone()))
             .unwrap_or_else(|| "output".to_string());
 
         let link_output = match build_type {
@@ -340,6 +339,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 
@@ -377,6 +377,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 
@@ -410,6 +411,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 
@@ -444,6 +446,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Release,
             BuildType::StaticLib,
+            None,
         )
         .unwrap();
 
@@ -479,6 +482,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::SharedLib,
+            None,
         )
         .unwrap();
 
@@ -519,6 +523,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 
@@ -553,6 +558,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 
@@ -589,6 +595,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 
@@ -632,6 +639,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 
@@ -685,6 +693,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 
@@ -733,6 +742,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 
@@ -767,6 +777,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 
@@ -798,6 +809,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 
@@ -810,6 +822,39 @@ mod tests {
         // Should only have 1 entry (the object node, not the link)
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].file, "src/main.cpp");
+    }
+
+    #[test]
+    fn test_build_plan_package_name_override() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            id: "mymod".to_string(),
+            name: "mymod".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/lib.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+            partition_of: None,
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Release,
+            BuildType::StaticLib,
+            Some("my-library"),
+        )
+        .unwrap();
+
+        let link_node = plan.nodes.last().unwrap();
+        assert_eq!(link_node.kind, NodeKind::Link);
+        let output_path = link_node.outputs[0].to_str().unwrap();
+        assert!(
+            output_path.ends_with("libmy-library.a"),
+            "Expected libmy-library.a, got: {}",
+            output_path
+        );
     }
 
     #[test]
@@ -840,6 +885,7 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             Profile::Debug,
             BuildType::Binary,
+            None,
         )
         .unwrap();
 

@@ -28,6 +28,8 @@ pub fn run(
         &[],
         false,
         no_cache,
+        false,
+        vec![],
     )?;
 
     shell.status("Testing", "running tests...");
@@ -123,10 +125,11 @@ pub fn run(
     let mut obj_files: Vec<String> = Vec::new();
 
     if pcm_dir.exists() {
-        let src_dir = config.src_dir();
+        let src_dirs = config.src_dirs();
+        let exclude = config.exclude_patterns();
         let mut name_map: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
-        if let Ok(sources) = cmod_build::runner::discover_sources(&src_dir) {
+        if let Ok(sources) = cmod_build::runner::discover_sources_multi(&src_dirs, &exclude) {
             for source in &sources {
                 if let Ok(Some(mod_name)) = cmod_build::runner::extract_module_name(source) {
                     let sanitized = mod_name.replace(['.', ':', '/'], "_");
@@ -154,8 +157,9 @@ pub fn run(
     let mut main_obj_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
     main_obj_stems.insert("main".to_string());
     {
-        let src_dir = config.src_dir();
-        if let Ok(sources) = cmod_build::runner::discover_sources(&src_dir) {
+        let src_dirs = config.src_dirs();
+        let exclude = config.exclude_patterns();
+        if let Ok(sources) = cmod_build::runner::discover_sources_multi(&src_dirs, &exclude) {
             for source in &sources {
                 let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                 if stem == "main" {

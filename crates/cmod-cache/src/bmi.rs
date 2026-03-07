@@ -99,14 +99,50 @@ pub fn export_bmi(
         )));
     }
 
-    // Read existing metadata
+    // Read existing metadata — try BmiMetadata first, fall back to ArtifactMetadata
     let metadata_path = entry_dir.join("metadata.json");
     let base_metadata: BmiMetadata = if metadata_path.exists() {
         let content = fs::read_to_string(&metadata_path)?;
-        serde_json::from_str(&content)
-            .map_err(|e| CmodError::Other(format!("failed to parse BMI metadata: {}", e)))?
+        serde_json::from_str::<BmiMetadata>(&content).unwrap_or_else(|_| {
+            // Try parsing as ArtifactMetadata (the format written by the cache module)
+            if let Ok(am) = serde_json::from_str::<crate::cache::ArtifactMetadata>(&content) {
+                BmiMetadata {
+                    module_name: am.module_name,
+                    version: "0.0.0".to_string(),
+                    compiler: am.compiler,
+                    compiler_version: am.compiler_version,
+                    target: am.target,
+                    cxx_standard: "20".to_string(),
+                    stdlib: None,
+                    abi: None,
+                    source_commit: None,
+                    pcm_hash: None,
+                    obj_hash: None,
+                    signature: None,
+                    created_at: am.created_at,
+                    extra: BTreeMap::new(),
+                }
+            } else {
+                let now = chrono_now();
+                BmiMetadata {
+                    module_name: module_name.to_string(),
+                    version: "0.0.0".to_string(),
+                    compiler: "unknown".to_string(),
+                    compiler_version: "unknown".to_string(),
+                    target: "unknown".to_string(),
+                    cxx_standard: "20".to_string(),
+                    stdlib: None,
+                    abi: None,
+                    source_commit: None,
+                    pcm_hash: None,
+                    obj_hash: None,
+                    signature: None,
+                    created_at: now,
+                    extra: BTreeMap::new(),
+                }
+            }
+        })
     } else {
-        // Create minimal metadata from cache entry
         let now = chrono_now();
         BmiMetadata {
             module_name: module_name.to_string(),
@@ -206,6 +242,50 @@ pub fn import_bmi(cache_root: &Path, package_dir: &Path) -> Result<BmiMetadata, 
         let dest = entry_dir.join(file_name);
         fs::copy(&src, &dest)?;
     }
+
+    // Write metadata
+    let metadata_json = serde_json::to_string_pretty(&package.metadata)
+        .map_err(|e| CmodError::Other(format!("failed to serialize BMI metadata: {}", e)))?;
+    fs::write(entry_dir.join("metadata.json"), &metadata_json)?;
+
+    Ok(package.metadata)
+}
+
+/// Compress a BMI package into a zstd-compressed blob.
+///
+/// Takes an already-constructed `BmiPackage` and compresses its JSON
+/// representation. Suitable for efficient network transfer and storage.
+pub fn compress_bmi_package(package: &BmiPackage, output_path: &Path) -> Result<(), CmodError> {
+    let package_json = serde_json::to_vec(package)
+        .map_err(|e| CmodError::Other(format!("failed to serialize BMI package: {}", e)))?;
+
+    let compressed = crate::cache::compress_zstd(&package_json)?;
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(output_path, &compressed)?;
+
+    Ok(())
+}
+
+/// Import a BMI package from a zstd-compressed archive.
+pub fn import_bmi_compressed(
+    cache_root: &Path,
+    compressed_path: &Path,
+) -> Result<BmiMetadata, CmodError> {
+    let compressed = fs::read(compressed_path)?;
+    let decompressed = crate::cache::decompress_zstd(&compressed)?;
+
+    let package: BmiPackage = serde_json::from_slice(&decompressed)
+        .map_err(|e| CmodError::Other(format!("failed to parse compressed BMI package: {}", e)))?;
+
+    // Determine cache entry location
+    let cache_key = package.metadata.compat_key();
+    let entry_dir = cache_root
+        .join(&package.metadata.module_name)
+        .join(&cache_key);
+    fs::create_dir_all(&entry_dir)?;
 
     // Write metadata
     let metadata_json = serde_json::to_string_pretty(&package.metadata)
@@ -340,6 +420,42 @@ mod tests {
         let imported_dir = new_cache.join("mymod").join(&compat_key);
         assert!(imported_dir.join("module.pcm").exists());
         assert!(imported_dir.join("object.o").exists());
+    }
+
+    #[test]
+    fn test_zstd_compress_decompress_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let compressed_path = tmp.path().join("module.bmi.zst");
+
+        let package = BmiPackage {
+            metadata: BmiMetadata {
+                module_name: "mymod".to_string(),
+                version: "1.0.0".to_string(),
+                compiler: "clang".to_string(),
+                compiler_version: "18.0".to_string(),
+                target: "x86_64".to_string(),
+                cxx_standard: "20".to_string(),
+                stdlib: None,
+                abi: None,
+                source_commit: None,
+                pcm_hash: None,
+                obj_hash: None,
+                signature: None,
+                created_at: "0".to_string(),
+                extra: BTreeMap::new(),
+            },
+            files: BTreeMap::from([("module.pcm".to_string(), "hash123".to_string())]),
+        };
+
+        // Compress
+        compress_bmi_package(&package, &compressed_path).unwrap();
+        assert!(compressed_path.exists());
+
+        // Decompress and import
+        let new_cache = tmp.path().join("cache2");
+        let meta = import_bmi_compressed(&new_cache, &compressed_path).unwrap();
+        assert_eq!(meta.module_name, "mymod");
+        assert_eq!(meta.compiler, "clang");
     }
 
     #[test]

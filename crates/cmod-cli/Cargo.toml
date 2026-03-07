@@ -22,6 +22,7 @@ cmod-build = { path = "../cmod-build" }
 cmod-cache = { path = "../cmod-cache" }
 cmod-workspace = { path = "../cmod-workspace" }
 cmod-security = { path = "../cmod-security" }
+cmod-lsp = { path = "../cmod-lsp" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
@@ -31,5 +32,6 @@ semver = { workspace = true }
 walkdir = { workspace = true }
 git2 = { workspace = true }
 tempfile = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]

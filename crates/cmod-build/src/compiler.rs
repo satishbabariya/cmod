@@ -36,6 +36,16 @@ pub trait CompilerBackend {
     fn link(&self, objects: &[&Path], output: &Path, artifact: &Artifact) -> Result<(), CmodError>;
 }
 
+/// LTO mode for link-time optimization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LtoMode {
+    /// ThinLTO — faster link times, good optimization.
+    #[default]
+    Thin,
+    /// Full LTO — slower but maximum optimization.
+    Full,
+}
+
 /// Clang/LLVM compiler backend.
 pub struct ClangBackend {
     /// Path to the clang++ executable.
@@ -56,6 +66,8 @@ pub struct ClangBackend {
     pub sysroot: Option<PathBuf>,
     /// Enable LTO (link-time optimization).
     pub lto: bool,
+    /// LTO mode: "thin" (default) or "full".
+    pub lto_mode: LtoMode,
     /// Explicit optimization level (overrides profile-based defaults).
     pub optimization: Option<OptimizationLevel>,
 }
@@ -77,6 +89,7 @@ impl ClangBackend {
             extra_flags: Vec::new(),
             sysroot: None,
             lto: false,
+            lto_mode: LtoMode::default(),
             optimization: None,
         }
     }
@@ -128,7 +141,10 @@ impl ClangBackend {
         }
 
         if self.lto {
-            flags.push("-flto=thin".to_string());
+            match self.lto_mode {
+                LtoMode::Thin => flags.push("-flto=thin".to_string()),
+                LtoMode::Full => flags.push("-flto=full".to_string()),
+            }
         }
 
         flags.extend(self.extra_flags.clone());
@@ -431,6 +447,33 @@ mod tests {
         let flags = backend.common_flags();
         assert!(flags.contains(&"-fsanitize=address".to_string()));
         assert!(flags.contains(&"-Wall".to_string()));
+    }
+
+    #[test]
+    fn test_common_flags_lto_thin() {
+        let mut backend = ClangBackend::new("20", Profile::Release);
+        backend.lto = true;
+        backend.lto_mode = LtoMode::Thin;
+        let flags = backend.common_flags();
+        assert!(flags.contains(&"-flto=thin".to_string()));
+        assert!(!flags.contains(&"-flto=full".to_string()));
+    }
+
+    #[test]
+    fn test_common_flags_lto_full() {
+        let mut backend = ClangBackend::new("20", Profile::Release);
+        backend.lto = true;
+        backend.lto_mode = LtoMode::Full;
+        let flags = backend.common_flags();
+        assert!(flags.contains(&"-flto=full".to_string()));
+        assert!(!flags.contains(&"-flto=thin".to_string()));
+    }
+
+    #[test]
+    fn test_common_flags_lto_disabled() {
+        let backend = ClangBackend::new("20", Profile::Release);
+        let flags = backend.common_flags();
+        assert!(!flags.iter().any(|f| f.starts_with("-flto")));
     }
 
     #[test]

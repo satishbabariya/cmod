@@ -34,6 +34,9 @@ pub struct NodeState {
     pub flags_hash: String,
     /// Output file hashes (after successful compilation).
     pub output_hashes: Vec<(String, String)>,
+    /// Source file mtime (epoch seconds) for fast-path invalidation.
+    #[serde(default)]
+    pub mtime: Option<u64>,
 }
 
 /// Reason why a node needs rebuilding.
@@ -99,18 +102,30 @@ impl BuildState {
     ///
     /// Returns `None` if the node is up-to-date, or `Some(reason)` if it
     /// needs to be rebuilt.
+    ///
+    /// Uses mtime as a fast path: if the mtime hasn't changed, the source
+    /// hash is assumed unchanged and the expensive hash computation is skipped.
     pub fn needs_rebuild(&self, node: &BuildNode, flags_hash: &str) -> Option<RebuildReason> {
         let prev = match self.nodes.get(&node.id) {
             Some(s) => s,
             None => return Some(RebuildReason::NoPreviousState),
         };
 
-        // Check source hash
+        // Check source: use mtime fast path, fall back to hash
         if let Some(ref source) = node.source {
-            let current_hash = hash_file(source).unwrap_or_default();
-            if current_hash != prev.source_hash {
-                return Some(RebuildReason::SourceChanged);
+            let current_mtime = file_mtime(source);
+            let mtime_changed = match (current_mtime, prev.mtime) {
+                (Some(cur), Some(prev_mt)) => cur != prev_mt,
+                _ => true, // No mtime available — fall through to hash check
+            };
+
+            if mtime_changed {
+                let current_hash = hash_file(source).unwrap_or_default();
+                if current_hash != prev.source_hash {
+                    return Some(RebuildReason::SourceChanged);
+                }
             }
+            // mtime unchanged → skip hash, source is assumed the same
         }
 
         // Check flags
@@ -149,6 +164,8 @@ impl BuildState {
             .and_then(|s| hash_file(s).ok())
             .unwrap_or_default();
 
+        let mtime = node.source.as_ref().and_then(|s| file_mtime(s));
+
         let mut dep_hashes = Vec::new();
         for dep_id in &node.dependencies {
             if let Some(dep_state) = self.nodes.get(dep_id) {
@@ -176,6 +193,7 @@ impl BuildState {
                 dep_hashes,
                 flags_hash: flags_hash.to_string(),
                 output_hashes,
+                mtime,
             },
         );
     }
@@ -201,6 +219,15 @@ impl BuildState {
 
         None
     }
+}
+
+/// Get the mtime of a file as epoch milliseconds for sub-second granularity.
+fn file_mtime(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
 }
 
 #[cfg(test)]
@@ -231,6 +258,7 @@ mod tests {
                 dep_hashes: vec!["dep1".to_string()],
                 flags_hash: "flags456".to_string(),
                 output_hashes: vec![("mymod.pcm".to_string(), "out789".to_string())],
+                mtime: None,
             },
         );
 
@@ -268,6 +296,9 @@ mod tests {
 
         // Record with current content
         state.record_node(&node, "flags");
+
+        // Ensure mtime changes (sub-millisecond writes can share same mtime)
+        std::thread::sleep(std::time::Duration::from_millis(10));
 
         // Modify source
         std::fs::write(&src, "version 2").unwrap();
@@ -344,6 +375,7 @@ mod tests {
                 dep_hashes: vec!["dep1".to_string()],
                 flags_hash: "flags".to_string(),
                 output_hashes: vec![("out.pcm".to_string(), "hash".to_string())],
+                mtime: None,
             },
         );
 
@@ -356,6 +388,26 @@ mod tests {
     fn test_explain_module_not_found() {
         let state = BuildState::default();
         assert!(state.explain_module("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_mtime_fast_path_skips_hash() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("test.cppm");
+        std::fs::write(&src, "source content").unwrap();
+
+        let mut state = BuildState::default();
+        let node = make_node("interface:test", Some(src.clone()), &[]);
+
+        // Record node — this stores both hash and mtime
+        state.record_node(&node, "flags");
+
+        // Verify mtime was stored
+        let recorded = state.nodes.get("interface:test").unwrap();
+        assert!(recorded.mtime.is_some());
+
+        // Without modifying the file, mtime is the same → should skip hash and be up-to-date
+        assert_eq!(state.needs_rebuild(&node, "flags"), None);
     }
 
     #[test]

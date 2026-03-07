@@ -225,6 +225,43 @@ pub struct Build {
     pub parallel: Option<bool>,
     #[serde(default)]
     pub incremental: Option<bool>,
+    /// Additional include directories (relative to project root).
+    #[serde(default)]
+    pub include_dirs: Vec<String>,
+    /// Extra compiler flags.
+    #[serde(default)]
+    pub extra_flags: Vec<String>,
+    /// Source directories (relative to project root). Defaults to `["src"]`.
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// Glob patterns for files to exclude from source discovery.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Distributed build configuration.
+    #[serde(default)]
+    pub distributed: Option<DistributedBuildConfig>,
+}
+
+/// Configuration for distributed builds in cmod.toml `[build.distributed]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DistributedBuildConfig {
+    /// Whether distributed builds are enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Worker endpoint URLs.
+    #[serde(default)]
+    pub workers: Vec<String>,
+    /// Scheduling strategy: "least_loaded", "round_robin", "target_affinity".
+    #[serde(default)]
+    pub scheduler: Option<String>,
+    /// Environment variable name containing the authentication token for worker
+    /// communication (e.g., `"CMOD_DISTRIBUTED_AUTH_TOKEN"`).  The actual secret
+    /// is read from the environment at runtime — never store tokens in the manifest.
+    #[serde(default)]
+    pub auth_token_env: Option<String>,
+    /// Timeout for individual compilation tasks (seconds).
+    #[serde(default)]
+    pub task_timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +289,14 @@ pub struct Workspace {
     pub dependencies: BTreeMap<String, Dependency>,
     #[serde(default)]
     pub resolver: Option<String>,
+    /// Dependency overrides for development (replace git deps with local paths).
+    ///
+    /// ```toml
+    /// [workspace.patch]
+    /// fmt = { path = "../my-local-fmt" }
+    /// ```
+    #[serde(default)]
+    pub patch: BTreeMap<String, Dependency>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,9 +311,11 @@ pub struct Cache {
     /// Maximum total cache size in human-readable form (e.g., "1G", "500M").
     #[serde(default)]
     pub max_size: Option<String>,
-    /// Bearer token for remote cache authentication.
+    /// Environment variable name containing the bearer token for remote cache
+    /// authentication (e.g., `"CMOD_CACHE_AUTH_TOKEN"`).  The actual secret is
+    /// read from the environment at runtime.
     #[serde(default)]
-    pub auth_token: Option<String>,
+    pub auth_token_env: Option<String>,
     /// HTTP timeout in seconds for remote cache operations (default: 30).
     #[serde(default)]
     pub timeout: Option<u64>,
@@ -356,6 +403,9 @@ pub struct Security {
     /// Signing configuration (GPG key ID, SSH key path, etc.).
     #[serde(default)]
     pub signing_key: Option<String>,
+    /// Signing backend: "pgp", "ssh", "sigstore".
+    #[serde(default)]
+    pub signing_backend: Option<String>,
     /// Whether to verify content hashes on dependency fetch.
     #[serde(default)]
     pub verify_checksums: Option<bool>,
@@ -365,6 +415,12 @@ pub struct Security {
     /// Required signature policy: "none", "warn", "require".
     #[serde(default)]
     pub signature_policy: Option<String>,
+    /// OIDC issuer for Sigstore keyless signing.
+    #[serde(default)]
+    pub oidc_issuer: Option<String>,
+    /// Certificate identity (email) for Sigstore verification.
+    #[serde(default)]
+    pub certificate_identity: Option<String>,
 }
 
 /// Publish configuration for distributing the module.
@@ -758,6 +814,11 @@ pub fn default_manifest(name: &str) -> Manifest {
             lto: Some(false),
             parallel: Some(true),
             incremental: Some(true),
+            include_dirs: Vec::new(),
+            extra_flags: Vec::new(),
+            sources: Vec::new(),
+            exclude: Vec::new(),
+            distributed: None,
         }),
         test: None,
         workspace: None,
@@ -802,6 +863,7 @@ pub fn default_workspace_manifest(name: &str) -> Manifest {
             exclude: vec![],
             dependencies: BTreeMap::new(),
             resolver: Some("2".to_string()),
+            patch: BTreeMap::new(),
         }),
         cache: None,
         metadata: None,
@@ -1062,9 +1124,12 @@ tags = ["v0.1.0", "latest"]
         let mut manifest = default_manifest("hello");
         manifest.security = Some(Security {
             signing_key: None,
+            signing_backend: None,
             verify_checksums: None,
             trusted_sources: vec![],
             signature_policy: Some("invalid_policy".to_string()),
+            oidc_issuer: None,
+            certificate_identity: None,
         });
         assert!(manifest.validate().is_err());
     }
@@ -1088,6 +1153,40 @@ sysroot = "/opt/aarch64-sysroot"
             tc.sysroot.as_deref(),
             Some(Path::new("/opt/aarch64-sysroot"))
         );
+    }
+
+    #[test]
+    fn test_parse_build_sources_and_exclude() {
+        let toml_str = r#"
+[package]
+name = "jolt"
+version = "0.1.0"
+
+[build]
+type = "static-lib"
+sources = ["Jolt/", "extra/src/"]
+exclude = ["*_test.cc", "test/**"]
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+        let build = manifest.build.unwrap();
+        assert_eq!(build.sources, vec!["Jolt/", "extra/src/"]);
+        assert_eq!(build.exclude, vec!["*_test.cc", "test/**"]);
+    }
+
+    #[test]
+    fn test_parse_build_sources_defaults_empty() {
+        let toml_str = r#"
+[package]
+name = "simple"
+version = "0.1.0"
+
+[build]
+type = "binary"
+"#;
+        let manifest = Manifest::from_str(toml_str).unwrap();
+        let build = manifest.build.unwrap();
+        assert!(build.sources.is_empty());
+        assert!(build.exclude.is_empty());
     }
 
     // --- cfg() evaluator tests ---

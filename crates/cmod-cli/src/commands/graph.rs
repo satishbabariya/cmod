@@ -95,13 +95,15 @@ pub fn run(
     filter: Option<String>,
     status: bool,
     critical_path: bool,
+    timing: bool,
     shell: &Shell,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    let src_dir = config.src_dir();
-    let sources = runner::discover_sources(&src_dir)?;
+    let src_dirs = config.src_dirs();
+    let exclude = config.exclude_patterns();
+    let sources = runner::discover_sources_multi(&src_dirs, &exclude)?;
 
     if sources.is_empty() {
         shell.status("Graph", "no source files found");
@@ -143,6 +145,14 @@ pub fn run(
         }
     }
 
+    // Load timing data if requested
+    let timings = if timing {
+        let bs = BuildState::load(&config.build_dir());
+        bs.node_timings
+    } else {
+        BTreeMap::new()
+    };
+
     let format = match format.as_deref() {
         Some("dot") => GraphFormat::Dot,
         Some("json") => GraphFormat::Json,
@@ -156,8 +166,8 @@ pub fn run(
             filter.as_deref(),
             &statuses,
         ),
-        GraphFormat::Dot => print_dot(&graph, filter.as_deref(), &statuses),
-        GraphFormat::Json => print_json(&graph, &statuses)?,
+        GraphFormat::Dot => print_dot(&graph, filter.as_deref(), &statuses, &timings),
+        GraphFormat::Json => print_json(&graph, &statuses, &timings)?,
     }
 
     Ok(())
@@ -258,8 +268,25 @@ fn print_ascii_node(
     visited.remove(name);
 }
 
+/// Color-code a node by compilation time for timing visualization.
+/// Green for fast (<100ms), yellow for moderate (100-500ms), red for slow (>500ms).
+fn timing_color(ms: u64) -> &'static str {
+    if ms < 100 {
+        "palegreen"
+    } else if ms < 500 {
+        "lightyellow"
+    } else {
+        "lightcoral"
+    }
+}
+
 /// Print the graph in DOT format for Graphviz.
-fn print_dot(graph: &ModuleGraph, filter: Option<&str>, statuses: &BTreeMap<String, NodeStatus>) {
+fn print_dot(
+    graph: &ModuleGraph,
+    filter: Option<&str>,
+    statuses: &BTreeMap<String, NodeStatus>,
+    timings: &BTreeMap<String, u64>,
+) {
     println!("digraph modules {{");
     println!("  rankdir=BT;");
     println!("  node [shape=box, style=\"rounded,filled\"];");
@@ -278,16 +305,32 @@ fn print_dot(graph: &ModuleGraph, filter: Option<&str>, statuses: &BTreeMap<Stri
             cmod_core::types::ModuleUnitKind::LegacyUnit => "diamond",
         };
 
-        let fill_color = statuses.get(name).map(|s| s.dot_color()).unwrap_or("white");
+        // Look up timing for this module (try interface:name, impl:name, object:name)
+        let node_timing = timings
+            .get(&format!("interface:{}", name))
+            .or_else(|| timings.get(&format!("impl:{}", name)))
+            .or_else(|| timings.get(&format!("object:{}", name)))
+            .copied();
+
+        // Use timing color if timing data is available, otherwise use status color
+        let fill_color = if let Some(ms) = node_timing {
+            timing_color(ms)
+        } else {
+            statuses.get(name).map(|s| s.dot_color()).unwrap_or("white")
+        };
 
         let status_label = statuses
             .get(name)
             .map(|s| format!("\\n[{}]", s.label()))
             .unwrap_or_default();
 
+        let timing_label = node_timing
+            .map(|ms| format!("\\n{}ms", ms))
+            .unwrap_or_default();
+
         println!(
-            "  \"{}\" [shape={}, fillcolor=\"{}\", label=\"{}\\n({:?}){}\"];",
-            name, shape, fill_color, name, node.kind, status_label
+            "  \"{}\" [shape={}, fillcolor=\"{}\", label=\"{}\\n({:?}){}{}\"];",
+            name, shape, fill_color, name, node.kind, status_label, timing_label
         );
     }
 
@@ -306,26 +349,35 @@ fn print_dot(graph: &ModuleGraph, filter: Option<&str>, statuses: &BTreeMap<Stri
     println!("}}");
 }
 
-/// Print the graph as JSON, optionally with status annotations.
+/// Print the graph as JSON, optionally with status and timing annotations.
 fn print_json(
     graph: &ModuleGraph,
     statuses: &BTreeMap<String, NodeStatus>,
+    timings: &BTreeMap<String, u64>,
 ) -> Result<(), CmodError> {
-    if statuses.is_empty() {
+    if statuses.is_empty() && timings.is_empty() {
         let json = serde_json::to_string_pretty(&graph.nodes)
             .map_err(|e| CmodError::Other(format!("failed to serialize graph: {}", e)))?;
         println!("{}", json);
     } else {
-        // Build an enhanced JSON with status annotations
+        // Build an enhanced JSON with status and timing annotations
         let mut entries: BTreeMap<String, serde_json::Value> = BTreeMap::new();
         for (name, node) in &graph.nodes {
             let mut map = serde_json::to_value(node).unwrap_or_default();
-            if let Some(status) = statuses.get(name) {
-                if let serde_json::Value::Object(ref mut obj) = map {
+            if let serde_json::Value::Object(ref mut obj) = map {
+                if let Some(status) = statuses.get(name) {
                     obj.insert(
                         "status".to_string(),
                         serde_json::to_value(status.label()).unwrap(),
                     );
+                }
+                // Add timing data
+                let node_timing = timings
+                    .get(&format!("interface:{}", name))
+                    .or_else(|| timings.get(&format!("impl:{}", name)))
+                    .or_else(|| timings.get(&format!("object:{}", name)));
+                if let Some(&ms) = node_timing {
+                    obj.insert("build_time_ms".to_string(), serde_json::json!(ms));
                 }
             }
             entries.insert(name.clone(), map);
@@ -434,19 +486,19 @@ mod tests {
     #[test]
     fn test_print_dot_output() {
         let graph = make_graph();
-        print_dot(&graph, None, &BTreeMap::new());
+        print_dot(&graph, None, &BTreeMap::new(), &BTreeMap::new());
     }
 
     #[test]
     fn test_print_dot_with_filter() {
         let graph = make_graph();
-        print_dot(&graph, Some("base"), &BTreeMap::new());
+        print_dot(&graph, Some("base"), &BTreeMap::new(), &BTreeMap::new());
     }
 
     #[test]
     fn test_print_json_output() {
         let graph = make_graph();
-        let result = print_json(&graph, &BTreeMap::new());
+        let result = print_json(&graph, &BTreeMap::new(), &BTreeMap::new());
         assert!(result.is_ok());
     }
 
@@ -487,6 +539,7 @@ mod tests {
                 dep_hashes: vec![],
                 flags_hash: "flags".to_string(),
                 output_hashes: vec![("base.pcm".to_string(), "hash1".to_string())],
+                mtime: None,
             },
         );
 
@@ -502,7 +555,27 @@ mod tests {
         statuses.insert("base".to_string(), NodeStatus::UpToDate);
         statuses.insert("app".to_string(), NodeStatus::NeedsRebuild);
         // Just verify it doesn't panic
-        print_dot(&graph, None, &statuses);
+        print_dot(&graph, None, &statuses, &BTreeMap::new());
+    }
+
+    #[test]
+    fn test_print_dot_with_timing() {
+        let graph = make_graph();
+        let mut timings = BTreeMap::new();
+        timings.insert("interface:base".to_string(), 50u64);
+        timings.insert("interface:app".to_string(), 750u64);
+        // base=50ms should be green, app=750ms should be red
+        print_dot(&graph, None, &BTreeMap::new(), &timings);
+    }
+
+    #[test]
+    fn test_timing_color_thresholds() {
+        assert_eq!(timing_color(0), "palegreen");
+        assert_eq!(timing_color(99), "palegreen");
+        assert_eq!(timing_color(100), "lightyellow");
+        assert_eq!(timing_color(499), "lightyellow");
+        assert_eq!(timing_color(500), "lightcoral");
+        assert_eq!(timing_color(5000), "lightcoral");
     }
 
     #[test]
@@ -511,7 +584,7 @@ mod tests {
         let mut statuses = BTreeMap::new();
         statuses.insert("base".to_string(), NodeStatus::UpToDate);
         statuses.insert("app".to_string(), NodeStatus::NeverBuilt);
-        let result = print_json(&graph, &statuses);
+        let result = print_json(&graph, &statuses, &BTreeMap::new());
         assert!(result.is_ok());
     }
 }

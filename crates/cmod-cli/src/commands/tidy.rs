@@ -13,11 +13,12 @@ pub fn run(apply: bool, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    let src_dir = config.src_dir();
+    let src_dirs = config.src_dirs();
+    let exclude = config.exclude_patterns();
 
     // Try to build a module graph for accurate import analysis.
     // Fall back to text-based scanning if graph construction fails.
-    let imports = match build_import_set(&src_dir, &config.manifest.package.name) {
+    let imports = match build_import_set(&src_dirs, &exclude, &config.manifest.package.name) {
         Ok(imports) => {
             shell.verbose("Analysis", "using module graph for import analysis");
             imports
@@ -27,7 +28,7 @@ pub fn run(apply: bool, shell: &Shell) -> Result<(), CmodError> {
                 "Analysis",
                 "module graph unavailable, falling back to text-based import scanning",
             );
-            collect_all_imports(&src_dir)?
+            collect_all_imports_multi(&src_dirs)?
         }
     };
 
@@ -91,8 +92,12 @@ pub fn run(apply: bool, shell: &Shell) -> Result<(), CmodError> {
 ///
 /// This is more accurate than text scanning because it uses the same
 /// classification and parsing logic as the build system.
-fn build_import_set(src_dir: &Path, package_name: &str) -> Result<BTreeSet<String>, CmodError> {
-    let sources = runner::discover_sources(src_dir)?;
+fn build_import_set(
+    src_dirs: &[std::path::PathBuf],
+    exclude: &[String],
+    package_name: &str,
+) -> Result<BTreeSet<String>, CmodError> {
+    let sources = runner::discover_sources_multi(src_dirs, exclude)?;
     if sources.is_empty() {
         return Ok(BTreeSet::new());
     }
@@ -205,27 +210,31 @@ fn parse_import_line(line: &str) -> Option<String> {
 /// Collect all module imports from C++ source files using text scanning.
 ///
 /// This is the fallback when module graph construction fails.
-fn collect_all_imports(src_dir: &Path) -> Result<BTreeSet<String>, CmodError> {
+fn collect_all_imports_multi(
+    src_dirs: &[std::path::PathBuf],
+) -> Result<BTreeSet<String>, CmodError> {
     let mut imports = BTreeSet::new();
 
-    if !src_dir.exists() {
-        return Ok(imports);
-    }
-
-    for entry in walkdir::WalkDir::new(src_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let path = entry.path();
-        if !path.is_file() {
+    for src_dir in src_dirs {
+        if !src_dir.exists() {
             continue;
         }
-        if let Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx") =
-            path.extension().and_then(|e| e.to_str())
+
+        for entry in walkdir::WalkDir::new(src_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
         {
-            let found = extract_imports_from_source(path)?;
-            for name in found {
-                imports.insert(name);
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if let Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx") =
+                path.extension().and_then(|e| e.to_str())
+            {
+                let found = extract_imports_from_source(path)?;
+                for name in found {
+                    imports.insert(name);
+                }
             }
         }
     }
@@ -333,7 +342,7 @@ mod tests {
     #[test]
     fn test_collect_imports_empty_dir() {
         let tmp = TempDir::new().unwrap();
-        let imports = collect_all_imports(tmp.path()).unwrap();
+        let imports = collect_all_imports_multi(&[tmp.path().to_path_buf()]).unwrap();
         assert!(imports.is_empty());
     }
 
@@ -343,7 +352,7 @@ mod tests {
         let file = tmp.path().join("main.cppm");
         std::fs::write(&file, "export module app;\nimport fmt;\nimport spdlog;\n").unwrap();
 
-        let imports = collect_all_imports(tmp.path()).unwrap();
+        let imports = collect_all_imports_multi(&[tmp.path().to_path_buf()]).unwrap();
         assert_eq!(imports.len(), 2);
         assert!(imports.contains("fmt"));
         assert!(imports.contains("spdlog"));
@@ -351,7 +360,8 @@ mod tests {
 
     #[test]
     fn test_collect_imports_nonexistent_dir() {
-        let imports = collect_all_imports(Path::new("/nonexistent")).unwrap();
+        let imports =
+            collect_all_imports_multi(&[std::path::PathBuf::from("/nonexistent")]).unwrap();
         assert!(imports.is_empty());
     }
 

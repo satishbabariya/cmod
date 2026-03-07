@@ -53,8 +53,12 @@ pub struct BuildRunner {
     extra_pcm_paths: HashMap<String, PathBuf>,
     /// Extra object files to link (e.g., from workspace dependencies).
     extra_obj_paths: Vec<PathBuf>,
+    /// Directories containing precompiled BMI packages to check before compiling.
+    bmi_dirs: Vec<PathBuf>,
     /// Shell for colored, structured output.
     shell: Option<Arc<Shell>>,
+    /// Optional distributed worker pool for remote compilation.
+    worker_pool: Option<crate::distributed::WorkerPool>,
 }
 
 /// Outcome of executing a single build node.
@@ -88,7 +92,9 @@ impl BuildRunner {
             max_jobs: 0,
             extra_pcm_paths: HashMap::new(),
             extra_obj_paths: Vec::new(),
+            bmi_dirs: Vec::new(),
             shell: None,
+            worker_pool: None,
         }
     }
 
@@ -132,6 +138,102 @@ impl BuildRunner {
     pub fn with_shell(mut self, shell: Arc<Shell>) -> Self {
         self.shell = Some(shell);
         self
+    }
+
+    /// Add BMI directories for precompiled module lookup.
+    pub fn with_bmi_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.bmi_dirs = dirs;
+        self
+    }
+
+    /// Attach a distributed worker pool for remote compilation.
+    pub fn with_worker_pool(mut self, pool: crate::distributed::WorkerPool) -> Self {
+        self.worker_pool = Some(pool);
+        self
+    }
+
+    /// Check if a compatible precompiled BMI exists in any configured BMI directory.
+    ///
+    /// Searches each BMI directory for an `index.json` matching the given module name,
+    /// then checks for a variant compatible with the current compiler settings.
+    fn find_precompiled_bmi(&self, module_name: &str) -> Option<PathBuf> {
+        for bmi_dir in &self.bmi_dirs {
+            let index_path = bmi_dir.join("index.json");
+            if !index_path.exists() {
+                continue;
+            }
+
+            let content = match std::fs::read_to_string(&index_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let index: cmod_cache::distribution::BmiIndex = match serde_json::from_str(&content) {
+                Ok(i) => i,
+                Err(_) => continue,
+            };
+
+            if index.module_name != module_name {
+                continue;
+            }
+
+            // Derive compiler info from the backend fields.
+            // ClangBackend doesn't expose dedicated accessor methods, so we
+            // use the executable name and field values directly.
+            let compiler_name = self
+                .backend
+                .clang_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("clang++");
+            // Normalize "clang++" to "clang" for BMI index matching.
+            let compiler = if compiler_name.contains("clang") {
+                "clang"
+            } else {
+                compiler_name
+            };
+            let compiler_version = "";
+            let target = self.backend.target.as_deref().unwrap_or("");
+
+            if let Some(variant) = cmod_cache::distribution::find_compatible_variant(
+                &index,
+                compiler,
+                compiler_version,
+                target,
+                &self.backend.cxx_standard,
+            ) {
+                let variant_dir = bmi_dir.join(&variant.directory);
+                if variant_dir.exists() {
+                    return Some(variant_dir);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Restore a node's outputs from a precompiled BMI variant directory.
+    ///
+    /// Copies `.pcm` and `.o` files from the variant directory to the node's
+    /// expected output locations. Returns `true` on success.
+    fn restore_bmi_from_dir(&self, variant_dir: &Path, node: &BuildNode) -> bool {
+        for output in &node.outputs {
+            let file_name = match output.file_name().and_then(|f| f.to_str()) {
+                Some(n) => n,
+                None => return false,
+            };
+            let src = variant_dir.join(file_name);
+            if !src.exists() {
+                return false;
+            }
+            if let Some(parent) = output.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if fs::copy(&src, output).is_err() {
+                return false;
+            }
+        }
+        !node.outputs.is_empty()
     }
 
     /// Emit a normal status message through Shell, or fall back to eprintln.
@@ -196,12 +298,14 @@ impl BuildRunner {
         target: &str,
         profile: Profile,
         build_type: BuildType,
+        package_name: Option<&str>,
     ) -> Result<PathBuf, CmodError> {
         // Validate the graph
         graph.validate()?;
 
         // Generate the build plan
-        let plan = BuildPlan::from_graph(graph, build_dir, target, profile, build_type)?;
+        let plan =
+            BuildPlan::from_graph(graph, build_dir, target, profile, build_type, package_name)?;
 
         // Ensure output directories exist
         fs::create_dir_all(build_dir.join("pcm"))?;
@@ -220,9 +324,11 @@ impl BuildRunner {
         target: &str,
         profile: Profile,
         build_type: BuildType,
+        package_name: Option<&str>,
     ) -> Result<(PathBuf, BuildStats), CmodError> {
         graph.validate()?;
-        let plan = BuildPlan::from_graph(graph, build_dir, target, profile, build_type)?;
+        let plan =
+            BuildPlan::from_graph(graph, build_dir, target, profile, build_type, package_name)?;
         fs::create_dir_all(build_dir.join("pcm"))?;
         fs::create_dir_all(build_dir.join("obj"))?;
         self.execute_plan(&plan)
@@ -404,6 +510,146 @@ impl BuildRunner {
         }
     }
 
+    /// Attempt to execute a build node on a remote worker.
+    /// Returns Ok(Some(outcome)) if distributed, Ok(None) if should fall back to local.
+    fn try_distribute_node(
+        &self,
+        node: &crate::plan::BuildNode,
+        project_root: &Path,
+    ) -> Result<Option<NodeOutcome>, CmodError> {
+        let pool = match &self.worker_pool {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // Only distribute compilation nodes, not link nodes
+        if !matches!(
+            node.kind,
+            cmod_core::types::NodeKind::Interface
+                | cmod_core::types::NodeKind::Implementation
+                | cmod_core::types::NodeKind::Object
+        ) {
+            return Ok(None);
+        }
+
+        let tasks =
+            crate::distributed::nodes_to_remote_tasks(std::slice::from_ref(node), project_root);
+        let task = match tasks.into_iter().next() {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        let task_id = task.task_id.clone();
+
+        // Select a worker
+        let worker_id = match pool.select_worker(&task) {
+            Some(id) => id,
+            None => {
+                self.emit_verbose(
+                    "Distributed",
+                    format!("no available worker for {}", node.id),
+                );
+                return Ok(None); // Fall back to local
+            }
+        };
+
+        // Submit task
+        match pool.submit_task(&worker_id, task) {
+            Ok(()) => {
+                self.emit_verbose(
+                    "Distributed",
+                    format!("submitted {} to worker {}", node.id, worker_id),
+                );
+            }
+            Err(e) => {
+                self.emit_verbose(
+                    "Distributed",
+                    format!("failed to submit {}: {}, falling back to local", node.id, e),
+                );
+                return Ok(None); // Fall back to local
+            }
+        }
+
+        // Poll for result
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(300);
+        loop {
+            if let Some(result) = pool.collect_result(&task_id) {
+                if result.success {
+                    // Materialize remote outputs locally so downstream
+                    // link/cache steps can find the files.
+                    let endpoint = pool.worker_endpoint(&worker_id).unwrap_or_default();
+                    for remote_ref in &result.outputs {
+                        // Match remote output path to the corresponding
+                        // local node output by filename.
+                        let remote_name = std::path::Path::new(&remote_ref.path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&remote_ref.path);
+                        let local_path = node
+                            .outputs
+                            .iter()
+                            .find(|p| {
+                                p.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|n| n == remote_name)
+                                    .unwrap_or(false)
+                            })
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                // Fallback: place the file relative to the
+                                // first output's parent directory.
+                                node.outputs
+                                    .first()
+                                    .and_then(|p| p.parent())
+                                    .unwrap_or_else(|| std::path::Path::new("."))
+                                    .join(remote_name)
+                            });
+
+                        if let Err(e) = pool.fetch_output(&endpoint, remote_ref, &local_path) {
+                            self.emit_verbose(
+                                "Distributed",
+                                format!(
+                                    "failed to fetch output '{}' for {}: {}, falling back to local",
+                                    remote_ref.path, node.id, e
+                                ),
+                            );
+                            return Ok(None);
+                        }
+                    }
+
+                    self.emit_verbose(
+                        "Distributed",
+                        format!(
+                            "{} completed on {} in {}ms ({} output(s) fetched)",
+                            node.id,
+                            worker_id,
+                            result.duration_ms,
+                            result.outputs.len()
+                        ),
+                    );
+                    return Ok(Some(NodeOutcome::Compiled(result.duration_ms)));
+                } else {
+                    self.emit_verbose(
+                        "Distributed",
+                        format!("{} failed on {}: {}", node.id, worker_id, result.stderr),
+                    );
+                    return Ok(None); // Fall back to local on failure
+                }
+            }
+
+            if start.elapsed() > timeout {
+                self.emit_verbose(
+                    "Distributed",
+                    format!("{} timed out, falling back to local", node.id),
+                );
+                return Ok(None);
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
     /// Execute a single compile/link node.
     ///
     /// The `build_state` and `flags_hash` enable incremental skip detection.
@@ -418,6 +664,23 @@ impl BuildRunner {
         flags_hash: &str,
     ) -> Result<NodeOutcome, CmodError> {
         let start = Instant::now();
+
+        // Attempt distributed compilation for non-link nodes when a worker pool is configured.
+        if self.worker_pool.is_some()
+            && matches!(
+                node.kind,
+                NodeKind::Interface | NodeKind::Implementation | NodeKind::Object
+            )
+        {
+            let project_root = plan
+                .build_dir
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            if let Some(outcome) = self.try_distribute_node(node, project_root)? {
+                return Ok(outcome);
+            }
+            // Fall through to local compilation
+        }
 
         match node.kind {
             NodeKind::Interface => {
@@ -440,6 +703,19 @@ impl BuildRunner {
                     if self.try_cache_restore(&module_id, &key, node) {
                         self.emit_verbose("Cached", format!("interface: {}", source.display()));
                         return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
+                    }
+                }
+
+                // Try precompiled BMI from configured BMI directories
+                if let Some(module_name) = &node.module_name {
+                    if let Some(variant_dir) = self.find_precompiled_bmi(module_name) {
+                        if self.restore_bmi_from_dir(&variant_dir, node) {
+                            self.emit_verbose(
+                                "Precompiled",
+                                format!("interface: {}", source.display()),
+                            );
+                            return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
+                        }
                     }
                 }
 
@@ -902,6 +1178,68 @@ pub fn discover_sources(src_dir: &Path) -> Result<Vec<PathBuf>, CmodError> {
     Ok(sources)
 }
 
+/// Discover C++ source files from multiple directories, applying exclude patterns.
+///
+/// Each `src_dir` is walked recursively. Files matching any `exclude` glob pattern
+/// (checked against both the relative path within the source dir and the filename)
+/// are omitted. Results are sorted and deduplicated.
+pub fn discover_sources_multi(
+    src_dirs: &[PathBuf],
+    exclude: &[String],
+) -> Result<Vec<PathBuf>, CmodError> {
+    let patterns: Vec<glob::Pattern> = exclude
+        .iter()
+        .map(|p| {
+            glob::Pattern::new(p)
+                .map_err(|e| CmodError::Other(format!("invalid exclude pattern '{}': {}", p, e)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut sources = Vec::new();
+
+    for src_dir in src_dirs {
+        if !src_dir.exists() {
+            continue;
+        }
+
+        for entry in walkdir::WalkDir::new(src_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if !matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx")
+            ) {
+                continue;
+            }
+
+            // Check exclude patterns against relative path and filename
+            let rel_path = path.strip_prefix(src_dir).unwrap_or(path);
+            let rel_str = rel_path.to_string_lossy();
+            let filename = path
+                .file_name()
+                .map(|f| f.to_string_lossy())
+                .unwrap_or_default();
+
+            let excluded = patterns
+                .iter()
+                .any(|pat| pat.matches(&rel_str) || pat.matches(&filename));
+
+            if !excluded {
+                sources.push(path.to_path_buf());
+            }
+        }
+    }
+
+    sources.sort();
+    sources.dedup();
+    Ok(sources)
+}
+
 /// Classify a source file as a module interface or implementation based on content.
 ///
 /// Scans the entire file for module declarations, skipping comments and
@@ -1344,5 +1682,77 @@ mod tests {
             extract_module_name_from_content("int main() {}\n").unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn test_discover_sources_multi_single_dir() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.cppm"), "export module mylib;").unwrap();
+        fs::write(src.join("main.cpp"), "int main() {}").unwrap();
+
+        let sources = discover_sources_multi(&[src], &[]).unwrap();
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn test_discover_sources_multi_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let dir_a = tmp.path().join("dirA");
+        let dir_b = tmp.path().join("dirB");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        fs::write(dir_a.join("a.cppm"), "export module a;").unwrap();
+        fs::write(dir_b.join("b.cpp"), "int b() {}").unwrap();
+
+        let sources = discover_sources_multi(&[dir_a, dir_b], &[]).unwrap();
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn test_discover_sources_multi_exclude_filename() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.cpp"), "void lib() {}").unwrap();
+        fs::write(src.join("lib_test.cc"), "void test() {}").unwrap();
+        fs::write(src.join("other_test.cc"), "void test2() {}").unwrap();
+
+        let sources = discover_sources_multi(&[src], &["*_test.cc".to_string()]).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].to_str().unwrap().contains("lib.cpp"));
+    }
+
+    #[test]
+    fn test_discover_sources_multi_exclude_dir_pattern() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let test_dir = src.join("test");
+        fs::create_dir_all(&test_dir).unwrap();
+        fs::write(src.join("lib.cpp"), "void lib() {}").unwrap();
+        fs::write(test_dir.join("check.cpp"), "void check() {}").unwrap();
+
+        let sources = discover_sources_multi(&[src], &["test/**".to_string()]).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].to_str().unwrap().contains("lib.cpp"));
+    }
+
+    #[test]
+    fn test_discover_sources_multi_nonexistent_dir() {
+        let sources = discover_sources_multi(&[PathBuf::from("/nonexistent/path")], &[]).unwrap();
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn test_discover_sources_multi_dedup() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.cpp"), "void lib() {}").unwrap();
+
+        // Pass the same dir twice — should deduplicate
+        let sources = discover_sources_multi(&[src.clone(), src], &[]).unwrap();
+        assert_eq!(sources.len(), 1);
     }
 }

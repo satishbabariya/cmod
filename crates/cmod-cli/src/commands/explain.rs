@@ -13,8 +13,9 @@ pub fn run(module_name: String, shell: &Shell) -> Result<(), CmodError> {
     let config = Config::load(&cwd)?;
     let verbose = shell.verbosity() == Verbosity::Verbose;
 
-    let src_dir = config.src_dir();
-    let sources = runner::discover_sources(&src_dir)?;
+    let src_dirs = config.src_dirs();
+    let exclude = config.exclude_patterns();
+    let sources = runner::discover_sources_multi(&src_dirs, &exclude)?;
 
     // Find the module
     let mut found_node: Option<ModuleNode> = None;

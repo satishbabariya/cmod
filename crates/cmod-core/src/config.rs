@@ -101,9 +101,28 @@ impl Config {
         self.root.join("build").join("deps")
     }
 
-    /// Source directory.
+    /// Source directory (legacy, prefer `src_dirs()`).
     pub fn src_dir(&self) -> PathBuf {
         self.root.join("src")
+    }
+
+    /// Source directories from `[build].sources`, defaulting to `["src"]`.
+    pub fn src_dirs(&self) -> Vec<PathBuf> {
+        if let Some(ref build) = self.manifest.build {
+            if !build.sources.is_empty() {
+                return build.sources.iter().map(|s| self.root.join(s)).collect();
+            }
+        }
+        vec![self.root.join("src")]
+    }
+
+    /// Exclude patterns from `[build].exclude`.
+    pub fn exclude_patterns(&self) -> Vec<String> {
+        self.manifest
+            .build
+            .as_ref()
+            .map(|b| b.exclude.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -177,6 +196,58 @@ version = "0.1.0"
         let tmp = setup_project();
         let config = Config::load(tmp.path()).unwrap();
         assert_eq!(config.src_dir(), tmp.path().join("src"));
+    }
+
+    #[test]
+    fn test_src_dirs_default() {
+        let tmp = setup_project();
+        let config = Config::load(tmp.path()).unwrap();
+        let dirs = config.src_dirs();
+        assert_eq!(dirs, vec![tmp.path().join("src")]);
+    }
+
+    #[test]
+    fn test_src_dirs_custom() {
+        let tmp = TempDir::new().unwrap();
+        let toml = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[build]
+sources = ["Jolt/", "extra/"]
+"#;
+        std::fs::write(tmp.path().join("cmod.toml"), toml).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let dirs = config.src_dirs();
+        assert_eq!(
+            dirs,
+            vec![tmp.path().join("Jolt/"), tmp.path().join("extra/")]
+        );
+    }
+
+    #[test]
+    fn test_exclude_patterns_default() {
+        let tmp = setup_project();
+        let config = Config::load(tmp.path()).unwrap();
+        assert!(config.exclude_patterns().is_empty());
+    }
+
+    #[test]
+    fn test_exclude_patterns_custom() {
+        let tmp = TempDir::new().unwrap();
+        let toml = r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[build]
+exclude = ["*_test.cc", "test/**"]
+"#;
+        std::fs::write(tmp.path().join("cmod.toml"), toml).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let patterns = config.exclude_patterns();
+        assert_eq!(patterns, vec!["*_test.cc", "test/**"]);
     }
 
     #[test]

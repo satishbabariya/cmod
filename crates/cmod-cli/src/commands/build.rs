@@ -29,6 +29,8 @@ pub fn run(
     features: &[String],
     no_default_features: bool,
     no_cache: bool,
+    distributed: bool,
+    workers: Vec<String>,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
@@ -133,6 +135,8 @@ pub fn run(
         timings,
         &activated_features,
         no_cache,
+        distributed,
+        &workers,
     );
 
     // Step 4: Run post-build hook (only on success)
@@ -176,18 +180,22 @@ fn build_module(
     timings: bool,
     activated_features: &[String],
     no_cache: bool,
+    distributed: bool,
+    workers: &[String],
 ) -> Result<(), CmodError> {
     // Build path dependencies first and collect their artifacts
     let (dep_pcms, dep_objs) =
         build_path_dependencies(config, shell, jobs, force, remote_url, no_cache)?;
 
     // Discover source files
-    let src_dir = config.src_dir();
-    let sources = runner::discover_sources(&src_dir)?;
+    let src_dirs = config.src_dirs();
+    let exclude = config.exclude_patterns();
+    let sources = runner::discover_sources_multi(&src_dirs, &exclude)?;
 
     if sources.is_empty() {
+        let dirs: Vec<_> = src_dirs.iter().map(|d| d.display().to_string()).collect();
         return Err(CmodError::BuildFailed {
-            reason: format!("no source files found in {}", src_dir.display()),
+            reason: format!("no source files found in {}", dirs.join(", ")),
         });
     }
 
@@ -234,12 +242,60 @@ fn build_module(
         runner = runner.with_remote_cache(remote);
     }
 
+    // Set up distributed build if requested
+    if distributed || !workers.is_empty() {
+        let worker_endpoints = if workers.is_empty() {
+            // Try to read workers from manifest [build.distributed] if available
+            Vec::new()
+        } else {
+            workers.to_vec()
+        };
+
+        if !worker_endpoints.is_empty() {
+            // Resolve auth token from environment variable if configured in manifest.
+            let auth_token = config
+                .manifest
+                .build
+                .as_ref()
+                .and_then(|b| b.distributed.as_ref())
+                .and_then(|d| d.auth_token_env.as_deref())
+                .and_then(|env_name| std::env::var(env_name).ok());
+
+            let dist_config = cmod_build::distributed::DistributedConfig {
+                enabled: true,
+                workers: worker_endpoints,
+                auth_token,
+                ..Default::default()
+            };
+            let pool = cmod_build::distributed::WorkerPool::new(&dist_config);
+            match pool.discover_workers() {
+                Ok(count) => {
+                    shell.status("Workers", format!("{} remote worker(s) available", count));
+                    runner = runner.with_worker_pool(pool);
+                }
+                Err(e) => {
+                    shell.warn(format!("distributed build setup failed: {}", e));
+                    shell.note("falling back to local build");
+                }
+            }
+        } else {
+            shell.warn("--distributed specified but no worker endpoints provided");
+            shell.note("use --workers=http://host:port to specify workers");
+        }
+    }
+
     if jobs != 1 {
         shell.verbose("Parallelism", format!("{} jobs", runner.effective_jobs()));
     }
 
-    let (output, stats) =
-        runner.build_with_stats(&graph, &build_dir, &target, config.profile, build_type)?;
+    let (output, stats) = runner.build_with_stats(
+        &graph,
+        &build_dir,
+        &target,
+        config.profile,
+        build_type,
+        Some(&config.manifest.package.name),
+    )?;
 
     print_build_stats(&stats, shell, timings);
     shell.status("Finished", format!("{}", output.display()));
@@ -296,13 +352,18 @@ fn build_path_dependencies(
             false,
             &[],
             no_cache,
+            false,
+            &[],
         )?;
 
         // Collect PCM files
         let dep_build_dir = dep_config.build_dir();
         let pcm_dir = dep_build_dir.join("pcm");
         if pcm_dir.exists() {
-            let dep_sources = runner::discover_sources(&dep_config.src_dir())?;
+            let dep_sources = runner::discover_sources_multi(
+                &dep_config.src_dirs(),
+                &dep_config.exclude_patterns(),
+            )?;
             for source in &dep_sources {
                 if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
                     let sanitized = mod_name.replace(['.', ':', '/'], "_");
@@ -394,8 +455,25 @@ fn build_workspace(
     for member in &ordered_members {
         shell.status("Compiling", &member.name);
 
-        let member_src = member.path.join("src");
-        let sources = runner::discover_sources(&member_src)?;
+        let member_src_dirs: Vec<std::path::PathBuf> = {
+            let srcs = member
+                .manifest
+                .build
+                .as_ref()
+                .map(|b| &b.sources)
+                .filter(|s| !s.is_empty());
+            match srcs {
+                Some(dirs) => dirs.iter().map(|s| member.path.join(s)).collect(),
+                None => vec![member.path.join("src")],
+            }
+        };
+        let member_exclude: Vec<String> = member
+            .manifest
+            .build
+            .as_ref()
+            .map(|b| b.exclude.clone())
+            .unwrap_or_default();
+        let sources = runner::discover_sources_multi(&member_src_dirs, &member_exclude)?;
 
         if sources.is_empty() {
             shell.verbose("Skipping", format!("{} (no source files)", member.name));
@@ -464,6 +542,7 @@ fn build_workspace(
             &target,
             config.profile,
             build_type,
+            Some(&member.name),
         ) {
             Ok((output, stats)) => {
                 print_build_stats(&stats, shell, timings);
@@ -691,6 +770,16 @@ fn setup_compiler(config: &Config, activated_features: &[String]) -> (ClangBacke
         backend.extra_flags.push(flag);
     }
 
+    // Add include directories from [build] section
+    if let Some(ref build) = config.manifest.build {
+        let root = &config.root;
+        for dir in &build.include_dirs {
+            let abs = root.join(dir);
+            backend.extra_flags.push(format!("-I{}", abs.display()));
+        }
+        backend.extra_flags.extend(build.extra_flags.clone());
+    }
+
     (backend, target)
 }
 
@@ -907,11 +996,11 @@ fn print_build_stats(stats: &BuildStats, shell: &Shell, timings: bool) {
 
     // Per-node timings
     if timings && !stats.node_timings.is_empty() {
-        shell.verbose("Timings", "per-module breakdown:");
+        shell.status("Timings", "per-module breakdown:");
         let mut sorted: Vec<_> = stats.node_timings.iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(a.1)); // slowest first
         for (node_id, ms) in sorted {
-            shell.verbose("", format!("{:>6}ms  {}", ms, node_id));
+            shell.status("", format!("{:>6}ms  {}", ms, node_id));
         }
     }
 }
@@ -1017,12 +1106,14 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    let src_dir = config.src_dir();
-    let sources = runner::discover_sources(&src_dir)?;
+    let src_dirs = config.src_dirs();
+    let exclude = config.exclude_patterns();
+    let sources = runner::discover_sources_multi(&src_dirs, &exclude)?;
 
     if sources.is_empty() {
+        let dirs: Vec<_> = src_dirs.iter().map(|d| d.display().to_string()).collect();
         return Err(CmodError::BuildFailed {
-            reason: format!("no source files found in {}", src_dir.display()),
+            reason: format!("no source files found in {}", dirs.join(", ")),
         });
     }
 
@@ -1051,6 +1142,7 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
         &target,
         config.profile,
         build_type,
+        Some(&config.manifest.package.name),
     )?;
 
     let json = serde_json::to_string_pretty(&plan.nodes).map_err(|e| CmodError::BuildFailed {
@@ -1069,8 +1161,9 @@ pub fn emit_cmake(shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    let src_dir = config.src_dir();
-    let sources = runner::discover_sources(&src_dir)?;
+    let src_dirs = config.src_dirs();
+    let exclude = config.exclude_patterns();
+    let sources = runner::discover_sources_multi(&src_dirs, &exclude)?;
 
     let cmake_path = config.root.join("CMakeLists.txt");
 

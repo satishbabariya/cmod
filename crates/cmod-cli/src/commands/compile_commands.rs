@@ -17,11 +17,13 @@ pub fn run(shell: &Shell, target_override: Option<String>) -> Result<(), CmodErr
         config.target = Some(t);
     }
 
-    let src_dir = config.src_dir();
-    let sources = runner::discover_sources(&src_dir)?;
+    let src_dirs = config.src_dirs();
+    let exclude = config.exclude_patterns();
+    let sources = runner::discover_sources_multi(&src_dirs, &exclude)?;
 
     if sources.is_empty() {
-        shell.warn(format!("no source files found in {}", src_dir.display()));
+        let dirs: Vec<_> = src_dirs.iter().map(|d| d.display().to_string()).collect();
+        shell.warn(format!("no source files found in {}", dirs.join(", ")));
         return Ok(());
     }
 
@@ -38,7 +40,14 @@ pub fn run(shell: &Shell, target_override: Option<String>) -> Result<(), CmodErr
 
     let (backend, target) = setup_compiler(&config);
 
-    let plan = BuildPlan::from_graph(&graph, &build_dir, &target, config.profile, build_type)?;
+    let plan = BuildPlan::from_graph(
+        &graph,
+        &build_dir,
+        &target,
+        config.profile,
+        build_type,
+        Some(&config.manifest.package.name),
+    )?;
 
     let commands = plan.compile_commands(&backend, &config.root);
     let json = serde_json::to_string_pretty(&commands).map_err(|e| CmodError::BuildFailed {

@@ -192,12 +192,14 @@ dependencies = [
  "cmod-cache",
  "cmod-core",
  "crossbeam-channel",
+ "glob",
  "hex",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "thiserror",
+ "ureq",
  "walkdir",
 ]
 
@@ -229,9 +231,11 @@ dependencies = [
  "cmod-build",
  "cmod-cache",
  "cmod-core",
+ "cmod-lsp",
  "cmod-resolver",
  "cmod-security",
  "cmod-workspace",
+ "dirs",
  "git2",
  "semver",
  "serde",
@@ -258,6 +262,20 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "cmod-lsp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cmod-build",
+ "cmod-cache",
+ "cmod-core",
+ "cmod-resolver",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

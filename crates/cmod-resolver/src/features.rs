@@ -98,6 +98,65 @@ pub fn resolve_features(
     Ok(result)
 }
 
+/// Detect cycles in the feature dependency graph.
+///
+/// Returns an error if any feature chain forms a cycle (e.g., A enables B enables A).
+/// The resolution algorithm itself handles cycles gracefully via the visited set,
+/// but this function provides an explicit diagnostic for `cmod check`.
+pub fn detect_feature_cycles(manifest: &Manifest) -> Result<(), CmodError> {
+    // Use a proper DFS with a recursion stack to detect true back-edges.
+    // A single "visited" set would falsely flag DAGs with shared sub-features
+    // (diamond pattern) as cyclic.
+    let mut processed = BTreeSet::new();
+
+    for feature_name in manifest.features.keys() {
+        if processed.contains(feature_name) {
+            continue;
+        }
+
+        let mut in_stack = BTreeSet::new();
+        // Stack holds (node, children_pushed) to simulate recursive DFS.
+        let mut stack: Vec<(String, bool)> = vec![(feature_name.clone(), false)];
+
+        while let Some((current, children_pushed)) = stack.last_mut() {
+            if !*children_pushed {
+                if in_stack.contains(current.as_str()) {
+                    return Err(CmodError::Other(format!(
+                        "cycle detected in feature graph: '{}' is reachable from itself (via '{}')",
+                        current, feature_name
+                    )));
+                }
+                if processed.contains(current.as_str()) {
+                    stack.pop();
+                    continue;
+                }
+                in_stack.insert(current.clone());
+                *children_pushed = true;
+
+                // Push children
+                let current_owned = current.clone();
+                if let Some(sub_features) = manifest.features.get(&current_owned) {
+                    for sub in sub_features {
+                        if !sub.starts_with("dep:")
+                            && !sub.contains('/')
+                            && manifest.features.contains_key(sub)
+                        {
+                            stack.push((sub.clone(), false));
+                        }
+                    }
+                }
+            } else {
+                // All children processed — mark as done
+                let node = current.clone();
+                in_stack.remove(&node);
+                processed.insert(node);
+                stack.pop();
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Check if a dependency should be included (non-optional, or activated optional).
 pub fn should_include_dep(name: &str, dep: &Dependency, resolved: &ResolvedFeatures) -> bool {
     match dep {
@@ -267,6 +326,28 @@ mod tests {
             .activated_optional_deps
             .insert("opt_dep".to_string());
         assert!(should_include_dep("opt_dep", &dep, &resolved));
+    }
+
+    #[test]
+    fn test_detect_feature_cycle() {
+        let mut features = BTreeMap::new();
+        features.insert("a".to_string(), vec!["b".to_string()]);
+        features.insert("b".to_string(), vec!["a".to_string()]);
+
+        let manifest = test_manifest(features, BTreeMap::new());
+        let result = detect_feature_cycles(&manifest);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cycle"));
+    }
+
+    #[test]
+    fn test_detect_no_feature_cycle() {
+        let mut features = BTreeMap::new();
+        features.insert("a".to_string(), vec!["b".to_string()]);
+        features.insert("b".to_string(), vec!["dep:lib".to_string()]);
+
+        let manifest = test_manifest(features, BTreeMap::new());
+        assert!(detect_feature_cycles(&manifest).is_ok());
     }
 
     #[test]

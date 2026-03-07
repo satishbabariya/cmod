@@ -140,6 +140,14 @@ enum Commands {
         /// Display per-module compile timings
         #[arg(long)]
         timings: bool,
+
+        /// Enable distributed build across remote workers
+        #[arg(long)]
+        distributed: bool,
+
+        /// Worker endpoints for distributed builds (comma-separated URLs)
+        #[arg(long, value_delimiter = ',')]
+        workers: Vec<String>,
     },
 
     /// Run module tests
@@ -204,6 +212,10 @@ enum Commands {
         /// Highlight the critical path (longest compile chain)
         #[arg(long)]
         critical_path: bool,
+
+        /// Annotate nodes with build timing (color-coded by duration)
+        #[arg(long)]
+        timing: bool,
     },
 
     /// Audit dependencies for security and quality issues
@@ -245,6 +257,10 @@ enum Commands {
     Search {
         /// Search query (substring match)
         query: String,
+
+        /// Only search local dependencies and lockfile
+        #[arg(long)]
+        local_only: bool,
     },
 
     /// Build and run the project binary
@@ -287,6 +303,18 @@ enum Commands {
         /// Push the tag to origin after creation
         #[arg(long)]
         push: bool,
+
+        /// Sign the release tag
+        #[arg(long)]
+        sign: bool,
+
+        /// Do not sign the release tag (overrides [security] config)
+        #[arg(long, conflicts_with = "sign")]
+        no_sign: bool,
+
+        /// Skip governance policy validation
+        #[arg(long)]
+        skip_governance: bool,
     },
 
     /// Generate compile_commands.json for IDE integration
@@ -313,6 +341,9 @@ enum Commands {
 
     /// Export a CMakeLists.txt for interop with CMake-based projects
     EmitCmake,
+
+    /// Start the LSP server for IDE integration
+    Lsp,
 }
 
 #[derive(Subcommand)]
@@ -430,6 +461,8 @@ fn main() {
             no_hooks,
             verify,
             timings,
+            distributed,
+            workers,
         } => commands::build::run(
             release,
             cli.locked,
@@ -445,6 +478,8 @@ fn main() {
             &cli.features,
             cli.no_default_features,
             cli.no_cache,
+            distributed,
+            workers,
         ),
         Commands::Test { release } => commands::test::run(
             release,
@@ -481,7 +516,8 @@ fn main() {
             filter,
             status,
             critical_path,
-        } => commands::graph::run(format, filter, status, critical_path, &shell),
+            timing,
+        } => commands::graph::run(format, filter, status, critical_path, timing, &shell),
         Commands::Audit => commands::audit::run(&shell),
         Commands::Status => commands::status::run(&shell),
         Commands::Explain { module } => commands::explain::run(module, &shell),
@@ -492,7 +528,9 @@ fn main() {
         Commands::Vendor { sync } => commands::vendor::run(sync, &shell),
         Commands::Lint => commands::lint::run(&shell),
         Commands::Fmt { check } => commands::fmt::run(check, &shell),
-        Commands::Search { query } => commands::search::run(&query, &shell),
+        Commands::Search { query, local_only } => {
+            commands::search::run(&query, local_only, cli.offline, &shell)
+        }
         Commands::Run {
             release,
             package,
@@ -505,7 +543,13 @@ fn main() {
             WorkspaceAction::Remove { name } => commands::workspace::remove(&name, &shell),
         },
         Commands::Sbom { output } => commands::sbom::run(output, &shell),
-        Commands::Publish { dry_run, push } => commands::publish::run(dry_run, push, &shell),
+        Commands::Publish {
+            dry_run,
+            push,
+            sign,
+            no_sign,
+            skip_governance,
+        } => commands::publish::run(dry_run, push, sign, no_sign, skip_governance, &shell),
         Commands::CompileCommands => commands::compile_commands::run(&shell, cli.target.clone()),
         Commands::Tidy { apply } => commands::tidy::run(apply, &shell),
         Commands::Check => commands::check::run(&shell),
@@ -515,6 +559,10 @@ fn main() {
         },
         Commands::Plan => commands::build::plan(&shell, cli.target.clone()),
         Commands::EmitCmake => commands::build::emit_cmake(&shell),
+        Commands::Lsp => {
+            let mut server = cmod_lsp::server::LspServer::new();
+            server.run()
+        }
     };
 
     if let Err(e) = result {

@@ -1445,7 +1445,7 @@ fn test_e2e_publish_dry_run() {
         .output()
         .unwrap();
 
-    let output = run_cmod(tmp.path(), &["publish", "--dry-run"]);
+    let output = run_cmod(tmp.path(), &["publish", "--dry-run", "--skip-governance"]);
     assert!(
         output.status.success(),
         "publish --dry-run failed: {}",
@@ -1520,7 +1520,7 @@ fn test_e2e_publish_creates_tag() {
         .output()
         .unwrap();
 
-    let output = run_cmod(tmp.path(), &["publish"]);
+    let output = run_cmod(tmp.path(), &["publish", "--skip-governance"]);
     assert!(
         output.status.success(),
         "publish failed: {}",

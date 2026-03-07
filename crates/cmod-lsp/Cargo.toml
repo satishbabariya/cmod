@@ -1,6 +1,6 @@
 [package]
-name = "cmod-build"
-description = "Module DAG construction and build orchestration for cmod"
+name = "cmod-lsp"
+description = "LSP server for cmod — module-aware IDE integration"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,15 +13,12 @@ categories.workspace = true
 
 [dependencies]
 cmod-core = { path = "../cmod-core" }
+cmod-build = { path = "../cmod-build" }
+cmod-resolver = { path = "../cmod-resolver" }
 cmod-cache = { path = "../cmod-cache" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 anyhow = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-walkdir = { workspace = true }
+
+[dev-dependencies]
 tempfile = { workspace = true }
-crossbeam-channel = { workspace = true }
-glob = { workspace = true }
-ureq = { workspace = true }
