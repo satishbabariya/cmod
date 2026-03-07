@@ -66,7 +66,9 @@ type = "binary"                     # binary, static-lib, shared-lib
 optimization = "release"            # debug, release, size, speed
 lto = true                          # Link-time optimization
 parallel = true                     # Parallel compilation
-incremental = true                   # Incremental builds
+incremental = true                  # Incremental builds
+sources = ["src/"]                  # Source directories (default: ["src"])
+exclude = ["*_test.cc", "test/**"]  # Glob patterns to exclude from source discovery
 
 # === Testing Configuration ===
 [test]
