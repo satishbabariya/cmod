@@ -19,7 +19,10 @@ cmod publish --dry-run
 This validates:
 - The manifest is well-formed
 - The version follows semver
+- `package.description` and `package.license` are set
 - Governance policies pass (unless `--skip-governance`)
+
+If governance validation fails, the output will show specific issues. Use `--skip-governance` to bypass these checks.
 
 ### Create the release tag
 

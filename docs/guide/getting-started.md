@@ -16,7 +16,7 @@ Before using cmod, ensure you have:
 Build and install cmod from source:
 
 ```bash
-git clone https://github.com/nickelpack/cmod.git
+git clone https://github.com/satishbabariya/cmod.git
 cd cmod
 cargo install --path crates/cmod-cli
 ```
@@ -40,12 +40,15 @@ This creates:
 
 ```
 hello/
-├── cmod.toml       # Project manifest
-└── src/
-    └── lib.cppm    # Module interface unit (placeholder)
+├── cmod.toml        # Project manifest
+├── src/
+│   ├── lib.cppm     # Module interface unit (stub)
+│   └── main.cpp     # Entry point (stub)
+└── tests/
+    └── main.cpp     # Test entry point (stub)
 ```
 
-The generated `cmod.toml` looks like this:
+The generated `cmod.toml` includes `[package]`, `[module]`, `[toolchain]`, `[build]`, and other sections. The key fields are:
 
 ```toml
 [package]
@@ -74,7 +77,7 @@ incremental = true
 
 ### Write the module interface
 
-Edit `src/lib.cppm`:
+The generated `src/lib.cppm` is a minimal stub. Replace it with your module code:
 
 ```cpp
 module;
@@ -95,7 +98,7 @@ inline auto greet(std::string_view name) -> std::string {
 
 ### Write the entry point
 
-Create `src/main.cpp`:
+The generated `src/main.cpp` is a stub that imports the module. Replace it with your code:
 
 ```cpp
 #include <iostream>
