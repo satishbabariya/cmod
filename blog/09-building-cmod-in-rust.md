@@ -62,7 +62,7 @@ cmod is organized as a Cargo workspace with 8 crates:
 ## Lessons Learned
 
 1. **The type system catches design errors.** Introducing `ModuleId` newtypes eliminated an entire class of string-confusion bugs.
-2. **Test infrastructure is excellent.** 737+ tests running in seconds with `cargo test`.
+2. **Test infrastructure is excellent.** 750+ tests running in seconds with `cargo test`.
 3. **Cross-compilation works.** CI builds binaries for Linux, macOS, and Windows from a single workflow.
 4. **Interacting with C++ tooling requires care.** Parsing Clang output and `clang-scan-deps` JSON required careful string handling.
 5. **The Rust community is welcoming.** Contributors span both C++ and Rust communities.

@@ -111,7 +111,7 @@ cmod-core       → Core types, config parsing, error model</code></pre>
         <p>Early in development, we modeled module identifiers as plain strings. Rust's type system made it painfully obvious when we were comparing a module name with a file path or a Git URL. We introduced the <code>ModuleId</code> newtype, and an entire class of bugs disappeared.</p>
 
         <h3>2. Test infrastructure is excellent</h3>
-        <p>Rust's built-in test framework, combined with Cargo's test runner, makes it trivial to write and run tests. We have 737+ tests covering everything from TOML parsing edge cases to full resolution workflows. Running <code>cargo test</code> takes seconds.</p>
+        <p>Rust's built-in test framework, combined with Cargo's test runner, makes it trivial to write and run tests. We have 750+ tests covering everything from TOML parsing edge cases to full resolution workflows. Running <code>cargo test</code> takes seconds.</p>
 
         <h3>3. Cross-compilation works</h3>
         <p>Because cmod compiles to native code, we can cross-compile for any target Rust supports. Our CI builds binaries for Linux (x86_64, aarch64), macOS (x86_64, aarch64), and Windows — from a single workflow.</p>

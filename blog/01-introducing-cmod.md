@@ -119,12 +119,12 @@ cmod is in active development with Phases 0–2 complete:
 - LLVM/Clang build backend with module DAG construction
 - Workspace and monorepo support
 - Local artifact caching
-- 737+ passing tests
+- 750+ passing tests
 
 ## What's Coming
 
-- **Phase 3** — Distributed cache, BMI distribution, distributed build workers (in progress)
-- **Phase 4** — Cryptographic signing (PGP/SSH/Sigstore), auditing, SBOM, policy enforcement (in progress)
+- **Phase 3** — Distributed cache, BMI distribution, distributed build workers (complete)
+- **Phase 4** — Cryptographic signing (PGP/SSH/Sigstore), auditing, SBOM, policy enforcement (complete)
 - **Phase 5** — LSP server, plugin sandboxing, module registry, feature resolution (in progress)
 
 ## Get Started

@@ -50,7 +50,7 @@
 > That's it. No CMakeLists.txt. No conanfile.py. No WORKSPACE.
 
 **Tweet 5 (CTA):**
-> cmod is open source (Apache-2.0), built in Rust, with 737+ tests.
+> cmod is open source (Apache-2.0), built in Rust, with 750+ tests.
 >
 > Star the repo, try it out, file issues.
 >
@@ -119,7 +119,7 @@ Key differentiators:
 - **Supply chain security** — Hash verification, TOFU trust, SBOM generation built in.
 - **Cargo-like simplicity** — `cmod init`, `cmod add`, `cmod build`. Three commands to productivity.
 
-Built in Rust. 737+ tests. 30+ CLI commands. Apache-2.0 licensed.
+Built in Rust. 750+ tests. 30+ CLI commands. Apache-2.0 licensed.
 
 If you work with C++ and care about developer experience, reproducibility, or supply chain security, I'd love your feedback.
 
@@ -165,7 +165,7 @@ We've been working on cmod, a new build tool designed specifically for C++20 mod
 4. **Cargo-like UX** — `cmod init`, `cmod add`, `cmod build`
 5. **Security built-in** — hash verification, TOFU trust, SBOM generation
 
-It's written in Rust, has 737+ tests, and covers 30+ CLI commands. Currently Clang-first (GCC/MSVC planned).
+It's written in Rust, has 750+ tests, and covers 30+ CLI commands. Currently Clang-first (GCC/MSVC planned).
 
 We know this space is crowded and opinions are strong. We're not trying to replace CMake for everyone — cmod is specifically for teams that want to use C++20 modules with a modern, integrated workflow.
 
@@ -190,7 +190,7 @@ The Rust implementation is a Cargo workspace with 8 crates:
 - `cmod-workspace` — monorepo management
 - `cmod-security` — verification + trust
 
-737+ tests, clean clippy, formatted with rustfmt. The Rust ecosystem made building a complex tool like this remarkably pleasant.
+750+ tests, clean clippy, formatted with rustfmt. The Rust ecosystem made building a complex tool like this remarkably pleasant.
 
 GitHub: github.com/nickshouse/cmod
 
@@ -213,7 +213,7 @@ cmod is a package and build tool for modern C++. The key design decisions:
 
 It's written in Rust, uses clang-scan-deps for module discovery, and includes supply chain security features (hash verification, TOFU trust, SBOM generation).
 
-Current status: 30+ CLI commands, 737+ tests, Phases 0-2 complete and Phases 3-5 in progress (distributed builds, cryptographic signing, LSP server, plugin sandboxing, module registry).
+Current status: 30+ CLI commands, 750+ tests, Phases 0-4 complete, Phase 5 in progress (LSP server, plugin sandboxing, module registry).
 
 What's planned: distributed caching, signature verification, LSP integration, plugin SDK.
 
