@@ -421,8 +421,10 @@ The `--locked` flag ensures the lockfile is up to date (fails otherwise). The `-
 ### Coverage in CI
 
 ```bash
-cmod test --coverage --format json > coverage.json
+cmod test --coverage --format json > test-results.json
 ```
+
+`--format json` captures test pass/fail results. Coverage data is written separately to `build/{profile}/coverage/` by `llvm-cov`.
 
 ### Sanitizer sweep
 
