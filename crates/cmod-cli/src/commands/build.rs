@@ -986,11 +986,11 @@ fn print_build_stats(stats: &BuildStats, shell: &Shell, timings: bool) {
 
     // Per-node timings
     if timings && !stats.node_timings.is_empty() {
-        shell.verbose("Timings", "per-module breakdown:");
+        shell.status("Timings", "per-module breakdown:");
         let mut sorted: Vec<_> = stats.node_timings.iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(a.1)); // slowest first
         for (node_id, ms) in sorted {
-            shell.verbose("", format!("{:>6}ms  {}", ms, node_id));
+            shell.status("", format!("{:>6}ms  {}", ms, node_id));
         }
     }
 }
