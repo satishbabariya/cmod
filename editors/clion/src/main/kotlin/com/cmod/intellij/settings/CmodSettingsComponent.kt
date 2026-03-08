@@ -1,6 +1,7 @@
 package com.cmod.intellij.settings
 
 import com.cmod.intellij.util.CmodBinaryUtil
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
@@ -46,9 +47,15 @@ class CmodSettingsComponent {
     private val mainPanel: JPanel
 
     init {
-        // Detect version on init
-        val version = CmodBinaryUtil.getCmodVersion()
-        versionLabel.text = if (version != null) "Detected: $version" else "cmod not found"
+        // Detect version off the EDT to avoid blocking the UI
+        versionLabel.text = "Detecting..."
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val version = CmodBinaryUtil.getCmodVersion()
+            val label = if (version != null) "Detected: $version" else "cmod not found"
+            ApplicationManager.getApplication().invokeLater {
+                versionLabel.text = label
+            }
+        }
 
         mainPanel = FormBuilder.createFormBuilder()
             .addLabeledComponent(JBLabel("cmod binary path:"), binaryPathField)

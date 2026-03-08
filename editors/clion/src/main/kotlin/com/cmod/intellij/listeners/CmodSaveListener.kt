@@ -27,7 +27,7 @@ class CmodSaveListener : FileDocumentManagerListener {
         )
     }
 
-    override fun beforeDocumentSaving(document: Document) {
+    override fun afterDocumentSaving(document: Document) {
         val settings = CmodSettingsState.getInstance()
         if (!settings.formatOnSave && !settings.lintOnSave) {
             return
@@ -46,7 +46,7 @@ class CmodSaveListener : FileDocumentManagerListener {
 
         val filePath = vFile.path
 
-        // Run format and/or lint in background to avoid blocking the save
+        // Run format and/or lint in background — file is already on disk
         ApplicationManager.getApplication().executeOnPooledThread {
             if (settings.formatOnSave) {
                 LOG.info("Running cmod fmt on save: $filePath")
@@ -58,7 +58,7 @@ class CmodSaveListener : FileDocumentManagerListener {
                 if (!result.isSuccess) {
                     LOG.warn("cmod fmt failed for $filePath: ${result.stderr}")
                 } else {
-                    // Refresh the file after formatting
+                    // Refresh the VFS so the IDE picks up formatting changes
                     ApplicationManager.getApplication().invokeLater {
                         vFile.refresh(true, false)
                     }
