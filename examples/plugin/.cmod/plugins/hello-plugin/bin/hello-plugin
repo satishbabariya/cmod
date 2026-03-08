@@ -5,11 +5,12 @@
 # Usage: cmod plugin run hello-plugin -- greeting=world
 
 read -r INPUT
-GREETING=$(echo "$INPUT" | sed -n 's/.*"greeting":"\([^"]*\)".*/\1/p')
-PROJECT=$(echo "$INPUT" | sed -n 's/.*"project_root":"\([^"]*\)".*/\1/p')
 
-if [ -z "$GREETING" ]; then
-    GREETING="world"
-fi
-
-echo "{\"status\":\"ok\",\"message\":\"Hello, ${GREETING}! Project: ${PROJECT}\"}"
+# Use python3 for safe JSON parsing and output (available on macOS/Linux)
+python3 -c "
+import sys, json
+data = json.loads(sys.argv[1])
+greeting = data.get('args', {}).get('greeting', 'world')
+project = data.get('project_root', '')
+print(json.dumps({'status': 'ok', 'message': f'Hello, {greeting}! Project: {project}'}))
+" "$INPUT"
