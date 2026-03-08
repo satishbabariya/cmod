@@ -624,11 +624,20 @@ cmod plugin list
 
 ### `cmod plugin run`
 
-Run a plugin by name.
+Run a plugin by name, optionally passing arguments.
 
+```bash
+cmod plugin run <NAME> [-- key=value ...]
 ```
-cmod plugin run <NAME>
+
+Arguments after `--` are passed to the plugin as key-value pairs in the JSON request.
+Positional arguments (without `=`) are mapped to `arg0`, `arg1`, etc.
+
+```bash
+cmod plugin run my-analyzer -- greeting=hello target=world
 ```
+
+See the [Plugin Development Guide](plugins.md) for authoring plugins.
 
 ---
 
@@ -636,8 +645,12 @@ cmod plugin run <NAME>
 
 ### `cmod lsp`
 
-Start the LSP server for IDE integration.
+Start the LSP server for IDE integration. Communicates via JSON-RPC over stdin/stdout.
 
-```
+```bash
 cmod lsp
 ```
+
+Supported LSP features: completion, hover, go-to-definition, document symbols, find references, diagnostics, code actions. Also supports custom `cmod/buildStatus`, `cmod/dependencies`, `cmod/criticalPath`, and `cmod/cacheStatus` methods.
+
+See the [IDE Integration Guide](ide-integration.md) for editor configuration.

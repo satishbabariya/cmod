@@ -1379,6 +1379,61 @@ pub fn extract_module_name_from_content(content: &str) -> Result<Option<String>,
     Ok(None)
 }
 
+/// Extract import names from source content by scanning for `import` and
+/// `export import` lines.
+///
+/// Returns the imported module (or partition) names, e.g. `["base", ":detail"]`.
+/// Skips comments, the global module fragment, and module declarations.
+pub fn extract_imports_from_content(content: &str) -> Vec<String> {
+    let mut imports = Vec::new();
+    let mut in_block_comment = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if in_block_comment {
+            if trimmed.contains("*/") {
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if trimmed.starts_with("/*") {
+            if !trimmed.contains("*/") {
+                in_block_comment = true;
+            }
+            continue;
+        }
+
+        // Handle optional "export" prefix
+        let after_export = trimmed
+            .strip_prefix("export")
+            .map(|s| s.trim())
+            .unwrap_or(trimmed);
+
+        if let Some(after_import) = after_export.strip_prefix("import") {
+            // Skip module declarations that happen to start with "import"
+            // (shouldn't occur in valid C++20, but be safe)
+            let name = after_import.trim().trim_end_matches(';').trim();
+            if !name.is_empty() {
+                imports.push(name.to_string());
+            }
+        }
+    }
+
+    imports
+}
+
+/// Extract imports from a source file on disk.
+pub fn extract_imports(path: &Path) -> Result<Vec<String>, CmodError> {
+    let content = fs::read_to_string(path)?;
+    Ok(extract_imports_from_content(&content))
+}
+
 /// Extract the owning module for a partition declaration.
 ///
 /// For `export module foo:bar;`, returns `Some("foo")`.
@@ -1754,5 +1809,32 @@ mod tests {
         // Pass the same dir twice — should deduplicate
         let sources = discover_sources_multi(&[src.clone(), src], &[]).unwrap();
         assert_eq!(sources.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_imports_from_content() {
+        let content = "\
+export module mylib;
+import base;
+export import utils;
+import :detail;
+// import commented_out;
+";
+        let imports = extract_imports_from_content(content);
+        assert_eq!(imports, vec!["base", "utils", ":detail"]);
+    }
+
+    #[test]
+    fn test_extract_imports_no_semicolon() {
+        let content = "import base\nimport utils;\n";
+        let imports = extract_imports_from_content(content);
+        assert_eq!(imports, vec!["base", "utils"]);
+    }
+
+    #[test]
+    fn test_extract_imports_empty() {
+        let content = "int main() { return 0; }\n";
+        let imports = extract_imports_from_content(content);
+        assert!(imports.is_empty());
     }
 }

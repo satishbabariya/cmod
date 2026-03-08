@@ -102,4 +102,4 @@ Recommended ecosystem tools:
 - Plugin-to-plugin communication
 
 ## Status
-**Draft**
+**Implemented** (WASM plugin runtime deferred)

@@ -591,4 +591,117 @@ max_memory_mb = 256
         assert_eq!(output.len(), big.len());
         assert!(!truncated);
     }
+
+    #[test]
+    fn test_min_cmod_version_satisfied() {
+        // Current version should satisfy a low requirement
+        let current = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let required = semver::VersionReq::parse(">=0.1.0").unwrap();
+        assert!(required.matches(&current));
+    }
+
+    #[test]
+    fn test_min_cmod_version_too_high() {
+        let current = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        let required = semver::VersionReq::parse(">=999.0.0").unwrap();
+        assert!(!required.matches(&current));
+    }
+
+    /// Mirrors the enforcement logic from `plugin.rs` that interprets
+    /// `verify_plugin_signature` + `Security.signature_policy` together.
+    /// Returns `Ok(warned)` on success (`warned` = true when the policy was
+    /// "warn" and the plugin is unsigned), or `Err` when the policy is
+    /// "require" and the plugin is unsigned.
+    fn enforce_signature_policy(
+        plugin_dir: &Path,
+        security: &cmod_core::manifest::Security,
+    ) -> Result<bool, CmodError> {
+        let sig_policy = security.signature_policy.as_deref().unwrap_or("none");
+
+        let is_signed = verify_plugin_signature(plugin_dir, Some(security)).unwrap_or(false);
+
+        match sig_policy {
+            "require" if !is_signed => Err(CmodError::SecurityViolation {
+                reason: "plugin is unsigned but signature_policy = \"require\"".to_string(),
+            }),
+            "warn" if !is_signed => Ok(true), // warned
+            _ => Ok(false),                   // no warning needed
+        }
+    }
+
+    #[test]
+    fn test_unsigned_plugin_warn_policy_succeeds_with_warning() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("plugin.toml"),
+            "[plugin]\nname = \"test\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let security = cmod_core::manifest::Security {
+            signing_key: None,
+            signing_backend: None,
+            verify_checksums: None,
+            trusted_sources: vec![],
+            signature_policy: Some("warn".to_string()),
+            oidc_issuer: None,
+            certificate_identity: None,
+        };
+
+        // verify_plugin_signature should report unsigned
+        let is_signed = verify_plugin_signature(tmp.path(), Some(&security)).unwrap();
+        assert!(!is_signed);
+
+        // Enforcement: "warn" policy must succeed (non-fatal) but flag the warning
+        let result = enforce_signature_policy(tmp.path(), &security);
+        assert!(
+            result.is_ok(),
+            "warn policy should not reject unsigned plugins"
+        );
+        assert!(
+            result.unwrap(),
+            "warn policy should indicate a warning was raised"
+        );
+    }
+
+    #[test]
+    fn test_unsigned_plugin_require_policy_rejects() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("plugin.toml"),
+            "[plugin]\nname = \"test\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let security = cmod_core::manifest::Security {
+            signing_key: None,
+            signing_backend: None,
+            verify_checksums: None,
+            trusted_sources: vec![],
+            signature_policy: Some("require".to_string()),
+            oidc_issuer: None,
+            certificate_identity: None,
+        };
+
+        // verify_plugin_signature should report unsigned
+        let is_signed = verify_plugin_signature(tmp.path(), Some(&security)).unwrap();
+        assert!(!is_signed);
+
+        // Enforcement: "require" policy must reject unsigned plugins
+        let result = enforce_signature_policy(tmp.path(), &security);
+        assert!(
+            result.is_err(),
+            "require policy must reject unsigned plugins"
+        );
+        let err = result.unwrap_err();
+        match err {
+            CmodError::SecurityViolation { reason } => {
+                assert!(
+                    reason.contains("signature_policy"),
+                    "error should reference signature_policy: {reason}"
+                );
+            }
+            other => panic!("expected SecurityViolation, got: {other}"),
+        }
+    }
 }

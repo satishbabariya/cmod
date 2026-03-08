@@ -1,0 +1,13 @@
+capabilities = ["cli", "read_project"]
+
+[plugin]
+name = "hello-plugin"
+version = "1.0.0"
+description = "Example plugin that greets users"
+authors = ["cmod contributors"]
+entry_point = "bin/hello-plugin"
+plugin_type = "script"
+
+[limits]
+timeout_secs = 30
+max_memory_mb = 64

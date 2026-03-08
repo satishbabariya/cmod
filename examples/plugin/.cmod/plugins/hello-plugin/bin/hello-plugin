@@ -1,0 +1,16 @@
+#!/bin/sh
+# hello-plugin — Example cmod plugin
+#
+# Reads a JSON request from stdin, outputs a JSON response to stdout.
+# Usage: cmod plugin run hello-plugin -- greeting=world
+
+read -r INPUT
+
+# Use python3 for safe JSON parsing and output (available on macOS/Linux)
+python3 -c "
+import sys, json
+data = json.loads(sys.argv[1])
+greeting = data.get('args', {}).get('greeting', 'world')
+project = data.get('project_root', '')
+print(json.dumps({'status': 'ok', 'message': f'Hello, {greeting}! Project: {project}'}))
+" "$INPUT"

@@ -4,7 +4,7 @@
 
 **cmod** is a Cargo-inspired, Git-native package and build tool for modern C++20+ modules. It provides dependency resolution, build orchestration, workspace management, and caching — all without a central package registry.
 
-**Status:** Rust implementation (Phase 0-4 complete, Phase 5 in progress). The Cargo workspace compiles and has 750+ passing tests. The 21 RFCs and design documents under `docs/` remain the canonical specification.
+**Status:** Rust implementation (Phase 0-5 complete). The Cargo workspace compiles and has 780+ passing tests. The 21 RFCs and design documents under `docs/` remain the canonical specification.
 
 **Implementation language:** Rust (with LLVM/Clang C++ APIs for build hooks).
 
@@ -254,7 +254,7 @@ Module names follow reverse-domain Git path format: `com.github.user.my_math`.
 | 2 — Scale | **Implemented** | Workspace manager, local cache, cache keys |
 | 3 — Distributed | **Implemented** | Remote cache protocol (HTTP), artifact push/pull, BMI distribution |
 | 4 — Security | **Implemented** | GPG/SSH/Sigstore signing, TOFU trust model, `--locked --verify` modes |
-| 5 — Ecosystem | **In Progress** | LSP server, plugin SDK with sandbox, graph visualization (ASCII/DOT/JSON) |
+| 5 — Ecosystem | **Implemented** | LSP server, plugin SDK with sandbox, graph visualization (ASCII/DOT/JSON) |
 
 ## RFC Tiers
 

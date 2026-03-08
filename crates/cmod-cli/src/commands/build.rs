@@ -1008,6 +1008,8 @@ fn print_build_stats(stats: &BuildStats, shell: &Shell, timings: bool) {
 /// Execute a build lifecycle hook if configured.
 ///
 /// Hooks run in the project root directory. A non-zero exit code fails the build.
+/// Hook strings beginning with `plugin:` dispatch to the named plugin instead of
+/// running as a shell command (e.g., `pre-build = "plugin:my-analyzer"`).
 pub fn run_hook(
     config: &Config,
     hook_name: &str,
@@ -1018,6 +1020,15 @@ pub fn run_hook(
         Some(c) => c,
         None => return Ok(()),
     };
+
+    // Dispatch to plugin runner if the hook uses the `plugin:` prefix
+    if let Some(plugin_name) = cmd.strip_prefix("plugin:") {
+        shell.status(
+            "Running",
+            format!("{} hook via plugin: {}", hook_name, plugin_name),
+        );
+        return super::plugin::run_plugin(plugin_name.trim(), &[], shell);
+    }
 
     shell.status("Running", format!("{} hook: {}", hook_name, cmd));
 
@@ -1457,5 +1468,31 @@ mod tests {
         // Should not panic with timings enabled
         print_build_stats(&stats, &shell_normal, true);
         print_build_stats(&stats, &shell_verbose, true);
+    }
+
+    #[test]
+    fn test_run_hook_none_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("cmod.toml"),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let shell = Shell::new(cmod_core::shell::Verbosity::Quiet);
+        // None command should be a no-op
+        assert!(run_hook(&config, "pre-build", None, &shell).is_ok());
+    }
+
+    #[test]
+    fn test_run_hook_plugin_prefix_detection() {
+        // Verify that "plugin:" prefix is detected
+        let cmd = "plugin:my-analyzer";
+        assert!(cmd.strip_prefix("plugin:").is_some());
+        assert_eq!(cmd.strip_prefix("plugin:").unwrap(), "my-analyzer");
+
+        // Regular commands should not have the prefix
+        let regular = "echo hello";
+        assert!(regular.strip_prefix("plugin:").is_none());
     }
 }
