@@ -626,7 +626,7 @@ cmod plugin list
 
 Run a plugin by name, optionally passing arguments.
 
-```
+```bash
 cmod plugin run <NAME> [-- key=value ...]
 ```
 
@@ -647,7 +647,7 @@ See the [Plugin Development Guide](plugins.md) for authoring plugins.
 
 Start the LSP server for IDE integration. Communicates via JSON-RPC over stdin/stdout.
 
-```
+```bash
 cmod lsp
 ```
 

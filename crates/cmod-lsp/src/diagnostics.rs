@@ -476,13 +476,15 @@ pub fn propagate_diagnostics(
                 let partition_of = cmod_build::runner::extract_partition_owner(source)
                     .ok()
                     .flatten();
+                let imports = cmod_build::runner::extract_imports(source)
+                    .unwrap_or_default();
                 let node = cmod_build::graph::ModuleNode {
                     id: source.display().to_string(),
                     name,
                     kind,
                     source: source.clone(),
                     package: String::new(),
-                    imports: Vec::new(),
+                    imports,
                     partition_of,
                 };
                 g.add_node(node);

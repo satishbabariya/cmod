@@ -423,10 +423,13 @@ pub fn find_importers(module_name: &str, root: &std::path::Path) -> Vec<(PathBuf
         if let Ok(content) = std::fs::read_to_string(source) {
             for (line_num, line) in content.lines().enumerate() {
                 let trimmed = line.trim();
-                if trimmed.starts_with("import") {
-                    let name = trimmed
-                        .strip_prefix("import")
-                        .unwrap_or("")
+                // Handle optional "export" prefix: "export import foo;"
+                let after_export = trimmed
+                    .strip_prefix("export")
+                    .map(|s| s.trim())
+                    .unwrap_or(trimmed);
+                if let Some(after_import) = after_export.strip_prefix("import") {
+                    let name = after_import
                         .trim()
                         .trim_end_matches(';')
                         .trim();

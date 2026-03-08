@@ -627,8 +627,13 @@ impl LspServer {
             for (doc_uri, doc_content) in docs.iter() {
                 for (line_num, line_text) in doc_content.lines().enumerate() {
                     let trimmed = line_text.trim();
-                    if trimmed.starts_with("import") && trimmed.contains(module_name) {
-                        let import_name = trimmed
+                    // Handle optional "export" prefix
+                    let after_export = trimmed
+                        .strip_prefix("export")
+                        .map(|s| s.trim())
+                        .unwrap_or(trimmed);
+                    if after_export.starts_with("import") && trimmed.contains(module_name) {
+                        let import_name = after_export
                             .strip_prefix("import")
                             .unwrap_or("")
                             .trim()
@@ -1077,13 +1082,15 @@ fn build_module_graph_from_root(root: &std::path::Path) -> Option<ModuleGraph> {
             .ok()
             .flatten();
 
+        let imports = cmod_build::runner::extract_imports(source)
+            .unwrap_or_default();
         let node = cmod_build::graph::ModuleNode {
             id: source.display().to_string(),
             name: module_name,
             kind,
             source: source.clone(),
             package: pkg_name.clone(),
-            imports: Vec::new(), // simplified — we don't parse imports in LSP graph
+            imports,
             partition_of,
         };
         graph.add_node(node);

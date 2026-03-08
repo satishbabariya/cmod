@@ -52,25 +52,31 @@ Sent after `textDocument/didSave`. Payload:
 
 ### `cmod/dependencies` Request
 
-```json
-// Request params:
-{ "module": "mylib" }
+Request params:
 
-// Response:
+```json
+{ "module": "mylib" }
+```
+
+Response:
+
+```json
 { "dependencies": ["base"], "dependents": ["app"] }
 ```
 
 ### `cmod/criticalPath` Request
 
+Response:
+
 ```json
-// Response:
 { "criticalPath": ["base", "mylib", "app"] }
 ```
 
 ### `cmod/cacheStatus` Request
 
+Response:
+
 ```json
-// Response:
 { "entries": 42, "totalSizeBytes": 10485760 }
 ```
 

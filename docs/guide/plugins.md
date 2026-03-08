@@ -123,6 +123,18 @@ post-build = "plugin:my-reporter"
 
 This is equivalent to running `cmod plugin run my-analyzer` before the build.
 
+**Note:** Hook-invoked plugins do not receive CLI-style arguments. The hook
+dispatcher calls the plugin with an empty argument list, so syntax like
+`pre-build = "plugin:my-analyzer --strict"` is **not** supported. If your
+plugin needs configuration when run as a hook, use one of these alternatives:
+
+- Read settings from a config file in the project (e.g., `.cmod/plugins/my-analyzer/config.toml`)
+- Read environment variables (requires the `env` capability)
+- Read options from the `[plugins.my-analyzer]` table in `cmod.toml`
+
+To pass arguments interactively, invoke the plugin directly via the CLI:
+`cmod plugin run my-analyzer -- --strict`.
+
 ## Security
 
 ### Signature Verification
