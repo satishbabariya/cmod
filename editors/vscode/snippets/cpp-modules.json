@@ -1,0 +1,140 @@
+{
+  "Module Declaration": {
+    "prefix": "module",
+    "body": [
+      "export module ${1:module_name};",
+      "",
+      "$0"
+    ],
+    "description": "Declare a C++20 module"
+  },
+  "Module Implementation": {
+    "prefix": "moduleimpl",
+    "body": [
+      "module ${1:module_name};",
+      "",
+      "$0"
+    ],
+    "description": "Module implementation unit"
+  },
+  "Module Partition": {
+    "prefix": "partition",
+    "body": [
+      "export module ${1:module_name}:${2:partition_name};",
+      "",
+      "$0"
+    ],
+    "description": "Declare a module partition"
+  },
+  "Import Module": {
+    "prefix": "import",
+    "body": [
+      "import ${1:module_name};"
+    ],
+    "description": "Import a C++20 module"
+  },
+  "Import Partition": {
+    "prefix": "importpart",
+    "body": [
+      "import :${1:partition_name};"
+    ],
+    "description": "Import a module partition"
+  },
+  "Import Header Unit": {
+    "prefix": "importheader",
+    "body": [
+      "import <${1:header}>;"
+    ],
+    "description": "Import a header unit"
+  },
+  "Export Declaration": {
+    "prefix": "export",
+    "body": [
+      "export ${1:declaration};"
+    ],
+    "description": "Export a declaration"
+  },
+  "Export Block": {
+    "prefix": "exportblock",
+    "body": [
+      "export {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Export block for multiple declarations"
+  },
+  "Export Namespace": {
+    "prefix": "exportns",
+    "body": [
+      "export namespace ${1:ns} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Export a namespace"
+  },
+  "Export Class": {
+    "prefix": "exportclass",
+    "body": [
+      "export class ${1:ClassName} {",
+      "public:",
+      "\t${1:ClassName}() = default;",
+      "\t~${1:ClassName}() = default;",
+      "",
+      "\t$0",
+      "};"
+    ],
+    "description": "Export a class declaration"
+  },
+  "Export Function": {
+    "prefix": "exportfunc",
+    "body": [
+      "export ${1:auto} ${2:function_name}(${3:}) ${4:-> ${5:return_type}} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Export a function"
+  },
+  "Global Module Fragment": {
+    "prefix": "globalfrag",
+    "body": [
+      "module;",
+      "",
+      "#include <${1:header}>",
+      "",
+      "export module ${2:module_name};",
+      "",
+      "$0"
+    ],
+    "description": "Global module fragment with legacy header includes"
+  },
+  "Private Module Fragment": {
+    "prefix": "privatefrag",
+    "body": [
+      "module :private;",
+      "",
+      "$0"
+    ],
+    "description": "Private module fragment"
+  },
+  "cmod.toml Skeleton": {
+    "prefix": "cmodtoml",
+    "body": [
+      "[package]",
+      "name = \"${1:project_name}\"",
+      "version = \"${2:0.1.0}\"",
+      "edition = \"${3:2023}\"",
+      "",
+      "[module]",
+      "name = \"${4:$1}\"",
+      "root = \"${5:src/main.cppm}\"",
+      "",
+      "[dependencies]",
+      "$0",
+      "",
+      "[build]",
+      "type = \"${6|binary,library|}\"",
+      "standard = \"${7|c++23,c++20,c++26|}\""
+    ],
+    "description": "Scaffold a cmod.toml manifest"
+  }
+}
