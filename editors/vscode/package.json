@@ -28,6 +28,9 @@
     "type": "git",
     "url": "https://github.com/satishbabariya/cmod"
   },
+  "cmod": {
+    "binaryVersion": "0.1.0"
+  },
   "activationEvents": [
     "workspaceContains:cmod.toml",
     "onLanguage:cpp"
@@ -102,7 +105,7 @@
         "cmod.path": {
           "type": "string",
           "default": "",
-          "description": "Path to the cmod binary. Leave empty to use PATH."
+          "description": "Path to the cmod binary. Leave empty to auto-download or use PATH."
         },
         "cmod.lsp.enabled": {
           "type": "boolean",
@@ -239,6 +242,7 @@
     "@types/glob": "^8.1.0",
     "@vscode/test-electron": "^2.3.8",
     "@vscode/vsce": "^2.22.0",
+    "ovsx": "^0.8.0",
     "glob": "^10.3.10",
     "mocha": "^10.2.0",
     "ts-loader": "^9.5.1",

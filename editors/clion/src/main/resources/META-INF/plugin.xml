@@ -83,6 +83,10 @@
         <applicationService
                 serviceImplementation="com.cmod.intellij.settings.CmodSettingsState"/>
 
+        <!-- Binary Manager (auto-download) -->
+        <applicationService
+                serviceImplementation="com.cmod.intellij.binary.BinaryManager"/>
+
         <!-- Notifications -->
         <notificationGroup id="cmod.notifications"
                            displayType="BALLOON"
