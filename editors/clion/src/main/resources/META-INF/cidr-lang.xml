@@ -1,0 +1,6 @@
+<idea-plugin>
+    <!--
+        Optional extensions that are only loaded when the CIDR (C/C++ IDE Runtime)
+        language plugin is available (i.e., in CLion or IntelliJ with C++ plugin).
+    -->
+</idea-plugin>

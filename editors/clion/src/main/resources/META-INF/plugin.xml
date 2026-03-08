@@ -1,0 +1,150 @@
+<idea-plugin>
+    <id>com.cmod.intellij</id>
+    <name>cmod - C++ Module Manager</name>
+    <version>0.1.0</version>
+    <vendor url="https://github.com/satishbabariya/cmod">cmod</vendor>
+
+    <description><![CDATA[
+    <p>Integration with <b>cmod</b>, a Cargo-inspired, Git-native package and build tool for modern C++20+ modules.</p>
+
+    <h3>Features</h3>
+    <ul>
+        <li>LSP integration via <code>cmod lsp</code> for code intelligence</li>
+        <li>Run configurations for Build, Test, and Run</li>
+        <li>Tool window with module graph visualization, dependency tree, and cache status</li>
+        <li>Actions for build, test, run, clean, format, lint, graph, and explain</li>
+        <li>Settings for cmod binary path, default profile, and parallel jobs</li>
+        <li>File type support for C++20 module files (.cppm, .ixx, .mxx) and cmod.toml</li>
+    </ul>
+    ]]></description>
+
+    <change-notes><![CDATA[
+    <h3>0.1.0</h3>
+    <ul>
+        <li>Initial release</li>
+        <li>LSP server integration</li>
+        <li>Build / Test / Run configurations</li>
+        <li>Module graph visualization</li>
+        <li>cmod.toml file type support</li>
+    </ul>
+    ]]></change-notes>
+
+    <idea-version since-build="242" until-build="252.*"/>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends optional="true" config-file="cidr-lang.xml">com.intellij.modules.cidr.lang</depends>
+
+    <applicationListeners>
+        <listener class="com.cmod.intellij.listeners.CmodSaveListener"
+                  topic="com.intellij.openapi.fileEditor.FileDocumentManagerListener"/>
+    </applicationListeners>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- LSP Server Support -->
+        <platform.lsp.serverSupportProvider
+                implementation="com.cmod.intellij.lsp.CmodLspServerSupportProvider"/>
+
+        <!-- File Types -->
+        <fileType
+                name="C++ Module Interface"
+                implementationClass="com.cmod.intellij.fileType.CppmFileType"
+                fieldName="INSTANCE"
+                language=""
+                extensions="cppm;ixx;mxx"/>
+
+        <fileType
+                name="cmod Manifest"
+                implementationClass="com.cmod.intellij.fileType.CmodTomlFileType"
+                fieldName="INSTANCE"
+                language=""
+                fileNames="cmod.toml"/>
+
+        <!-- Run Configurations -->
+        <configurationType
+                implementation="com.cmod.intellij.runConfig.CmodBuildRunConfigurationType"/>
+        <configurationType
+                implementation="com.cmod.intellij.runConfig.CmodTestRunConfigurationType"/>
+        <configurationType
+                implementation="com.cmod.intellij.runConfig.CmodRunConfigurationType"/>
+
+        <!-- Tool Window -->
+        <toolWindow id="cmod"
+                    anchor="right"
+                    icon="/icons/cmod.svg"
+                    factoryClass="com.cmod.intellij.toolWindow.CmodToolWindowFactory"/>
+
+        <!-- Settings -->
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.cmod.intellij.settings.CmodSettingsConfigurable"
+                id="com.cmod.intellij.settings.CmodSettingsConfigurable"
+                displayName="cmod"/>
+
+        <applicationService
+                serviceImplementation="com.cmod.intellij.settings.CmodSettingsState"/>
+
+        <!-- Notifications -->
+        <notificationGroup id="cmod.notifications"
+                           displayType="BALLOON"
+                           toolWindowId="cmod"/>
+    </extensions>
+
+    <actions>
+        <group id="cmod.ActionGroup" text="cmod" description="cmod C++ module manager actions"
+               popup="true" icon="/icons/cmod.svg">
+            <add-to-group group-id="BuildMenu" anchor="after" relative-to-action="CompileDirty"/>
+
+            <action id="cmod.Build"
+                    class="com.cmod.intellij.actions.CmodBuildAction"
+                    text="Build"
+                    description="Run cmod build"
+                    icon="AllIcons.Actions.Compile"/>
+
+            <action id="cmod.Test"
+                    class="com.cmod.intellij.actions.CmodTestAction"
+                    text="Test"
+                    description="Run cmod test"
+                    icon="AllIcons.RunConfigurations.TestState.Run"/>
+
+            <action id="cmod.Run"
+                    class="com.cmod.intellij.actions.CmodRunAction"
+                    text="Run"
+                    description="Run cmod run"
+                    icon="AllIcons.Actions.Execute"/>
+
+            <action id="cmod.Clean"
+                    class="com.cmod.intellij.actions.CmodCleanAction"
+                    text="Clean"
+                    description="Run cmod clean"
+                    icon="AllIcons.Actions.GC"/>
+
+            <separator/>
+
+            <action id="cmod.Format"
+                    class="com.cmod.intellij.actions.CmodFormatAction"
+                    text="Format"
+                    description="Run cmod fmt"
+                    icon="AllIcons.Actions.ReformatCode"/>
+
+            <action id="cmod.Lint"
+                    class="com.cmod.intellij.actions.CmodLintAction"
+                    text="Lint"
+                    description="Run cmod lint"
+                    icon="AllIcons.General.InspectionsEye"/>
+
+            <separator/>
+
+            <action id="cmod.ShowGraph"
+                    class="com.cmod.intellij.actions.CmodShowGraphAction"
+                    text="Show Module Graph"
+                    description="Visualize the module dependency graph"
+                    icon="AllIcons.Hierarchy.Subtypes"/>
+
+            <action id="cmod.Explain"
+                    class="com.cmod.intellij.actions.CmodExplainAction"
+                    text="Explain Module"
+                    description="Explain why a module would be rebuilt"
+                    icon="AllIcons.Actions.Help"/>
+        </group>
+    </actions>
+</idea-plugin>

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';" />
+  <title>cmod Module Graph</title>
+  <link rel="stylesheet" href="graph.css" />
+</head>
+<body>
+  <div id="controls">
+    <input type="text" id="filter" placeholder="Filter modules..." />
+    <button id="resetZoom">Reset Zoom</button>
+    <span id="stats"></span>
+  </div>
+  <svg id="graph"></svg>
+
+  <script src="d3.v7.min.js"></script>
+  <script src="graph.js"></script>
+  <script>
+    // Bridge: receive graph data from host (VS Code webview or JCEF)
+    window.addEventListener('message', function(event) {
+      var msg = event.data;
+      if (msg.type === 'setGraphData') {
+        renderGraph(msg.data);
+      }
+    });
+
+    // Notify host that we are ready
+    try {
+      // VS Code webview API
+      var vscode = acquireVsCodeApi();
+      window._postMessage = function(msg) { vscode.postMessage(msg); };
+    } catch (e) {
+      // JCEF / generic postMessage
+      window._postMessage = function(msg) { window.parent.postMessage(msg, '*'); };
+    }
+    window._postMessage({ type: 'ready' });
+  </script>
+</body>
+</html>
