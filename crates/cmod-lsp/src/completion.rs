@@ -429,10 +429,7 @@ pub fn find_importers(module_name: &str, root: &std::path::Path) -> Vec<(PathBuf
                     .map(|s| s.trim())
                     .unwrap_or(trimmed);
                 if let Some(after_import) = after_export.strip_prefix("import") {
-                    let name = after_import
-                        .trim()
-                        .trim_end_matches(';')
-                        .trim();
+                    let name = after_import.trim().trim_end_matches(';').trim();
                     if name == module_name {
                         results.push((source.clone(), line_num as u32));
                     }

@@ -1082,8 +1082,7 @@ fn build_module_graph_from_root(root: &std::path::Path) -> Option<ModuleGraph> {
             .ok()
             .flatten();
 
-        let imports = cmod_build::runner::extract_imports(source)
-            .unwrap_or_default();
+        let imports = cmod_build::runner::extract_imports(source).unwrap_or_default();
         let node = cmod_build::graph::ModuleNode {
             id: source.display().to_string(),
             name: module_name,

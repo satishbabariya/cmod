@@ -616,22 +616,16 @@ max_memory_mb = 256
         plugin_dir: &Path,
         security: &cmod_core::manifest::Security,
     ) -> Result<bool, CmodError> {
-        let sig_policy = security
-            .signature_policy
-            .as_deref()
-            .unwrap_or("none");
+        let sig_policy = security.signature_policy.as_deref().unwrap_or("none");
 
-        let is_signed =
-            verify_plugin_signature(plugin_dir, Some(security)).unwrap_or(false);
+        let is_signed = verify_plugin_signature(plugin_dir, Some(security)).unwrap_or(false);
 
         match sig_policy {
             "require" if !is_signed => Err(CmodError::SecurityViolation {
-                reason: format!(
-                    "plugin is unsigned but signature_policy = \"require\""
-                ),
+                reason: "plugin is unsigned but signature_policy = \"require\"".to_string(),
             }),
-            "warn" if !is_signed => Ok(true),  // warned
-            _ => Ok(false),                     // no warning needed
+            "warn" if !is_signed => Ok(true), // warned
+            _ => Ok(false),                   // no warning needed
         }
     }
 
@@ -660,8 +654,14 @@ max_memory_mb = 256
 
         // Enforcement: "warn" policy must succeed (non-fatal) but flag the warning
         let result = enforce_signature_policy(tmp.path(), &security);
-        assert!(result.is_ok(), "warn policy should not reject unsigned plugins");
-        assert!(result.unwrap(), "warn policy should indicate a warning was raised");
+        assert!(
+            result.is_ok(),
+            "warn policy should not reject unsigned plugins"
+        );
+        assert!(
+            result.unwrap(),
+            "warn policy should indicate a warning was raised"
+        );
     }
 
     #[test]
@@ -689,7 +689,10 @@ max_memory_mb = 256
 
         // Enforcement: "require" policy must reject unsigned plugins
         let result = enforce_signature_policy(tmp.path(), &security);
-        assert!(result.is_err(), "require policy must reject unsigned plugins");
+        assert!(
+            result.is_err(),
+            "require policy must reject unsigned plugins"
+        );
         let err = result.unwrap_err();
         match err {
             CmodError::SecurityViolation { reason } => {
