@@ -3,12 +3,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as cp from 'child_process';
 
+/** Cached binary path set by BinaryManager during activation. */
+let cachedBinaryPath: string | undefined;
+
+/**
+ * Set the cached cmod binary path. Called by extension activation after
+ * BinaryManager resolves/downloads the binary.
+ */
+export function setCachedBinaryPath(binaryPath: string): void {
+    cachedBinaryPath = binaryPath;
+}
+
 /**
  * Get the path to the cmod binary.
  *
  * Resolution order:
  * 1. cmod.path setting in VS Code configuration
- * 2. "cmod" found on the system PATH
+ * 2. Cached path from BinaryManager (set during activation)
+ * 3. "cmod" found on the system PATH
  *
  * Returns "cmod" as a fallback (relying on PATH resolution at runtime).
  */
@@ -26,6 +38,11 @@ export function getCmodBinaryPath(): string {
         vscode.window.showWarningMessage(
             `cmod binary not found at configured path: ${resolved}. Falling back to PATH.`
         );
+    }
+
+    // Use cached path from BinaryManager if available
+    if (cachedBinaryPath && fs.existsSync(cachedBinaryPath)) {
+        return cachedBinaryPath;
     }
 
     // Try to find cmod on PATH

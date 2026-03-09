@@ -7,6 +7,9 @@ plugins {
 group = "com.cmod.intellij"
 version = "0.1.0"
 
+/** The cmod CLI version this plugin expects. Used by BinaryManager for auto-download. */
+val cmodBinaryVersion = "0.1.0"
+
 repositories {
     mavenCentral()
     intellijPlatform {
@@ -54,5 +57,11 @@ tasks {
 
     buildSearchableOptions {
         enabled = false
+    }
+
+    processResources {
+        filesMatching("cmod.properties") {
+            expand("cmodBinaryVersion" to cmodBinaryVersion)
+        }
     }
 }

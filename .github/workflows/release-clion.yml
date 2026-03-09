@@ -1,0 +1,83 @@
+name: Release CLion Plugin
+
+on:
+  push:
+    tags:
+      - "clion-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build plugin
+        working-directory: editors/clion
+        run: ./gradlew buildPlugin
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clion-plugin
+          path: editors/clion/build/distributions/*.zip
+
+  publish:
+    name: Publish Plugin
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: clion-plugin
+          path: editors/clion/build/distributions
+
+      - name: List artifacts
+        run: ls -la editors/clion/build/distributions/
+
+      - name: Sign plugin
+        if: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN != '' }}
+        working-directory: editors/clion
+        run: ./gradlew signPlugin
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.JETBRAINS_PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.JETBRAINS_PRIVATE_KEY_PASSWORD }}
+
+      - name: Publish to JetBrains Marketplace
+        if: ${{ secrets.JETBRAINS_PUBLISH_TOKEN != '' }}
+        working-directory: editors/clion
+        run: ./gradlew publishPlugin
+        env:
+          PUBLISH_TOKEN: ${{ secrets.JETBRAINS_PUBLISH_TOKEN }}
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "CLion Plugin ${{ github.ref_name }}"
+          generate_release_notes: true
+          files: editors/clion/build/distributions/*.zip

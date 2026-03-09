@@ -55,6 +55,14 @@ class CmodSettingsState : PersistentStateComponent<CmodSettingsState> {
      */
     var lintOnSave: Boolean = false
 
+    /**
+     * Whether to allow using binaries that could not be verified.
+     * When false (default), checksum verification failures abort download.
+     * Only enable this if you trust the download source and verification
+     * is failing due to network or infrastructure issues.
+     */
+    var allowUnverifiedBinaries: Boolean = false
+
     companion object {
         fun getInstance(): CmodSettingsState {
             return ApplicationManager.getApplication().getService(CmodSettingsState::class.java)
@@ -71,5 +79,6 @@ class CmodSettingsState : PersistentStateComponent<CmodSettingsState> {
         showBuildNotifications = state.showBuildNotifications
         formatOnSave = state.formatOnSave
         lintOnSave = state.lintOnSave
+        allowUnverifiedBinaries = state.allowUnverifiedBinaries
     }
 }

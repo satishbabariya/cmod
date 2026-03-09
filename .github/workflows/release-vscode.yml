@@ -1,0 +1,189 @@
+name: Release VS Code Extension
+
+on:
+  push:
+    tags:
+      - "vscode-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-platform-vsix:
+    name: Build VSIX (${{ matrix.vscode-target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - vscode-target: linux-x64
+            cmod-target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - vscode-target: linux-arm64
+            cmod-target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - vscode-target: alpine-x64
+            cmod-target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - vscode-target: darwin-x64
+            cmod-target: x86_64-apple-darwin
+            os: ubuntu-latest
+          - vscode-target: darwin-arm64
+            cmod-target: aarch64-apple-darwin
+            os: ubuntu-latest
+          - vscode-target: win32-x64
+            cmod-target: x86_64-pc-windows-msvc
+            os: ubuntu-latest
+          - vscode-target: win32-arm64
+            cmod-target: aarch64-pc-windows-msvc
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Extract cmod version
+        id: cmod-version
+        shell: bash
+        run: |
+          # Read the expected cmod binary version from package.json
+          CMOD_VERSION=$(node -e "console.log(require('./editors/vscode/package.json').cmod.binaryVersion)")
+          echo "version=v${CMOD_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download cmod binary from release
+        shell: bash
+        run: |
+          mkdir -p editors/vscode/bin
+          CMOD_VERSION="${{ steps.cmod-version.outputs.version }}"
+          TARGET="${{ matrix.cmod-target }}"
+
+          # Determine archive extension
+          if [[ "$TARGET" == *windows* ]]; then
+            EXT="zip"
+          else
+            EXT="tar.gz"
+          fi
+
+          ASSET_NAME="cmod-${CMOD_VERSION}-${TARGET}.${EXT}"
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${CMOD_VERSION}/${ASSET_NAME}"
+
+          echo "Downloading ${DOWNLOAD_URL}"
+          curl -fSL -o "archive.${EXT}" "${DOWNLOAD_URL}"
+
+          # Download and verify checksum
+          CHECKSUM_URL="https://github.com/${{ github.repository }}/releases/download/${CMOD_VERSION}/checksums-${CMOD_VERSION}.sha256"
+          curl -fSL -o checksums.sha256 "${CHECKSUM_URL}"
+          grep "${ASSET_NAME}" checksums.sha256 | sha256sum -c -
+
+          # Extract
+          if [[ "$EXT" == "zip" ]]; then
+            unzip "archive.zip" -d editors/vscode/bin/
+          else
+            tar xzf "archive.tar.gz" -C editors/vscode/bin/
+          fi
+
+          # Make executable on Unix
+          if [[ "$TARGET" != *windows* ]]; then
+            chmod +x editors/vscode/bin/cmod
+          fi
+
+          ls -la editors/vscode/bin/
+
+      - name: Install dependencies
+        working-directory: editors/vscode
+        run: npm ci
+
+      - name: Build platform-specific VSIX
+        working-directory: editors/vscode
+        run: npx vsce package --target ${{ matrix.vscode-target }}
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.vscode-target }}
+          path: editors/vscode/*.vsix
+
+  build-universal-vsix:
+    name: Build Universal VSIX
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: editors/vscode
+        run: npm ci
+
+      - name: Build universal VSIX
+        working-directory: editors/vscode
+        run: npx vsce package
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-universal
+          path: editors/vscode/*.vsix
+
+  publish:
+    name: Publish Extension
+    needs: [build-platform-vsix, build-universal-vsix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+          path: vsix-artifacts
+
+      - name: List artifacts
+        run: ls -la vsix-artifacts/
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ secrets.VSCE_PAT != '' }}
+        working-directory: editors/vscode
+        run: |
+          npm ci
+          for vsix in ../../vsix-artifacts/*-*.vsix; do
+            echo "Publishing $vsix to VS Code Marketplace"
+            npx vsce publish --packagePath "$vsix"
+          done
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to Open VSX
+        if: ${{ secrets.OVSX_PAT != '' }}
+        working-directory: editors/vscode
+        run: |
+          npm ci
+          # Publish only the universal VSIX (excludes platform-specific @target files)
+          UNIVERSAL_VSIX=$(ls ../../vsix-artifacts/cmod-*.vsix | grep -v '@' | head -1)
+          npx ovsx publish "$UNIVERSAL_VSIX" -p "$OVSX_PAT"
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+
+      - name: Extract version for release tag
+        id: version
+        run: |
+          TAG="${{ github.ref_name }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "VS Code Extension ${{ github.ref_name }}"
+          generate_release_notes: true
+          files: vsix-artifacts/*.vsix

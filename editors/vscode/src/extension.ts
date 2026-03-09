@@ -5,7 +5,8 @@ import { DependencyTreeProvider } from './views/dependencyTreeProvider';
 import { BuildStatusTreeProvider } from './views/buildStatusTreeProvider';
 import { CmodTaskProvider } from './tasks/cmodTaskProvider';
 import { BuildStatusItem } from './statusBar/buildStatusItem';
-import { getCmodBinaryPath } from './utils/cmodBinary';
+import { BinaryManager } from './utils/binaryManager';
+import { setCachedBinaryPath } from './utils/cmodBinary';
 
 let lspClient: CmodLspClient | undefined;
 let dependencyTreeProvider: DependencyTreeProvider;
@@ -16,8 +17,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const outputChannel = vscode.window.createOutputChannel('cmod');
     outputChannel.appendLine('cmod extension activating...');
 
-    // Verify cmod binary is available
-    const cmodPath = getCmodBinaryPath();
+    // Ensure cmod binary is available (downloads if needed)
+    const binaryManager = new BinaryManager(context, outputChannel);
+    let cmodPath: string;
+    try {
+        cmodPath = await binaryManager.ensureBinary();
+    } catch (err) {
+        outputChannel.appendLine(`Failed to obtain cmod binary: ${err}`);
+        vscode.window.showErrorMessage(
+            'cmod binary not available. Some features will be unavailable. ' +
+            'Install cmod manually or set cmod.path in settings.'
+        );
+        cmodPath = 'cmod'; // Fallback to PATH resolution
+    }
+    setCachedBinaryPath(cmodPath);
     outputChannel.appendLine(`Using cmod binary: ${cmodPath}`);
 
     // Create tree view providers

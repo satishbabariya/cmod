@@ -1,5 +1,6 @@
 package com.cmod.intellij.util
 
+import com.cmod.intellij.binary.BinaryManager
 import com.cmod.intellij.settings.CmodSettingsState
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.SystemInfo
@@ -7,14 +8,27 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Utility for locating the cmod binary on the system.
  *
+ * Delegates to [BinaryManager] which handles auto-download when the binary
+ * is not found locally.
+ *
  * Search order:
  * 1. User-configured path in settings
- * 2. PATH environment variable
- * 3. Common installation directories (~/.cargo/bin, ~/.local/bin, /usr/local/bin)
+ * 2. Previously auto-downloaded binary in plugin data directory
+ * 3. PATH environment variable
+ * 4. Common installation directories (~/.cargo/bin, ~/.local/bin, /usr/local/bin)
+ * 5. Auto-download from GitHub Releases (via BinaryManager)
+ *
+ * ## Threading Notes
+ *
+ * Methods that call [BinaryManager.ensureBinary] (such as [getCmodBinaryPath],
+ * [findCmodBinary], and [isCmodAvailable]) may block with ProgressManager and
+ * should NOT be called from the EDT or during read actions. Use the non-blocking
+ * variants ([getCmodBinaryPathCached], [isCmodAvailableCached]) for those contexts.
  */
 object CmodBinaryUtil {
 
@@ -22,86 +36,85 @@ object CmodBinaryUtil {
 
     private val BINARY_NAME = if (SystemInfo.isWindows) "cmod.exe" else "cmod"
 
-    private val COMMON_PATHS = listOf(
-        Paths.get(System.getProperty("user.home"), ".cargo", "bin", BINARY_NAME),
-        Paths.get(System.getProperty("user.home"), ".local", "bin", BINARY_NAME),
-        Paths.get("/usr", "local", "bin", BINARY_NAME),
-        Paths.get("/opt", "homebrew", "bin", BINARY_NAME),
-    )
+    /** Cached resolved binary path after first successful resolution. */
+    private val cachedBinaryPath = AtomicReference<String?>(null)
 
     /**
-     * Finds the cmod binary, checking user settings first, then PATH, then
-     * common installation directories.
+     * Returns the cmod binary path, triggering auto-download if necessary.
+     * Falls back to "cmod" (relying on PATH resolution) if all else fails.
      *
-     * @return The absolute path to the cmod binary, or null if not found.
-     */
-    fun findCmodBinary(): String? {
-        // Check user-configured path first
-        val settings = CmodSettingsState.getInstance()
-        if (settings.cmodBinaryPath.isNotBlank()) {
-            val configured = File(settings.cmodBinaryPath)
-            if (configured.exists() && configured.canExecute()) {
-                LOG.info("Using configured cmod binary: ${configured.absolutePath}")
-                return configured.absolutePath
-            }
-            LOG.warn("Configured cmod path does not exist or is not executable: ${settings.cmodBinaryPath}")
-        }
-
-        // Search PATH
-        val pathBinary = findOnPath()
-        if (pathBinary != null) {
-            LOG.info("Found cmod on PATH: $pathBinary")
-            return pathBinary
-        }
-
-        // Search common installation directories
-        for (path in COMMON_PATHS) {
-            if (Files.exists(path) && Files.isExecutable(path)) {
-                LOG.info("Found cmod at common path: $path")
-                return path.toAbsolutePath().toString()
-            }
-        }
-
-        LOG.warn("cmod binary not found")
-        return null
-    }
-
-    /**
-     * Searches the PATH environment variable for the cmod binary.
-     */
-    private fun findOnPath(): String? {
-        val pathEnv = System.getenv("PATH") ?: return null
-        val separator = if (SystemInfo.isWindows) ";" else ":"
-
-        for (dir in pathEnv.split(separator)) {
-            val candidate = Path.of(dir, BINARY_NAME)
-            if (Files.exists(candidate) && Files.isExecutable(candidate)) {
-                return candidate.toAbsolutePath().toString()
-            }
-        }
-        return null
-    }
-
-    /**
-     * Returns the cmod binary path for use in command execution.
-     * Falls back to "cmod" (relying on PATH resolution) if not found.
+     * **Warning:** This method may block with ProgressManager. Do not call from
+     * EDT or read actions. Use [getCmodBinaryPathCached] for non-blocking access.
      */
     fun getCmodBinaryPath(): String {
-        return findCmodBinary() ?: BINARY_NAME
+        val binaryManager = BinaryManager.getInstance()
+        val path = binaryManager.ensureBinary() ?: BINARY_NAME
+        cachedBinaryPath.set(path)
+        return path
+    }
+
+    /**
+     * Returns the cached cmod binary path if previously resolved, or null.
+     * This method never triggers downloads and is safe to call from any thread.
+     */
+    fun getCmodBinaryPathCached(): String? {
+        return cachedBinaryPath.get()
+    }
+
+    /**
+     * Returns the cmod binary path if available, or null if not found.
+     * Triggers auto-download if necessary.
+     *
+     * **Warning:** This method may block with ProgressManager. Do not call from
+     * EDT or read actions.
+     */
+    fun findCmodBinary(): String? {
+        val path = BinaryManager.getInstance().ensureBinary()
+        if (path != null) {
+            cachedBinaryPath.set(path)
+        }
+        return path
     }
 
     /**
      * Checks whether the cmod binary is available and executable.
+     *
+     * **Warning:** This method may block with ProgressManager. Do not call from
+     * EDT or read actions. Use [isCmodAvailableCached] for non-blocking access.
      */
     fun isCmodAvailable(): Boolean {
-        return findCmodBinary() != null
+        val binaryManager = BinaryManager.getInstance()
+        val path = binaryManager.ensureBinary()
+        if (path != null) {
+            cachedBinaryPath.set(path)
+        }
+        return path != null
+    }
+
+    /**
+     * Returns whether a cmod binary path has been cached from a previous resolution.
+     * This method never triggers downloads and is safe to call from any thread.
+     *
+     * @param skipAutoDownload If true, only checks the cache. If false and cache
+     *        is empty, this still returns false (does not trigger download).
+     */
+    fun isCmodAvailableCached(skipAutoDownload: Boolean = true): Boolean {
+        return cachedBinaryPath.get() != null
+    }
+
+    /**
+     * Clears the cached binary path. Useful when settings change or binary
+     * is manually removed.
+     */
+    fun clearCache() {
+        cachedBinaryPath.set(null)
     }
 
     /**
      * Returns the cmod version string by running `cmod --version`.
      */
     fun getCmodVersion(): String? {
-        val binary = findCmodBinary() ?: return null
+        val binary = getCmodBinaryPathCached() ?: return null
         return try {
             val process = ProcessBuilder(binary, "--version")
                 .redirectErrorStream(true)
