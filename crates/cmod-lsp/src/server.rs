@@ -136,11 +136,7 @@ impl LspServer {
                     trigger_characters: vec![".".into(), ":".into(), "<".into(), "\"".into()],
                     resolve_provider: false,
                 }),
-                diagnostic_provider: Some(DiagnosticOptions {
-                    identifier: "cmod".into(),
-                    inter_file_dependencies: true,
-                    workspace_diagnostics: true,
-                }),
+                diagnostic_provider: None, // Push diagnostics via publishDiagnostics, not pull
                 hover_provider: true,
                 definition_provider: true,
                 document_symbol_provider: true,
@@ -227,11 +223,15 @@ impl LspServer {
             }
             "textDocument/hover" => {
                 let hover = self.handle_hover(msg.params.as_ref());
-                Some(vec![make_response(id, hover, None)])
+                // Return null if no hover info found (valid LSP response)
+                let result = hover.unwrap_or(Value::Null);
+                Some(vec![make_response(id, Some(result), None)])
             }
             "textDocument/definition" => {
                 let location = self.handle_definition(msg.params.as_ref());
-                Some(vec![make_response(id, location, None)])
+                // Return null if no definition found (valid LSP response)
+                let result = location.unwrap_or(Value::Null);
+                Some(vec![make_response(id, Some(result), None)])
             }
             "textDocument/documentSymbol" => {
                 let symbols = self.handle_document_symbol(msg.params.as_ref());

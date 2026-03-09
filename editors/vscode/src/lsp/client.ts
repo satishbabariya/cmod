@@ -3,7 +3,6 @@ import {
     LanguageClient,
     LanguageClientOptions,
     ServerOptions,
-    TransportKind,
 } from 'vscode-languageclient/node';
 import { getCmodBinaryPath } from '../utils/cmodBinary';
 import { BuildStatusTreeProvider } from '../views/buildStatusTreeProvider';
@@ -37,7 +36,6 @@ export class CmodLspClient {
         const serverOptions: ServerOptions = {
             command: cmodPath,
             args: ['lsp'],
-            transport: TransportKind.stdio,
         };
 
         const clientOptions: LanguageClientOptions = {
@@ -51,6 +49,7 @@ export class CmodLspClient {
             ],
             outputChannel: this.outputChannel,
             traceOutputChannel: this.outputChannel,
+            diagnosticCollectionName: 'cmod',
             middleware: {
                 handleDiagnostics: (uri, diagnostics, next) => {
                     next(uri, diagnostics);

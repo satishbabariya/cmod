@@ -1,0 +1,15 @@
+<svg width="220" height="80" viewBox="0 0 220 80" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@800&amp;display=swap');
+      .iso-text { font-family: 'Outfit', sans-serif; font-weight: 800; font-size: 48px; fill: #E2E8F0; }
+    </style>
+  </defs>
+  <g transform="translate(10, 20)">
+    <polygon points="20,0 40,10 20,20 0,10" fill="#334155" />
+    <polygon points="0,10 20,20 20,40 0,30" fill="#00FF66" />
+    <polygon points="5,18 15,23 15,30 5,25" fill="#0F172A" /> <polygon points="20,20 40,10 40,30 20,40" fill="#1E293B" />
+  </g>
+  <text x="65" y="55" class="iso-text">cmod</text>
+  <circle cx="195" cy="40" r="4" fill="#00FF66" />
+</svg>

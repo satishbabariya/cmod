@@ -1,0 +1,12 @@
+<svg width="220" height="80" viewBox="0 0 220 80" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      @import url(https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@700&amp;display=swap);
+    </style>
+  </defs>
+  <path d="M14 16h180v50H14z"/>
+  <path fill="#faff00" stroke="#000" stroke-width="3" d="M8 10h180v50H8z"/>
+  <path d="M20 20h15v25H20Z"/>
+  <path d="M25 25h20v5H25Z" fill="#faff00"/>
+  <text x="50" y="48" style="font-family:&quot;Chakra Petch&quot;,sans-serif;font-weight:700;font-size:42px;text-transform:uppercase;fill:#000">CMOD</text>
+</svg>
