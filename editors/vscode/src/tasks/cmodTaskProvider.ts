@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { getCmodBinaryPath } from '../utils/cmodBinary';
+import { getToolchainEnv } from '../utils/terminal';
 
 interface CmodTaskDefinition extends vscode.TaskDefinition {
     task: string;
@@ -50,7 +51,11 @@ export class CmodTaskProvider implements vscode.TaskProvider {
             taskName += ` (${definition.profile})`;
         }
 
-        const execution = new vscode.ShellExecution(cmodPath, args);
+        // Include toolchain environment variables
+        const toolchainEnv = getToolchainEnv();
+        const execution = new vscode.ShellExecution(cmodPath, args, {
+            env: Object.keys(toolchainEnv).length > 0 ? toolchainEnv : undefined,
+        });
 
         const task = new vscode.Task(
             definition,

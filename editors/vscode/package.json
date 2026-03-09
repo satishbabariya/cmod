@@ -23,7 +23,7 @@
     "package manager",
     "cmod"
   ],
-  "icon": "resources/icons/cmod.svg",
+  "icon": "resources/icons/cmod.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/satishbabariya/cmod"
@@ -135,6 +135,16 @@
           "type": "boolean",
           "default": false,
           "description": "Run cmod lint on save for C++ files."
+        },
+        "cmod.toolchain.cxx": {
+          "type": "string",
+          "default": "",
+          "description": "Path to C++ compiler (clang++). Sets CXX environment variable. Leave empty to use system default."
+        },
+        "cmod.toolchain.scanDeps": {
+          "type": "string",
+          "default": "",
+          "description": "Path to clang-scan-deps binary. Sets SCAN_DEPS environment variable. Leave empty to use system default."
         }
       }
     },

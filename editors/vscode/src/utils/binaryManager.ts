@@ -7,8 +7,33 @@ import * as crypto from 'crypto';
 import * as cp from 'child_process';
 import { createGunzip, inflateRawSync } from 'zlib';
 
+/**
+ * Reads the expected cmod version from package.json.
+ * Handles both webpack-bundled and tsc-compiled scenarios.
+ */
+function getExpectedVersion(): string {
+    try {
+        // Try multiple possible locations for package.json
+        const possiblePaths = [
+            path.join(__dirname, '..', '..', 'package.json'),      // from out/src/utils/
+            path.join(__dirname, '..', 'package.json'),            // from out/
+            path.join(__dirname, 'package.json'),                  // webpack bundle (same dir)
+        ];
+        
+        for (const pkgPath of possiblePaths) {
+            if (fs.existsSync(pkgPath)) {
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+                return pkg.cmod?.binaryVersion ?? pkg.version ?? '0.1.0';
+            }
+        }
+    } catch {
+        // Fall through to default
+    }
+    return '0.1.0';
+}
+
 /** The cmod version this extension expects. Kept in sync with package.json. */
-const EXPECTED_VERSION: string = require('../../package.json').cmod?.binaryVersion ?? require('../../package.json').version;
+const EXPECTED_VERSION: string = getExpectedVersion();
 
 const GITHUB_REPO = 'satishbabariya/cmod';
 
