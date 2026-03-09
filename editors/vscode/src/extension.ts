@@ -6,6 +6,7 @@ import { BuildStatusTreeProvider } from './views/buildStatusTreeProvider';
 import { CmodTaskProvider } from './tasks/cmodTaskProvider';
 import { BuildStatusItem } from './statusBar/buildStatusItem';
 import { BinaryManager } from './utils/binaryManager';
+import { setCachedBinaryPath } from './utils/cmodBinary';
 
 let lspClient: CmodLspClient | undefined;
 let dependencyTreeProvider: DependencyTreeProvider;
@@ -29,6 +30,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         );
         cmodPath = 'cmod'; // Fallback to PATH resolution
     }
+    setCachedBinaryPath(cmodPath);
     outputChannel.appendLine(`Using cmod binary: ${cmodPath}`);
 
     // Create tree view providers

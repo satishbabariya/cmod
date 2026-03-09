@@ -55,7 +55,7 @@ Generate `checksums-{version}.sha256` containing SHA-256 hashes of all artifacts
 The VS Code extension is a standard TypeScript/Webpack project. It produces a `.vsix` package.
 
 **Platform-specific VSIX:** Use `@vscode/vsce`'s `--target` flag to produce platform-specific extensions. This enables the VS Code Marketplace to serve the right package per platform. Targets:
-- `linux-x64`, `linux-arm64`, `linux-x64-musl` (Alpine)
+- `linux-x64`, `linux-arm64`, `alpine-x64` (musl libc)
 - `darwin-x64`, `darwin-arm64`
 - `win32-x64`, `win32-arm64`
 
@@ -257,7 +257,7 @@ https://github.com/satishbabariya/cmod/releases/download/v{version}/cmod-v{versi
 |---|---|
 | `.github/workflows/release-vscode.yml` | VS Code extension release workflow |
 | `.github/workflows/release-clion.yml` | CLion plugin release workflow |
-| `editors/vscode/src/binary.ts` | Auto-download logic for VS Code |
+| `editors/vscode/src/utils/binaryManager.ts` | Auto-download logic for VS Code |
 | `editors/clion/src/main/kotlin/com/cmod/intellij/binary/BinaryManager.kt` | Auto-download logic for CLion |
 
 ### Modified files

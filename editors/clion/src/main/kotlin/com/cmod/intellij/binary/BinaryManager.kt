@@ -102,9 +102,7 @@ class BinaryManager {
     }
 
     private fun downloadBinary(platformInfo: PlatformInfo): String? {
-        var result: String? = null
-
-        ProgressManager.getInstance().run(object : Task.WithResult<String?, Exception>(
+        val task = object : Task.WithResult<String?, Exception>(
             null,
             "Downloading cmod v$EXPECTED_VERSION",
             true
@@ -128,6 +126,7 @@ class BinaryManager {
                     // Download and verify checksum
                     indicator.text = "Verifying checksum..."
                     indicator.fraction = 0.8
+                    var checksumVerified = false
                     try {
                         val checksumsBytes = downloadUrl(checksumsUrl, null)
                         val checksumsText = String(checksumsBytes, Charsets.UTF_8)
@@ -142,9 +141,34 @@ class BinaryManager {
                                 return null
                             }
                             LOG.info("Checksum verified: $actualHash")
+                            checksumVerified = true
+                        } else {
+                            LOG.warn("No checksum found for $archiveName in checksums file")
                         }
                     } catch (e: Exception) {
-                        LOG.warn("Could not verify checksum: ${e.message}")
+                        LOG.error("Checksum verification failed: ${e.message}", e)
+                        val settings = CmodSettingsState.getInstance()
+                        if (!settings.allowUnverifiedBinaries) {
+                            notify(
+                                "cmod download failed: could not verify checksum. " +
+                                "Enable 'Allow Unverified Binaries' in settings to bypass.",
+                                NotificationType.ERROR
+                            )
+                            return null
+                        }
+                        notify(
+                            "Warning: cmod binary checksum could not be verified. Proceeding due to settings override.",
+                            NotificationType.WARNING
+                        )
+                    }
+
+                    if (!checksumVerified && !CmodSettingsState.getInstance().allowUnverifiedBinaries) {
+                        LOG.error("Checksum not verified and allowUnverifiedBinaries is disabled")
+                        notify(
+                            "cmod download failed: checksum verification required but not completed.",
+                            NotificationType.ERROR
+                        )
+                        return null
                     }
 
                     // Extract binary
@@ -178,9 +202,9 @@ class BinaryManager {
                     return null
                 }
             }
-        }.also { result = it.compute(ProgressManager.getInstance().progressIndicator ?: EmptyProgressIndicator()) })
+        }
 
-        return result
+        return ProgressManager.getInstance().run(task)
     }
 
     private fun downloadUrl(url: String, indicator: ProgressIndicator?): ByteArray {

@@ -168,7 +168,9 @@ jobs:
         working-directory: editors/vscode
         run: |
           npm ci
-          npx ovsx publish ../../vsix-artifacts/cmod-*.vsix -p "$OVSX_PAT"
+          # Publish only the universal VSIX (excludes platform-specific @target files)
+          UNIVERSAL_VSIX=$(ls ../../vsix-artifacts/cmod-*.vsix | grep -v '@' | head -1)
+          npx ovsx publish "$UNIVERSAL_VSIX" -p "$OVSX_PAT"
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
 

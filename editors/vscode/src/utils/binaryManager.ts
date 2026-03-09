@@ -5,7 +5,7 @@ import * as https from 'https';
 import * as http from 'http';
 import * as crypto from 'crypto';
 import * as cp from 'child_process';
-import { createGunzip } from 'zlib';
+import { createGunzip, inflateRawSync } from 'zlib';
 
 /** The cmod version this extension expects. Kept in sync with package.json. */
 const EXPECTED_VERSION: string = require('../../package.json').cmod?.binaryVersion ?? require('../../package.json').version;
@@ -61,16 +61,20 @@ function getPlatformInfo(): PlatformInfo | undefined {
     return { target: entry.target, binaryName, archiveExt: entry.ext };
 }
 
+/** Default timeout in milliseconds for HTTP requests. */
+const REQUEST_TIMEOUT_MS = 30000;
+const SOCKET_TIMEOUT_MS = 15000;
+
 /**
  * Downloads a URL, following redirects, and returns the data as a Buffer.
  */
-function download(url: string, onProgress?: (percent: number) => void): Promise<Buffer> {
+function download(url: string, onProgress?: (percent: number) => void, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<Buffer> {
     return new Promise((resolve, reject) => {
         const get = url.startsWith('https') ? https.get : http.get;
-        get(url, { headers: { 'User-Agent': 'cmod-vscode' } }, (res) => {
-            // Follow redirects
+        const request = get(url, { headers: { 'User-Agent': 'cmod-vscode' } }, (res) => {
+            // Follow redirects (pass timeout to recursive call)
             if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                download(res.headers.location, onProgress).then(resolve, reject);
+                download(res.headers.location, onProgress, timeoutMs).then(resolve, reject);
                 return;
             }
 
@@ -92,7 +96,24 @@ function download(url: string, onProgress?: (percent: number) => void): Promise<
             });
             res.on('end', () => resolve(Buffer.concat(chunks)));
             res.on('error', reject);
-        }).on('error', reject);
+        });
+
+        // Set request timeout
+        request.setTimeout(timeoutMs, () => {
+            request.destroy();
+            reject(new Error(`Download timeout after ${timeoutMs}ms for ${url}`));
+        });
+
+        // Set socket timeout when socket is assigned
+        request.on('socket', (socket) => {
+            socket.setTimeout(SOCKET_TIMEOUT_MS);
+            socket.on('timeout', () => {
+                request.destroy();
+                reject(new Error(`Socket timeout after ${SOCKET_TIMEOUT_MS}ms for ${url}`));
+            });
+        });
+
+        request.on('error', reject);
     });
 }
 
@@ -178,14 +199,34 @@ async function extractZip(archiveBuffer: Buffer, destDir: string, binaryName: st
             const lfhNameLen = archiveBuffer.readUInt16LE(localHeaderOffset + 26);
             const lfhExtraLen = archiveBuffer.readUInt16LE(localHeaderOffset + 28);
             const compressedSize = archiveBuffer.readUInt32LE(localHeaderOffset + 18);
+            const uncompressedSize = archiveBuffer.readUInt32LE(localHeaderOffset + 22);
             const dataOffset = localHeaderOffset + 30 + lfhNameLen + lfhExtraLen;
 
             const compressionMethod = archiveBuffer.readUInt16LE(localHeaderOffset + 8);
-            if (compressionMethod !== 0) {
-                throw new Error('Compressed zip entries not supported; expected stored (method 0)');
+            const compressedData = archiveBuffer.subarray(dataOffset, dataOffset + compressedSize);
+
+            let fileData: Buffer;
+            if (compressionMethod === 0) {
+                // Stored (no compression)
+                fileData = compressedData;
+            } else if (compressionMethod === 8) {
+                // DEFLATE compression
+                try {
+                    fileData = inflateRawSync(compressedData);
+                    if (fileData.length !== uncompressedSize) {
+                        throw new Error(
+                            `Decompressed size mismatch: expected ${uncompressedSize}, got ${fileData.length}`
+                        );
+                    }
+                } catch (err) {
+                    throw new Error(`Failed to decompress DEFLATE entry: ${err}`);
+                }
+            } else {
+                throw new Error(
+                    `Unsupported zip compression method ${compressionMethod}; only stored (0) and DEFLATE (8) are supported`
+                );
             }
 
-            const fileData = archiveBuffer.subarray(dataOffset, dataOffset + compressedSize);
             const destPath = path.join(destDir, binaryName);
             fs.writeFileSync(destPath, fileData);
             return;
