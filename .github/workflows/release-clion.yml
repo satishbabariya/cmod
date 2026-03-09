@@ -59,7 +59,7 @@ jobs:
         run: ls -la plugin-artifacts/
 
       - name: Sign plugin
-        if: env.CERTIFICATE_CHAIN != ''
+        if: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN != '' }}
         working-directory: editors/clion
         run: ./gradlew signPlugin
         env:
@@ -68,7 +68,7 @@ jobs:
           PRIVATE_KEY_PASSWORD: ${{ secrets.JETBRAINS_PRIVATE_KEY_PASSWORD }}
 
       - name: Publish to JetBrains Marketplace
-        if: env.PUBLISH_TOKEN != ''
+        if: ${{ secrets.JETBRAINS_PUBLISH_TOKEN != '' }}
         working-directory: editors/clion
         run: ./gradlew publishPlugin
         env:

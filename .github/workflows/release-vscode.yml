@@ -152,7 +152,7 @@ jobs:
         run: ls -la vsix-artifacts/
 
       - name: Publish to VS Code Marketplace
-        if: env.VSCE_PAT != ''
+        if: ${{ secrets.VSCE_PAT != '' }}
         working-directory: editors/vscode
         run: |
           npm ci
@@ -164,7 +164,7 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
       - name: Publish to Open VSX
-        if: env.OVSX_PAT != ''
+        if: ${{ secrets.OVSX_PAT != '' }}
         working-directory: editors/vscode
         run: |
           npm ci
