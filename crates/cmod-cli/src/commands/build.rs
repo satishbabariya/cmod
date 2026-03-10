@@ -551,6 +551,13 @@ fn build_vendored_dependencies(
             .and_then(|b| b.build_type)
             .unwrap_or_default();
 
+        // Clean stale build artifacts from the dep's output dirs.
+        // Object file names encode the full source path, so builds from a
+        // different project location leave behind stale .o files that cause
+        // duplicate-symbol errors at link time.
+        let _ = std::fs::remove_dir_all(build_dir.join("obj"));
+        let _ = std::fs::remove_dir_all(build_dir.join("pcm"));
+
         // Build with accumulated PCMs from already-built dependencies.
         // Only pass .o files (not .a archives) as extra objects for intermediate
         // dep builds — static lib archives should not be nested inside each other.

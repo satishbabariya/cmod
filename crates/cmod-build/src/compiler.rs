@@ -289,11 +289,17 @@ impl CompilerBackend for ClangBackend {
 
         match artifact {
             Artifact::StaticLib { .. } => {
-                // Use ar for static libs
+                // Use ar for static libs — filter out .a archives to prevent nesting
+                let obj_only: Vec<&&Path> = objects
+                    .iter()
+                    .filter(|p| p.extension().and_then(|e| e.to_str()) != Some("a"))
+                    .collect();
+                // Remove existing archive to avoid stale objects from prior builds
+                let _ = std::fs::remove_file(output);
                 let status = Command::new("ar")
                     .arg("rcs")
                     .arg(output)
-                    .args(objects)
+                    .args(obj_only)
                     .status()
                     .map_err(|e| CmodError::BuildFailed {
                         reason: format!("failed to run ar: {}", e),

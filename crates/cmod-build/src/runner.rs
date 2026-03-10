@@ -836,7 +836,12 @@ impl BuildRunner {
             NodeKind::Link => {
                 let output = &node.outputs[0];
                 let mut obj_files = plan.object_paths();
-                obj_files.extend(self.extra_obj_paths.clone());
+                // For static libraries, only archive the package's own objects.
+                // Dependency objects/archives must not be nested inside this archive;
+                // downstream consumers will link them separately.
+                if plan.build_type != BuildType::StaticLib {
+                    obj_files.extend(self.extra_obj_paths.clone());
+                }
                 let obj_refs: Vec<&Path> = obj_files.iter().map(|p| p.as_path()).collect();
 
                 if let Some(parent) = output.parent() {
