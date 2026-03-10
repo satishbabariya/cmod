@@ -1,0 +1,31 @@
+version = 1
+
+[[package]]
+name = "core"
+version = "0.0.0"
+source = "git"
+repo = "path:../core"
+commit = "local"
+hash = "local"
+deps = []
+features = []
+
+[package.toolchain]
+compiler = "clang"
+
+[package.targets]
+
+[[package]]
+name = "utils"
+version = "0.0.0"
+source = "git"
+repo = "path:../utils"
+commit = "local"
+hash = "local"
+deps = []
+features = []
+
+[package.toolchain]
+compiler = "clang"
+
+[package.targets]

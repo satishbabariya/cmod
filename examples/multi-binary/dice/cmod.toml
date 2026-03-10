@@ -1,0 +1,14 @@
+[package]
+name = "dice"
+version = "0.1.0"
+
+[module]
+name = "local.dice"
+root = "src/lib.cppm"
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "static-lib"

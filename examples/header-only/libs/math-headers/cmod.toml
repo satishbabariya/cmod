@@ -1,0 +1,15 @@
+[package]
+name = "math-headers"
+version = "0.1.0"
+edition = "2023"
+description = "Header-only math utility library"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "static-lib"
+include_dirs = ["include"]

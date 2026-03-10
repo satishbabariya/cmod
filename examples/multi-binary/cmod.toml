@@ -1,0 +1,10 @@
+[package]
+name = "multi-binary"
+version = "0.1.0"
+edition = "2023"
+description = "Multiple binaries sharing a common library via workspace"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
+
+[workspace]
+members = ["dice", "roller", "stats"]
