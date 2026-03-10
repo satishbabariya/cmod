@@ -888,6 +888,20 @@ fn build_module_graph(
         // Extract partition ownership for partition units
         let partition_of = runner::extract_partition_owner(source)?;
 
+        // Resolve relative partition imports (`:foo`) to fully-qualified names
+        // (e.g., `module_name:foo`). This is needed because `export import :vec2;`
+        // inside module `local.geometry` should resolve to `local.geometry:vec2`.
+        let imports = imports
+            .into_iter()
+            .map(|imp| {
+                if let Some(part) = imp.strip_prefix(':') {
+                    format!("{}:{}", module_name, part)
+                } else {
+                    imp
+                }
+            })
+            .collect();
+
         // Use source path as unique node ID to support multi-TU modules
         let node_id = source.display().to_string();
 
