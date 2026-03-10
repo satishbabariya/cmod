@@ -165,11 +165,7 @@ impl BuildPlan {
             BuildType::Binary => build_dir.join(sanitize_name(&output_name)),
             BuildType::StaticLib => build_dir.join(format!("lib{}.a", sanitize_name(&output_name))),
             BuildType::SharedLib => {
-                let ext = if cfg!(target_os = "macos") {
-                    "dylib"
-                } else {
-                    "so"
-                };
+                let ext = shared_lib_extension(target);
                 build_dir.join(format!("lib{}.{}", sanitize_name(&output_name), ext))
             }
         };
@@ -312,6 +308,17 @@ pub struct CompileCommand {
     pub arguments: Vec<String>,
     /// The output file path.
     pub output: String,
+}
+
+/// Determine the shared library file extension from a target triple.
+fn shared_lib_extension(target: &str) -> &'static str {
+    if target.contains("apple") || target.contains("darwin") {
+        "dylib"
+    } else if target.contains("windows") {
+        "dll"
+    } else {
+        "so"
+    }
 }
 
 /// Sanitize a module name for use as a filename.
@@ -493,15 +500,9 @@ mod tests {
 
         let link_node = plan.nodes.last().unwrap();
         let output_path = link_node.outputs[0].to_str().unwrap();
-        let expected_ext = if cfg!(target_os = "macos") {
-            ".dylib"
-        } else {
-            ".so"
-        };
         assert!(
-            output_path.ends_with(expected_ext),
-            "Expected {} output: {}",
-            expected_ext,
+            output_path.ends_with(".so"),
+            "Expected .so output for Linux target: {}",
             output_path
         );
     }

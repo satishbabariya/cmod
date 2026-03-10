@@ -361,20 +361,33 @@ fn build_path_dependencies(
             None
         };
 
-        // Recursively build the dependency (handles nested path deps)
-        build_module(
-            &dep_config,
-            shell,
-            jobs,
-            force,
-            remote_url,
-            false,
-            &[],
-            no_cache,
-            false,
-            &[],
-            dep_lockfile.as_ref(),
-        )?;
+        // Check if the dependency has compilable sources; header-only deps
+        // provide only include dirs and should not be passed to build_module().
+        let dep_sources =
+            runner::discover_sources_multi(&dep_config.src_dirs(), &dep_config.exclude_patterns())
+                .unwrap_or_default();
+
+        if !dep_sources.is_empty() {
+            // Recursively build the dependency (handles nested path deps)
+            build_module(
+                &dep_config,
+                shell,
+                jobs,
+                force,
+                remote_url,
+                false,
+                &[],
+                no_cache,
+                false,
+                &[],
+                dep_lockfile.as_ref(),
+            )?;
+        } else {
+            shell.verbose(
+                "Skipping",
+                format!("header-only path dep: {} (no sources)", dep_name),
+            );
+        }
 
         // Collect PCM files
         let dep_build_dir = dep_config.build_dir();
@@ -1395,7 +1408,7 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
     let mut all_plan_nodes = Vec::new();
 
     let lockfile = if config.lockfile_path.exists() {
-        Lockfile::load(&config.lockfile_path).ok()
+        Some(Lockfile::load(&config.lockfile_path)?)
     } else {
         None
     };
@@ -1410,15 +1423,13 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
                 continue;
             }
 
-            let dep_dir = match super::common::find_dep_on_disk(&vendor_dir, &deps_dir, &pkg.name) {
-                Some(d) if d.join("cmod.toml").exists() => d,
-                _ => continue,
-            };
+            let dep_dir =
+                match super::common::ensure_dep_on_disk(pkg, &vendor_dir, &deps_dir, shell)? {
+                    Some(d) => d,
+                    None => continue,
+                };
 
-            let mut dep_config = match Config::load(&dep_dir) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
+            let mut dep_config = Config::load(&dep_dir)?;
             dep_config.profile = config.profile;
 
             let dep_src_dirs = dep_config.src_dirs();

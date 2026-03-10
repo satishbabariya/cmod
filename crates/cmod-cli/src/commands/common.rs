@@ -74,7 +74,8 @@ pub fn ensure_dep_on_disk(
                         .map(|head_oid| head_oid.to_string() == *expected_commit)
                         .unwrap_or(false);
                     if !matches {
-                        // Stale checkout — fall through to re-clone below
+                        // Stale checkout — remove so fetch_repo gets a clean directory
+                        let _ = std::fs::remove_dir_all(&d);
                     } else {
                         return Ok(Some(d));
                     }
