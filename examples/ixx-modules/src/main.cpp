@@ -1,7 +1,7 @@
-import local.ixx_modules;
-
 #include <iostream>
 #include <cassert>
+
+import local.ixx_modules;
 
 int main() {
     // Split and join

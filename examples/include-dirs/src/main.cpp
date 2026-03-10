@@ -1,7 +1,7 @@
-import local.include_dirs;
-
 #include <iostream>
 #include <cassert>
+
+import local.include_dirs;
 
 int main() {
     auto config = app::default_config();

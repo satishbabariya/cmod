@@ -1,7 +1,7 @@
-import local.shared_lib;
-
 #include <iostream>
 #include <cassert>
+
+import local.shared_lib;
 
 int main() {
     // Run-length encoding
