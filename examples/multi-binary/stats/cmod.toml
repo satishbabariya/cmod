@@ -1,0 +1,17 @@
+[package]
+name = "stats"
+version = "0.1.0"
+
+[module]
+name = "local.stats"
+root = "src/lib.cppm"
+
+[dependencies]
+dice = { path = "../dice" }
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "binary"

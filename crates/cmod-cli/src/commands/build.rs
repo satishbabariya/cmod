@@ -137,6 +137,7 @@ pub fn run(
         no_cache,
         distributed,
         &workers,
+        Some(&lockfile),
     );
 
     // Step 4: Run post-build hook (only on success)
@@ -182,15 +183,25 @@ fn build_module(
     no_cache: bool,
     distributed: bool,
     workers: &[String],
+    lockfile: Option<&Lockfile>,
 ) -> Result<(), CmodError> {
     // Build path dependencies first and collect their artifacts
-    let (dep_pcms, dep_objs) =
+    let mut dep_artifacts =
         build_path_dependencies(config, shell, jobs, force, remote_url, no_cache)?;
+
+    // Build vendored/resolved git dependencies and collect their artifacts
+    if let Some(lockfile) = lockfile {
+        let ven_artifacts = build_vendored_dependencies(
+            config, lockfile, shell, jobs, force, remote_url, no_cache,
+        )?;
+        dep_artifacts.merge(&ven_artifacts);
+    }
 
     // Discover source files
     let src_dirs = config.src_dirs();
     let exclude = config.exclude_patterns();
     let sources = runner::discover_sources_multi(&src_dirs, &exclude)?;
+    let sources = runner::filter_included_sources(&sources);
 
     if sources.is_empty() {
         let dirs: Vec<_> = src_dirs.iter().map(|d| d.display().to_string()).collect();
@@ -216,7 +227,12 @@ fn build_module(
     }
 
     // Set up the compiler backend (with feature flags as -D defines)
-    let (backend, target) = setup_compiler(config, activated_features);
+    let (mut backend, target) = setup_compiler(config, activated_features);
+
+    // Add dependency include directories as -I flags
+    for inc_dir in &dep_artifacts.include_dirs {
+        backend.extra_flags.push(format!("-I{}", inc_dir.display()));
+    }
 
     // Set up cache
     let cache = ArtifactCache::new(config.cache_dir());
@@ -234,8 +250,8 @@ fn build_module(
         .with_jobs(jobs)
         .with_force(force)
         .with_no_cache(no_cache)
-        .with_extra_pcm_paths(dep_pcms)
-        .with_extra_obj_paths(dep_objs)
+        .with_extra_pcm_paths(dep_artifacts.pcms)
+        .with_extra_obj_paths(dep_artifacts.objs)
         .with_shell(Arc::new(Shell::new(shell.verbosity())));
 
     if let Some(remote) = make_remote_cache(remote_url, shell) {
@@ -302,10 +318,10 @@ fn build_module(
     Ok(())
 }
 
-/// Build path dependencies and collect their PCMs and object files.
+/// Build path dependencies and collect their PCMs, object files, and include dirs.
 ///
 /// For each dependency with `path = "..."`, load its config, build it,
-/// and return the aggregated PCMs and objects for the parent project.
+/// and return the aggregated artifacts for the parent project.
 fn build_path_dependencies(
     config: &Config,
     shell: &Shell,
@@ -313,16 +329,8 @@ fn build_path_dependencies(
     force: bool,
     remote_url: &Option<String>,
     no_cache: bool,
-) -> Result<
-    (
-        std::collections::HashMap<String, std::path::PathBuf>,
-        Vec<std::path::PathBuf>,
-    ),
-    CmodError,
-> {
-    let mut all_pcms: std::collections::HashMap<String, std::path::PathBuf> =
-        std::collections::HashMap::new();
-    let mut all_objs: Vec<std::path::PathBuf> = Vec::new();
+) -> Result<super::common::DepArtifacts, CmodError> {
+    let mut artifacts = super::common::DepArtifacts::default();
 
     for (dep_name, dep) in &config.manifest.dependencies {
         let dep_path = match dep.path() {
@@ -342,19 +350,44 @@ fn build_path_dependencies(
         // Load the dependency's config
         let dep_config = Config::load(&dep_path)?;
 
-        // Recursively build the dependency (handles nested path deps)
-        build_module(
-            &dep_config,
-            shell,
-            jobs,
-            force,
-            remote_url,
-            false,
-            &[],
-            no_cache,
-            false,
-            &[],
-        )?;
+        // Collect include directories from the dependency
+        let inc_dirs = super::common::detect_include_dirs(&dep_path, &dep_config);
+        artifacts.include_dirs.extend(inc_dirs);
+
+        // Load the path dep's own lockfile so its git dependencies get built
+        let dep_lockfile = if dep_config.lockfile_path.exists() {
+            Lockfile::load(&dep_config.lockfile_path).ok()
+        } else {
+            None
+        };
+
+        // Check if the dependency has compilable sources; header-only deps
+        // provide only include dirs and should not be passed to build_module().
+        let dep_sources =
+            runner::discover_sources_multi(&dep_config.src_dirs(), &dep_config.exclude_patterns())
+                .unwrap_or_default();
+
+        if !dep_sources.is_empty() {
+            // Recursively build the dependency (handles nested path deps)
+            build_module(
+                &dep_config,
+                shell,
+                jobs,
+                force,
+                remote_url,
+                false,
+                &[],
+                no_cache,
+                false,
+                &[],
+                dep_lockfile.as_ref(),
+            )?;
+        } else {
+            shell.verbose(
+                "Skipping",
+                format!("header-only path dep: {} (no sources)", dep_name),
+            );
+        }
 
         // Collect PCM files
         let dep_build_dir = dep_config.build_dir();
@@ -369,7 +402,7 @@ fn build_path_dependencies(
                     let sanitized = mod_name.replace(['.', ':', '/'], "_");
                     let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
                     if pcm_path.exists() {
-                        all_pcms.insert(mod_name, pcm_path);
+                        artifacts.pcms.insert(mod_name, pcm_path);
                     }
                 }
             }
@@ -382,7 +415,7 @@ fn build_path_dependencies(
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                        all_objs.push(path);
+                        artifacts.objs.push(path);
                     }
                 }
             }
@@ -394,21 +427,230 @@ fn build_path_dependencies(
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) == Some("a") {
-                        all_objs.push(path);
+                        artifacts.objs.push(path);
                     }
                 }
             }
         }
     }
 
-    if !all_pcms.is_empty() || !all_objs.is_empty() {
+    if !artifacts.pcms.is_empty() || !artifacts.objs.is_empty() {
         shell.verbose(
             "Path deps",
-            format!("{} PCMs, {} objects/libs", all_pcms.len(), all_objs.len()),
+            format!(
+                "{} PCMs, {} objects/libs, {} include dirs",
+                artifacts.pcms.len(),
+                artifacts.objs.len(),
+                artifacts.include_dirs.len()
+            ),
         );
     }
 
-    Ok((all_pcms, all_objs))
+    Ok(artifacts)
+}
+
+/// Build vendored/resolved git dependencies and collect their artifacts.
+///
+/// Iterates over the lockfile packages in topological order (so transitive deps
+/// are built first), locates each git dependency on disk (in `vendor/` or
+/// `build/deps/`), builds it, and accumulates the resulting PCM, object files,
+/// and include directories.
+#[allow(clippy::too_many_arguments)]
+fn build_vendored_dependencies(
+    config: &Config,
+    lockfile: &Lockfile,
+    shell: &Shell,
+    jobs: usize,
+    force: bool,
+    remote_url: &Option<String>,
+    no_cache: bool,
+) -> Result<super::common::DepArtifacts, CmodError> {
+    let mut artifacts = super::common::DepArtifacts::default();
+
+    let vendor_dir = config.root.join("vendor");
+    let deps_dir = config.deps_dir();
+
+    // Build packages in topological order so deps are ready before dependents
+    let ordered = super::common::topo_sort_packages(&lockfile.packages);
+
+    for pkg in &ordered {
+        // Only handle git-sourced dependencies
+        if pkg.source.as_deref() != Some("git") {
+            continue;
+        }
+
+        // Find (or fetch) the dependency on disk
+        let dep_dir = match super::common::ensure_dep_on_disk(pkg, &vendor_dir, &deps_dir, shell) {
+            Ok(Some(d)) => d,
+            Ok(None) => continue,
+            Err(e) => return Err(e),
+        };
+
+        shell.verbose(
+            "Building",
+            format!("dependency: {} ({})", pkg.name, dep_dir.display()),
+        );
+
+        let mut dep_config = Config::load(&dep_dir)?;
+        dep_config.profile = config.profile;
+        dep_config.target = config.target.clone();
+
+        // Auto-detect include directories for this dependency
+        let inc_dirs = super::common::detect_include_dirs(&dep_dir, &dep_config);
+        artifacts.include_dirs.extend(inc_dirs.clone());
+
+        // Discover source files in the dependency
+        let src_dirs = dep_config.src_dirs();
+        let exclude = dep_config.exclude_patterns();
+        let sources = runner::discover_sources_multi(&src_dirs, &exclude)?;
+
+        // Filter out source files that are #include'd by module interface files
+        // to avoid duplicate compilation and link-time symbol conflicts.
+        let sources = runner::filter_included_sources(&sources);
+
+        if sources.is_empty() {
+            shell.warn(format!(
+                "no source files for dependency {}, skipping",
+                pkg.name
+            ));
+            continue;
+        }
+
+        shell.verbose(
+            "Found",
+            format!("{} sources in {}", sources.len(), pkg.name),
+        );
+
+        // Build the module graph for this dependency
+        let graph = build_module_graph(&sources, &dep_config.manifest.package.name)?;
+        graph.validate()?;
+
+        // Set up compiler from the dependency's own toolchain config
+        let (mut backend, target) = setup_compiler(&dep_config, &[]);
+
+        // Add auto-detected include dirs to the dep's own compiler flags
+        for inc_dir in &inc_dirs {
+            backend.extra_flags.push(format!("-I{}", inc_dir.display()));
+        }
+
+        // Also add include dirs from already-processed deps (transitive)
+        for inc_dir in &artifacts.include_dirs {
+            if !inc_dirs.contains(inc_dir) {
+                backend.extra_flags.push(format!("-I{}", inc_dir.display()));
+            }
+        }
+
+        // Set up cache
+        let cache = ArtifactCache::new(dep_config.cache_dir());
+
+        let build_dir = dep_config.build_dir();
+        let build_type = dep_config
+            .manifest
+            .build
+            .as_ref()
+            .and_then(|b| b.build_type)
+            .unwrap_or_default();
+
+        // Clean stale build artifacts from the dep's output dirs.
+        // Object file names encode the full source path, so builds from a
+        // different project location leave behind stale .o files that cause
+        // duplicate-symbol errors at link time.
+        let _ = std::fs::remove_dir_all(build_dir.join("obj"));
+        let _ = std::fs::remove_dir_all(build_dir.join("pcm"));
+
+        // Build with accumulated PCMs from already-built dependencies.
+        // Only pass .o files (not .a archives) as extra objects for intermediate
+        // dep builds — static lib archives should not be nested inside each other.
+        let extra_objs: Vec<_> = artifacts
+            .objs
+            .iter()
+            .filter(|p| p.extension().and_then(|e| e.to_str()) != Some("a"))
+            .cloned()
+            .collect();
+        let mut runner = BuildRunner::new(backend, Some(cache))
+            .with_jobs(jobs)
+            .with_force(force)
+            .with_no_cache(no_cache)
+            .with_extra_pcm_paths(artifacts.pcms.clone())
+            .with_extra_obj_paths(extra_objs)
+            .with_shell(Arc::new(Shell::new(shell.verbosity())));
+
+        if let Some(remote) = make_remote_cache(remote_url, shell) {
+            runner = runner.with_remote_cache(remote);
+        }
+
+        runner.build_with_stats(
+            &graph,
+            &build_dir,
+            &target,
+            dep_config.profile,
+            build_type,
+            Some(&dep_config.manifest.package.name),
+        )?;
+
+        // Collect PCM files from the built dependency
+        let pcm_dir = build_dir.join("pcm");
+        if pcm_dir.exists() {
+            for source in &sources {
+                if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
+                    let sanitized = mod_name.replace(['.', ':', '/'], "_");
+                    let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
+                    if pcm_path.exists() {
+                        artifacts.pcms.insert(mod_name, pcm_path);
+                    }
+                }
+            }
+        }
+
+        // Collect object files
+        let obj_dir = build_dir.join("obj");
+        if obj_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&obj_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("o") {
+                        artifacts.objs.push(path);
+                    }
+                }
+            }
+        }
+
+        // Collect static library artifacts
+        if build_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&build_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("a") {
+                        artifacts.objs.push(path);
+                    }
+                }
+            }
+        }
+
+        shell.verbose(
+            "Built",
+            format!(
+                "{} ({} PCMs, {} objects/libs total)",
+                pkg.name,
+                artifacts.pcms.len(),
+                artifacts.objs.len()
+            ),
+        );
+    }
+
+    if !artifacts.pcms.is_empty() || !artifacts.objs.is_empty() {
+        shell.verbose(
+            "Git deps",
+            format!(
+                "{} PCMs, {} objects/libs, {} include dirs",
+                artifacts.pcms.len(),
+                artifacts.objs.len(),
+                artifacts.include_dirs.len()
+            ),
+        );
+    }
+
+    Ok(artifacts)
 }
 
 /// Build all members of a workspace.
@@ -436,7 +678,14 @@ fn build_workspace(
     );
 
     // Ensure dependencies are resolved
-    let _lockfile = ensure_resolved(config, shell)?;
+    let lockfile = ensure_resolved(config, shell)?;
+
+    // Build external git dependencies first (shared across all workspace members)
+    let git_dep_artifacts = if !lockfile.packages.is_empty() {
+        build_vendored_dependencies(config, &lockfile, shell, jobs, force, remote_url, no_cache)?
+    } else {
+        super::common::DepArtifacts::default()
+    };
 
     // Build members in topological order so dependencies are built first
     let ordered_members = ws.build_order()?;
@@ -474,6 +723,7 @@ fn build_workspace(
             .map(|b| b.exclude.clone())
             .unwrap_or_default();
         let sources = runner::discover_sources_multi(&member_src_dirs, &member_exclude)?;
+        let sources = runner::filter_included_sources(&sources);
 
         if sources.is_empty() {
             shell.verbose("Skipping", format!("{} (no source files)", member.name));
@@ -482,7 +732,13 @@ fn build_workspace(
 
         let graph = build_module_graph(&sources, &member.name)?;
         graph.validate()?;
-        let (backend, target) = setup_compiler(config, &[]);
+        let (mut backend, target) = setup_compiler(config, &[]);
+
+        // Add git dependency include dirs to the compiler
+        for inc_dir in &git_dep_artifacts.include_dirs {
+            backend.extra_flags.push(format!("-I{}", inc_dir.display()));
+        }
+
         let cache = ArtifactCache::new(config.cache_dir());
 
         let build_dir = config.build_dir().join(&member.name);
@@ -494,11 +750,11 @@ fn build_workspace(
             .and_then(|b| b.build_type)
             .unwrap_or_default();
 
-        // Gather PCMs and objects from transitive workspace dependencies
+        // Start with git dep artifacts, then layer workspace member deps on top
         let transitive_deps = ws.transitive_member_deps(&member.name);
         let mut extra_pcms: std::collections::HashMap<String, std::path::PathBuf> =
-            std::collections::HashMap::new();
-        let mut extra_objs: Vec<std::path::PathBuf> = Vec::new();
+            git_dep_artifacts.pcms.clone();
+        let mut extra_objs: Vec<std::path::PathBuf> = git_dep_artifacts.objs.clone();
 
         for dep_name in &transitive_deps {
             if let Some(dep_pcms) = member_pcm_paths.get(dep_name) {
@@ -631,6 +887,20 @@ fn build_module_graph(
 
         // Extract partition ownership for partition units
         let partition_of = runner::extract_partition_owner(source)?;
+
+        // Resolve relative partition imports (`:foo`) to fully-qualified names
+        // (e.g., `module_name:foo`). This is needed because `export import :vec2;`
+        // inside module `local.geometry` should resolve to `local.geometry:vec2`.
+        let imports = imports
+            .into_iter()
+            .map(|imp| {
+                if let Some(part) = imp.strip_prefix(':') {
+                    format!("{}:{}", module_name, part)
+                } else {
+                    imp
+                }
+            })
+            .collect();
 
         // Use source path as unique node ID to support multi-TU modules
         let node_id = source.display().to_string();
@@ -778,6 +1048,15 @@ fn setup_compiler(config: &Config, activated_features: &[String]) -> (ClangBacke
             backend.extra_flags.push(format!("-I{}", abs.display()));
         }
         backend.extra_flags.extend(build.extra_flags.clone());
+    }
+
+    // Auto-detect include/ directory (convention)
+    let include_dir = config.root.join("include");
+    if include_dir.is_dir() {
+        let flag = format!("-I{}", include_dir.display());
+        if !backend.extra_flags.contains(&flag) {
+            backend.extra_flags.push(flag);
+        }
     }
 
     (backend, target)
@@ -1146,6 +1425,69 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
         .and_then(|b| b.build_type)
         .unwrap_or_default();
 
+    // Collect dependency build plan nodes
+    let mut all_plan_nodes = Vec::new();
+
+    let lockfile = if config.lockfile_path.exists() {
+        Some(Lockfile::load(&config.lockfile_path)?)
+    } else {
+        None
+    };
+
+    if let Some(ref lockfile) = lockfile {
+        let vendor_dir = config.root.join("vendor");
+        let deps_dir = config.deps_dir();
+        let ordered = super::common::topo_sort_packages(&lockfile.packages);
+
+        for pkg in &ordered {
+            if pkg.source.as_deref() != Some("git") {
+                continue;
+            }
+
+            let dep_dir =
+                match super::common::ensure_dep_on_disk(pkg, &vendor_dir, &deps_dir, shell)? {
+                    Some(d) => d,
+                    None => continue,
+                };
+
+            let mut dep_config = Config::load(&dep_dir)?;
+            dep_config.profile = config.profile;
+
+            let dep_src_dirs = dep_config.src_dirs();
+            let dep_exclude = dep_config.exclude_patterns();
+            let dep_sources =
+                runner::discover_sources_multi(&dep_src_dirs, &dep_exclude).unwrap_or_default();
+
+            if dep_sources.is_empty() {
+                continue;
+            }
+
+            if let Ok(dep_graph) =
+                build_module_graph(&dep_sources, &dep_config.manifest.package.name)
+            {
+                let dep_build_dir = dep_config.build_dir();
+                let dep_build_type = dep_config
+                    .manifest
+                    .build
+                    .as_ref()
+                    .and_then(|b| b.build_type)
+                    .unwrap_or_default();
+
+                if let Ok(dep_plan) = cmod_build::plan::BuildPlan::from_graph(
+                    &dep_graph,
+                    &dep_build_dir,
+                    &target,
+                    config.profile,
+                    dep_build_type,
+                    Some(&dep_config.manifest.package.name),
+                ) {
+                    all_plan_nodes.extend(dep_plan.nodes);
+                }
+            }
+        }
+    }
+
+    // Add the main project's plan nodes
     let graph = build_module_graph(&sources, &config.manifest.package.name)?;
     let plan = cmod_build::plan::BuildPlan::from_graph(
         &graph,
@@ -1155,14 +1497,16 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
         build_type,
         Some(&config.manifest.package.name),
     )?;
+    all_plan_nodes.extend(plan.nodes);
 
-    let json = serde_json::to_string_pretty(&plan.nodes).map_err(|e| CmodError::BuildFailed {
-        reason: format!("failed to serialize build plan: {}", e),
-    })?;
+    let json =
+        serde_json::to_string_pretty(&all_plan_nodes).map_err(|e| CmodError::BuildFailed {
+            reason: format!("failed to serialize build plan: {}", e),
+        })?;
 
     println!("{}", json);
 
-    shell.verbose("Plan", format!("{} nodes", plan.nodes.len()));
+    shell.verbose("Plan", format!("{} nodes", all_plan_nodes.len()));
 
     Ok(())
 }

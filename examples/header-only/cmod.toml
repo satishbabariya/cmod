@@ -1,0 +1,21 @@
+[package]
+name = "header-only"
+version = "0.1.0"
+edition = "2023"
+description = "Example consuming a header-only path dependency"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
+
+[module]
+name = "local.header_only"
+root = "src/lib.cppm"
+
+[dependencies]
+math-headers = { path = "libs/math-headers" }
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "binary"
