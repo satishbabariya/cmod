@@ -408,26 +408,31 @@ fn build_path_dependencies(
             }
         }
 
-        // Collect object files
-        let obj_dir = dep_build_dir.join("obj");
-        if obj_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&obj_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                        artifacts.objs.push(path);
-                    }
-                }
-            }
-        }
-
-        // Also collect static library artifacts
+        // Collect linkable artifacts: prefer .a archives over individual .o files
+        // to avoid duplicate symbols from stale path-encoded objects.
+        let mut has_archive = false;
         if dep_build_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&dep_build_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) == Some("a") {
                         artifacts.objs.push(path);
+                        has_archive = true;
+                    }
+                }
+            }
+        }
+
+        // Only collect individual .o files if no archive was produced
+        if !has_archive {
+            let obj_dir = dep_build_dir.join("obj");
+            if obj_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&obj_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("o") {
+                            artifacts.objs.push(path);
+                        }
                     }
                 }
             }
@@ -602,26 +607,29 @@ fn build_vendored_dependencies(
             }
         }
 
-        // Collect object files
-        let obj_dir = build_dir.join("obj");
-        if obj_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&obj_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                        artifacts.objs.push(path);
-                    }
-                }
-            }
-        }
-
-        // Collect static library artifacts
+        // Collect linkable artifacts: prefer .a archives over individual .o files
+        let mut has_archive = false;
         if build_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&build_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) == Some("a") {
                         artifacts.objs.push(path);
+                        has_archive = true;
+                    }
+                }
+            }
+        }
+
+        if !has_archive {
+            let obj_dir = build_dir.join("obj");
+            if obj_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&obj_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("o") {
+                            artifacts.objs.push(path);
+                        }
                     }
                 }
             }
@@ -699,6 +707,8 @@ fn build_workspace(
     > = std::collections::HashMap::new();
     let mut member_obj_paths: std::collections::HashMap<String, Vec<std::path::PathBuf>> =
         std::collections::HashMap::new();
+    let mut member_include_dirs: std::collections::HashMap<String, Vec<std::path::PathBuf>> =
+        std::collections::HashMap::new();
     let mut failed = Vec::new();
 
     for member in &ordered_members {
@@ -734,6 +744,24 @@ fn build_workspace(
         graph.validate()?;
         let (mut backend, target) = setup_compiler(config, &[]);
 
+        // Add member-specific include dirs and extra flags from [build] section
+        if let Some(ref build) = member.manifest.build {
+            for dir in &build.include_dirs {
+                let abs = member.path.join(dir);
+                backend.extra_flags.push(format!("-I{}", abs.display()));
+            }
+            backend.extra_flags.extend(build.extra_flags.clone());
+        }
+
+        // Auto-detect include/ directory for this member
+        let member_include = member.path.join("include");
+        if member_include.is_dir() {
+            let flag = format!("-I{}", member_include.display());
+            if !backend.extra_flags.contains(&flag) {
+                backend.extra_flags.push(flag);
+            }
+        }
+
         // Add git dependency include dirs to the compiler
         for inc_dir in &git_dep_artifacts.include_dirs {
             backend.extra_flags.push(format!("-I{}", inc_dir.display()));
@@ -762,6 +790,15 @@ fn build_workspace(
             }
             if let Some(dep_objs) = member_obj_paths.get(dep_name) {
                 extra_objs.extend(dep_objs.clone());
+            }
+            // Add include dirs from upstream members
+            if let Some(dep_incs) = member_include_dirs.get(dep_name) {
+                for inc_dir in dep_incs {
+                    let flag = format!("-I{}", inc_dir.display());
+                    if !backend.extra_flags.contains(&flag) {
+                        backend.extra_flags.push(flag);
+                    }
+                }
             }
         }
 
@@ -835,6 +872,22 @@ fn build_workspace(
                     }
                 }
                 member_obj_paths.insert(member.name.clone(), this_objs);
+
+                // Store include dirs from this member for downstream members
+                let mut this_inc_dirs = Vec::new();
+                let inc = member.path.join("include");
+                if inc.is_dir() {
+                    this_inc_dirs.push(inc);
+                }
+                if let Some(ref build) = member.manifest.build {
+                    for dir in &build.include_dirs {
+                        let abs = member.path.join(dir);
+                        if abs.is_dir() && !this_inc_dirs.contains(&abs) {
+                            this_inc_dirs.push(abs);
+                        }
+                    }
+                }
+                member_include_dirs.insert(member.name.clone(), this_inc_dirs);
             }
             Err(e) => {
                 shell.error(format!("{}: {}", member.name, e));
@@ -926,9 +979,14 @@ fn build_module_graph(
     Ok(graph)
 }
 
-/// Check if `clang-scan-deps` is available on PATH.
+/// Resolve the `clang-scan-deps` binary path, respecting the `SCAN_DEPS` env var.
+fn scan_deps_binary() -> std::ffi::OsString {
+    std::env::var_os("SCAN_DEPS").unwrap_or_else(|| std::ffi::OsString::from("clang-scan-deps"))
+}
+
+/// Check if `clang-scan-deps` is available (respects `SCAN_DEPS` env var).
 fn is_clang_scan_deps_available() -> bool {
-    std::process::Command::new("clang-scan-deps")
+    std::process::Command::new(scan_deps_binary())
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -937,8 +995,9 @@ fn is_clang_scan_deps_available() -> bool {
 }
 
 /// Use `clang-scan-deps` to discover module dependencies via P1689 format.
+/// Respects the `SCAN_DEPS` env var for the binary path.
 fn scan_deps_imports(source: &std::path::Path) -> Result<Vec<String>, CmodError> {
-    let output = std::process::Command::new("clang-scan-deps")
+    let output = std::process::Command::new(scan_deps_binary())
         .args(["--format=p1689", "--"])
         .arg(source)
         .arg("-std=c++20")

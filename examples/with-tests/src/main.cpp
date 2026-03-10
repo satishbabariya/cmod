@@ -1,5 +1,6 @@
-import local.with_tests;
 #include <iostream>
+
+import local.with_tests;
 
 int main() {
     std::cout << "add(2, 3) = " << math::add(2, 3) << "\n";

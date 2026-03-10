@@ -384,22 +384,33 @@ fn compile_tests(
     let mut pcm_flags = collect_pcm_flags(config, &pcm_dir);
     let mut obj_files = collect_obj_files(config, &obj_dir);
 
-    // Collect dependency artifacts (PCMs, objects, include dirs) from lockfile
+    // Collect dependency artifacts (PCMs, objects, include dirs)
     let mut dep_include_flags: Vec<String> = Vec::new();
+
+    // Path dependencies
+    let path_dep_artifacts = super::common::collect_path_dep_artifacts(config);
+    for (mod_name, pcm_path) in &path_dep_artifacts.pcms {
+        pcm_flags.push(format!("-fmodule-file={}={}", mod_name, pcm_path.display()));
+    }
+    for obj in &path_dep_artifacts.objs {
+        obj_files.push(obj.display().to_string());
+    }
+    for inc_dir in &path_dep_artifacts.include_dirs {
+        dep_include_flags.push(format!("-I{}", inc_dir.display()));
+    }
+
+    // Git dependencies (from lockfile)
     if let Ok(lockfile) = cmod_core::lockfile::Lockfile::load(&config.lockfile_path) {
         let dep_artifacts = super::common::collect_dep_artifacts(config, &lockfile);
 
-        // Add dep PCMs as -fmodule-file= flags
         for (mod_name, pcm_path) in &dep_artifacts.pcms {
             pcm_flags.push(format!("-fmodule-file={}={}", mod_name, pcm_path.display()));
         }
 
-        // Add dep object files for linking
         for obj in &dep_artifacts.objs {
             obj_files.push(obj.display().to_string());
         }
 
-        // Add dep include directories
         for inc_dir in &dep_artifacts.include_dirs {
             dep_include_flags.push(format!("-I{}", inc_dir.display()));
         }

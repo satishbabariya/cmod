@@ -1,2 +1,5 @@
 # cmod build artifacts
 build/
+
+# Vendored dependency sources (resolved via cmod resolve/vendor)
+vendor/github.com/

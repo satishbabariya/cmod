@@ -1,8 +1,8 @@
-import local.header_only;
-
 #include <iostream>
 #include <cmath>
 #include <cassert>
+
+import local.header_only;
 
 int main() {
     // Circle calculations
