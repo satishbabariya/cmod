@@ -340,26 +340,29 @@ pub fn collect_dep_artifacts(config: &Config, lockfile: &Lockfile) -> DepArtifac
             }
         }
 
-        // Collect object files
-        let obj_dir = dep_build_dir.join("obj");
-        if obj_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&obj_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                        result.objs.push(path);
-                    }
-                }
-            }
-        }
-
-        // Collect static library artifacts
+        // Collect linkable artifacts: prefer .a archives over individual .o files
+        let mut has_archive = false;
         if dep_build_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&dep_build_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) == Some("a") {
                         result.objs.push(path);
+                        has_archive = true;
+                    }
+                }
+            }
+        }
+
+        if !has_archive {
+            let obj_dir = dep_build_dir.join("obj");
+            if obj_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&obj_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("o") {
+                            result.objs.push(path);
+                        }
                     }
                 }
             }

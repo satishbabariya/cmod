@@ -607,26 +607,29 @@ fn build_vendored_dependencies(
             }
         }
 
-        // Collect object files
-        let obj_dir = build_dir.join("obj");
-        if obj_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&obj_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                        artifacts.objs.push(path);
-                    }
-                }
-            }
-        }
-
-        // Collect static library artifacts
+        // Collect linkable artifacts: prefer .a archives over individual .o files
+        let mut has_archive = false;
         if build_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&build_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) == Some("a") {
                         artifacts.objs.push(path);
+                        has_archive = true;
+                    }
+                }
+            }
+        }
+
+        if !has_archive {
+            let obj_dir = build_dir.join("obj");
+            if obj_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&obj_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("o") {
+                            artifacts.objs.push(path);
+                        }
                     }
                 }
             }
