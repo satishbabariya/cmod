@@ -197,10 +197,8 @@ impl CompilerBackend for ClangBackend {
         // First pass: compile to PCM
         // For .cc/.cpp/.cxx files, clang doesn't auto-detect module interface —
         // we must explicitly specify the language with -x c++-module.
-        let needs_lang_override = !matches!(
-            source.extension().and_then(|e| e.to_str()),
-            Some("cppm" | "ixx" | "mpp")
-        );
+        let needs_lang_override =
+            !matches!(source.extension().and_then(|e| e.to_str()), Some("cppm"));
 
         let mut pcm_cmd = Command::new(&self.clang_path);
         pcm_cmd.args(self.common_flags()).args(

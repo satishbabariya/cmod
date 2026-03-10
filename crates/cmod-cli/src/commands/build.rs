@@ -1011,6 +1011,15 @@ fn setup_compiler(config: &Config, activated_features: &[String]) -> (ClangBacke
         backend.extra_flags.extend(build.extra_flags.clone());
     }
 
+    // Auto-detect include/ directory (convention)
+    let include_dir = config.root.join("include");
+    if include_dir.is_dir() {
+        let flag = format!("-I{}", include_dir.display());
+        if !backend.extra_flags.contains(&flag) {
+            backend.extra_flags.push(flag);
+        }
+    }
+
     (backend, target)
 }
 

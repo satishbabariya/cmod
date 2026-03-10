@@ -165,7 +165,12 @@ impl BuildPlan {
             BuildType::Binary => build_dir.join(sanitize_name(&output_name)),
             BuildType::StaticLib => build_dir.join(format!("lib{}.a", sanitize_name(&output_name))),
             BuildType::SharedLib => {
-                build_dir.join(format!("lib{}.so", sanitize_name(&output_name)))
+                let ext = if cfg!(target_os = "macos") {
+                    "dylib"
+                } else {
+                    "so"
+                };
+                build_dir.join(format!("lib{}.{}", sanitize_name(&output_name), ext))
             }
         };
 
@@ -488,9 +493,15 @@ mod tests {
 
         let link_node = plan.nodes.last().unwrap();
         let output_path = link_node.outputs[0].to_str().unwrap();
+        let expected_ext = if cfg!(target_os = "macos") {
+            ".dylib"
+        } else {
+            ".so"
+        };
         assert!(
-            output_path.ends_with(".so"),
-            "Expected .so output: {}",
+            output_path.ends_with(expected_ext),
+            "Expected {} output: {}",
+            expected_ext,
             output_path
         );
     }

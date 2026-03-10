@@ -73,6 +73,12 @@ pub fn ensure_dep_on_disk(
         Some(url) => url.clone(),
         None => return Ok(None),
     };
+
+    // Skip path dependencies — they must already exist on disk
+    if repo_url.starts_with("path:") {
+        return Ok(None);
+    }
+
     let commit_hex = match &pkg.commit {
         Some(c) => c.clone(),
         None => return Ok(None),
