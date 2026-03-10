@@ -204,6 +204,87 @@ pub fn detect_include_dirs(dep_dir: &Path, config: &Config) -> Vec<PathBuf> {
     dirs
 }
 
+/// Collect already-built artifacts (PCMs, objects, include dirs) from path dependencies.
+///
+/// Walks `[dependencies]` entries with `path = "..."`, loads their config,
+/// and collects PCMs, static archives, and include dirs.
+pub fn collect_path_dep_artifacts(config: &Config) -> DepArtifacts {
+    let mut result = DepArtifacts::default();
+
+    for dep in config.manifest.dependencies.values() {
+        let dep_path = match dep.path() {
+            Some(p) => config.root.join(p),
+            None => continue,
+        };
+
+        if !dep_path.join("cmod.toml").exists() {
+            continue;
+        }
+
+        let dep_config = match Config::load(&dep_path) {
+            Ok(mut c) => {
+                c.profile = config.profile;
+                c
+            }
+            Err(_) => continue,
+        };
+
+        // Include directories
+        let inc_dirs = detect_include_dirs(&dep_path, &dep_config);
+        result.include_dirs.extend(inc_dirs);
+
+        // PCM files
+        let dep_build_dir = dep_config.build_dir();
+        let pcm_dir = dep_build_dir.join("pcm");
+        if pcm_dir.exists() {
+            let dep_sources = runner::discover_sources_multi(
+                &dep_config.src_dirs(),
+                &dep_config.exclude_patterns(),
+            )
+            .unwrap_or_default();
+            for source in &dep_sources {
+                if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
+                    let sanitized = mod_name.replace(['.', ':', '/'], "_");
+                    let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
+                    if pcm_path.exists() {
+                        result.pcms.insert(mod_name, pcm_path);
+                    }
+                }
+            }
+        }
+
+        // Prefer .a archives over individual .o files
+        let mut has_archive = false;
+        if dep_build_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&dep_build_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("a") {
+                        result.objs.push(path);
+                        has_archive = true;
+                    }
+                }
+            }
+        }
+
+        if !has_archive {
+            let obj_dir = dep_build_dir.join("obj");
+            if obj_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&obj_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("o") {
+                            result.objs.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
 /// Collect already-built artifacts (PCMs, objects, include dirs) for all lockfile
 /// git dependencies without triggering a build.
 ///
