@@ -926,9 +926,14 @@ fn build_module_graph(
     Ok(graph)
 }
 
-/// Check if `clang-scan-deps` is available on PATH.
+/// Resolve the `clang-scan-deps` binary path, respecting the `SCAN_DEPS` env var.
+fn scan_deps_binary() -> std::ffi::OsString {
+    std::env::var_os("SCAN_DEPS").unwrap_or_else(|| std::ffi::OsString::from("clang-scan-deps"))
+}
+
+/// Check if `clang-scan-deps` is available (respects `SCAN_DEPS` env var).
 fn is_clang_scan_deps_available() -> bool {
-    std::process::Command::new("clang-scan-deps")
+    std::process::Command::new(scan_deps_binary())
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -937,8 +942,9 @@ fn is_clang_scan_deps_available() -> bool {
 }
 
 /// Use `clang-scan-deps` to discover module dependencies via P1689 format.
+/// Respects the `SCAN_DEPS` env var for the binary path.
 fn scan_deps_imports(source: &std::path::Path) -> Result<Vec<String>, CmodError> {
-    let output = std::process::Command::new("clang-scan-deps")
+    let output = std::process::Command::new(scan_deps_binary())
         .args(["--format=p1689", "--"])
         .arg(source)
         .arg("-std=c++20")
