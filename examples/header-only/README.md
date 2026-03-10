@@ -4,7 +4,7 @@ Example consuming a header-only library as a path dependency.
 
 ## Structure
 
-```
+```text
 header-only/
 ├── cmod.toml
 ├── src/

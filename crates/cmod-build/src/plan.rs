@@ -155,31 +155,37 @@ impl BuildPlan {
             }
         }
 
-        // Add the link node
-        let output_name = package_name
-            .map(|s| s.to_string())
-            .or_else(|| graph.nodes.values().next().map(|n| n.package.clone()))
-            .unwrap_or_else(|| "output".to_string());
+        // Add the link node only when there are objects to link.
+        // Header-only packages have no translation units and produce no objects,
+        // so emitting a Link node would cause `ar` to fail on an empty file list.
+        if !obj_paths.is_empty() {
+            let output_name = package_name
+                .map(|s| s.to_string())
+                .or_else(|| graph.nodes.values().next().map(|n| n.package.clone()))
+                .unwrap_or_else(|| "output".to_string());
 
-        let link_output = match build_type {
-            BuildType::Binary => build_dir.join(sanitize_name(&output_name)),
-            BuildType::StaticLib => build_dir.join(format!("lib{}.a", sanitize_name(&output_name))),
-            BuildType::SharedLib => {
-                let ext = shared_lib_extension(target);
-                build_dir.join(format!("lib{}.{}", sanitize_name(&output_name), ext))
-            }
-        };
+            let link_output = match build_type {
+                BuildType::Binary => build_dir.join(sanitize_name(&output_name)),
+                BuildType::StaticLib => {
+                    build_dir.join(format!("lib{}.a", sanitize_name(&output_name)))
+                }
+                BuildType::SharedLib => {
+                    let ext = shared_lib_extension(target);
+                    build_dir.join(format!("lib{}.{}", sanitize_name(&output_name), ext))
+                }
+            };
 
-        let link_deps: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+            let link_deps: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
 
-        nodes.push(BuildNode {
-            id: "link".to_string(),
-            kind: NodeKind::Link,
-            module_name: None,
-            source: None,
-            dependencies: link_deps,
-            outputs: vec![link_output],
-        });
+            nodes.push(BuildNode {
+                id: "link".to_string(),
+                kind: NodeKind::Link,
+                module_name: None,
+                source: None,
+                dependencies: link_deps,
+                outputs: vec![link_output],
+            });
+        }
 
         Ok(BuildPlan {
             target: target.to_string(),

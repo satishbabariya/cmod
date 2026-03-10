@@ -2,6 +2,7 @@ module;
 
 #include <utils/config.h>
 #include <string>
+#include <stdexcept>
 
 export module local.include_dirs;
 
@@ -15,12 +16,23 @@ struct Settings {
     bool debug;
 };
 
+/// Parse a port string, returning the default on any error or out-of-range value.
+int parse_port_or_default(const std::string& s, int default_port) {
+    try {
+        int port = std::stoi(s);
+        if (port < 0 || port > 65535) return default_port;
+        return port;
+    } catch (const std::exception&) {
+        return default_port;
+    }
+}
+
 /// Load settings from a Config object.
 Settings load_settings(const utils::Config& config) {
     return Settings{
         .app_name = config.get("app.name", "my-app"),
         .version = config.get("app.version", "0.0.0"),
-        .port = std::stoi(config.get("app.port", "8080")),
+        .port = parse_port_or_default(config.get("app.port", "8080"), 8080),
         .debug = config.get("app.debug", "false") == "true",
     };
 }

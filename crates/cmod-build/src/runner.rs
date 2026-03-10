@@ -842,6 +842,12 @@ impl BuildRunner {
                 if plan.build_type != BuildType::StaticLib {
                     obj_files.extend(self.extra_obj_paths.clone());
                 }
+
+                // Skip linking when there are no objects (e.g., header-only packages)
+                if obj_files.is_empty() {
+                    return Ok(NodeOutcome::Linked(start.elapsed().as_millis() as u64));
+                }
+
                 let obj_refs: Vec<&Path> = obj_files.iter().map(|p| p.as_path()).collect();
 
                 if let Some(parent) = output.parent() {

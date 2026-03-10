@@ -294,6 +294,10 @@ impl CompilerBackend for ClangBackend {
                     .iter()
                     .filter(|p| p.extension().and_then(|e| e.to_str()) != Some("a"))
                     .collect();
+                // Skip ar for header-only packages with no object files
+                if obj_only.is_empty() {
+                    return Ok(());
+                }
                 // Remove existing archive to avoid stale objects from prior builds
                 let _ = std::fs::remove_file(output);
                 let status = Command::new("ar")

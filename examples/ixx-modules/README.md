@@ -4,7 +4,7 @@ Example using the `.ixx` file extension for module interfaces, the convention us
 
 ## Structure
 
-```
+```text
 ixx-modules/
 ├── cmod.toml         # root = "src/lib.ixx"
 └── src/

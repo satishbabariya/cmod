@@ -4,6 +4,7 @@ module;
 #include <sstream>
 #include <vector>
 #include <algorithm>
+#include <cctype>
 
 export module local.ixx_modules;
 

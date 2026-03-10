@@ -4,7 +4,7 @@ Shared (dynamic) library example. Produces `.dylib` on macOS, `.so` on Linux, `.
 
 ## Structure
 
-```
+```text
 shared-lib/
 ├── cmod.toml         # type = "shared-lib"
 └── src/

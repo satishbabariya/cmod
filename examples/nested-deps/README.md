@@ -4,7 +4,7 @@ Example where the main project has a path dependency (`formatter`), and that pat
 
 ## Structure
 
-```
+```text
 nested-deps/
 ├── cmod.toml                        # depends on formatter via path
 ├── src/

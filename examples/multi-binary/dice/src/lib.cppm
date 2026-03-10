@@ -5,6 +5,7 @@ module;
 #include <random>
 #include <algorithm>
 #include <chrono>
+#include <stdexcept>
 
 export module local.dice;
 
@@ -38,11 +39,13 @@ int total(const std::vector<int>& rolls) {
 
 /// Highest value in a roll.
 int highest(const std::vector<int>& rolls) {
+    if (rolls.empty()) throw std::invalid_argument("highest: rolls must not be empty");
     return *std::max_element(rolls.begin(), rolls.end());
 }
 
 /// Lowest value in a roll.
 int lowest(const std::vector<int>& rolls) {
+    if (rolls.empty()) throw std::invalid_argument("lowest: rolls must not be empty");
     return *std::min_element(rolls.begin(), rolls.end());
 }
 
