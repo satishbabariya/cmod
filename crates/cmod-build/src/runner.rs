@@ -764,9 +764,11 @@ impl BuildRunner {
                     }
                 }
 
-                // Pass all available PCMs for transitive visibility
+                // Only pass PCMs that actually exist on disk to avoid races
+                // where a parallel Interface node is still writing a PCM file.
                 let all_pcms: Vec<(&str, &Path)> = pcm_map
                     .iter()
+                    .filter(|(_, path)| path.exists())
                     .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
@@ -809,9 +811,11 @@ impl BuildRunner {
                     fs::create_dir_all(parent)?;
                 }
 
-                // Pass all available PCMs for transitive module visibility
+                // Only pass PCMs that actually exist on disk to avoid races
+                // where a parallel Interface node is still writing a PCM file.
                 let all_pcms: Vec<(&str, &Path)> = pcm_map
                     .iter()
+                    .filter(|(_, path)| path.exists())
                     .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
@@ -1447,6 +1451,77 @@ pub fn extract_partition_owner(path: &Path) -> Result<Option<String>, CmodError>
         }
     }
     Ok(None)
+}
+
+/// Filter out source files that are `#include`d by module interface/partition files.
+///
+/// Some C++ modules (e.g., fmtlib) `#include` implementation `.cc`/`.cpp` files
+/// inside the module interface's private fragment. If those files are also discovered
+/// as standalone translation units, they get compiled twice — producing duplicate
+/// symbols at link time. This function detects such includes and removes them.
+pub fn filter_included_sources(sources: &[PathBuf]) -> Vec<PathBuf> {
+    use std::collections::HashSet;
+
+    // Identify interface/partition source files and collect their #include'd sources
+    let mut included_basenames: HashSet<String> = HashSet::new();
+
+    for source in sources {
+        let kind = match classify_source(source) {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+
+        // Only scan interface and partition units for #include directives
+        if !matches!(
+            kind,
+            cmod_core::types::ModuleUnitKind::InterfaceUnit
+                | cmod_core::types::ModuleUnitKind::PartitionUnit
+        ) {
+            continue;
+        }
+
+        let content = match fs::read_to_string(source) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            // Match #include "file.cc", #include "file.cpp", #include "file.cxx"
+            if let Some(rest) = trimmed.strip_prefix("#include") {
+                let rest = rest.trim();
+                if let Some(quoted) = rest.strip_prefix('"') {
+                    if let Some(filename) = quoted.strip_suffix('"') {
+                        let filename = filename.trim();
+                        if filename.ends_with(".cc")
+                            || filename.ends_with(".cpp")
+                            || filename.ends_with(".cxx")
+                        {
+                            // Extract just the basename (last component)
+                            let basename = Path::new(filename)
+                                .file_name()
+                                .and_then(|f| f.to_str())
+                                .unwrap_or(filename);
+                            included_basenames.insert(basename.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if included_basenames.is_empty() {
+        return sources.to_vec();
+    }
+
+    sources
+        .iter()
+        .filter(|source| {
+            let basename = source.file_name().and_then(|f| f.to_str()).unwrap_or("");
+            !included_basenames.contains(basename)
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]

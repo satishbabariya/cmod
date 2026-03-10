@@ -195,13 +195,23 @@ impl CompilerBackend for ClangBackend {
         }
 
         // First pass: compile to PCM
-        let pcm_status = Command::new(&self.clang_path)
-            .args(self.common_flags())
-            .args(
-                dep_pcms
-                    .iter()
-                    .map(|(name, path)| format!("-fmodule-file={}={}", name, path.display())),
-            )
+        // For .cc/.cpp/.cxx files, clang doesn't auto-detect module interface —
+        // we must explicitly specify the language with -x c++-module.
+        let needs_lang_override = !matches!(
+            source.extension().and_then(|e| e.to_str()),
+            Some("cppm" | "ixx" | "mpp")
+        );
+
+        let mut pcm_cmd = Command::new(&self.clang_path);
+        pcm_cmd.args(self.common_flags()).args(
+            dep_pcms
+                .iter()
+                .map(|(name, path)| format!("-fmodule-file={}={}", name, path.display())),
+        );
+        if needs_lang_override {
+            pcm_cmd.args(["-x", "c++-module"]);
+        }
+        let pcm_status = pcm_cmd
             .arg("--precompile")
             .arg("-o")
             .arg(pcm_output)
