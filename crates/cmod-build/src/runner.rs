@@ -721,8 +721,11 @@ impl BuildRunner {
 
                 // Pass all available PCMs — clang needs transitive module visibility
                 // (e.g., when a module re-exports partitions via `export import :part;`)
+                // Only pass PCMs that actually exist on disk to avoid races
+                // where a parallel Interface node is still writing a PCM file.
                 let all_pcms: Vec<(&str, &Path)> = pcm_map
                     .iter()
+                    .filter(|(_, path)| path.exists())
                     .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
@@ -1462,8 +1465,10 @@ pub fn extract_partition_owner(path: &Path) -> Result<Option<String>, CmodError>
 pub fn filter_included_sources(sources: &[PathBuf]) -> Vec<PathBuf> {
     use std::collections::HashSet;
 
-    // Identify interface/partition source files and collect their #include'd sources
-    let mut included_basenames: HashSet<String> = HashSet::new();
+    // Identify interface/partition source files and collect their #include'd sources.
+    // Resolve each include path relative to the including file's directory so that
+    // e.g. src/foo/detail.cpp and src/bar/detail.cpp are distinguished correctly.
+    let mut included_paths: HashSet<PathBuf> = HashSet::new();
 
     for source in sources {
         let kind = match classify_source(source) {
@@ -1485,6 +1490,8 @@ pub fn filter_included_sources(sources: &[PathBuf]) -> Vec<PathBuf> {
             Err(_) => continue,
         };
 
+        let source_dir = source.parent().unwrap_or(Path::new("."));
+
         for line in content.lines() {
             let trimmed = line.trim();
             // Match #include "file.cc", #include "file.cpp", #include "file.cxx"
@@ -1497,12 +1504,11 @@ pub fn filter_included_sources(sources: &[PathBuf]) -> Vec<PathBuf> {
                             || filename.ends_with(".cpp")
                             || filename.ends_with(".cxx")
                         {
-                            // Extract just the basename (last component)
-                            let basename = Path::new(filename)
-                                .file_name()
-                                .and_then(|f| f.to_str())
-                                .unwrap_or(filename);
-                            included_basenames.insert(basename.to_string());
+                            // Resolve relative to the including file's directory
+                            let resolved = source_dir.join(filename);
+                            // Canonicalize to normalize ../components; fall back to joined path
+                            let normalized = resolved.canonicalize().unwrap_or(resolved);
+                            included_paths.insert(normalized);
                         }
                     }
                 }
@@ -1510,15 +1516,17 @@ pub fn filter_included_sources(sources: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
 
-    if included_basenames.is_empty() {
+    if included_paths.is_empty() {
         return sources.to_vec();
     }
 
     sources
         .iter()
         .filter(|source| {
-            let basename = source.file_name().and_then(|f| f.to_str()).unwrap_or("");
-            !included_basenames.contains(basename)
+            let normalized = source
+                .canonicalize()
+                .unwrap_or_else(|_| source.to_path_buf());
+            !included_paths.contains(&normalized)
         })
         .cloned()
         .collect()

@@ -64,7 +64,26 @@ pub fn ensure_dep_on_disk(
     // Try finding it on disk first
     if let Some(d) = find_dep_on_disk(vendor_dir, deps_dir, &pkg.name) {
         if d.join("cmod.toml").exists() {
-            return Ok(Some(d));
+            // For deps in build/deps/ (not vendor), verify the checked-out commit
+            // matches the lockfile to avoid reusing stale checkouts.
+            let is_in_deps_dir = d.starts_with(deps_dir);
+            if is_in_deps_dir {
+                if let Some(expected_commit) = &pkg.commit {
+                    let matches = git2::Repository::open(&d)
+                        .and_then(|repo| repo.head()?.peel_to_commit().map(|c| c.id()))
+                        .map(|head_oid| head_oid.to_string() == *expected_commit)
+                        .unwrap_or(false);
+                    if !matches {
+                        // Stale checkout — fall through to re-clone below
+                    } else {
+                        return Ok(Some(d));
+                    }
+                } else {
+                    return Ok(Some(d));
+                }
+            } else {
+                return Ok(Some(d));
+            }
         }
     }
 

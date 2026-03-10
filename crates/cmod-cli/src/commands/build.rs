@@ -354,6 +354,13 @@ fn build_path_dependencies(
         let inc_dirs = super::common::detect_include_dirs(&dep_path, &dep_config);
         artifacts.include_dirs.extend(inc_dirs);
 
+        // Load the path dep's own lockfile so its git dependencies get built
+        let dep_lockfile = if dep_config.lockfile_path.exists() {
+            Lockfile::load(&dep_config.lockfile_path).ok()
+        } else {
+            None
+        };
+
         // Recursively build the dependency (handles nested path deps)
         build_module(
             &dep_config,
@@ -366,7 +373,7 @@ fn build_path_dependencies(
             no_cache,
             false,
             &[],
-            None, // path deps manage their own deps separately
+            dep_lockfile.as_ref(),
         )?;
 
         // Collect PCM files
@@ -463,10 +470,7 @@ fn build_vendored_dependencies(
         let dep_dir = match super::common::ensure_dep_on_disk(pkg, &vendor_dir, &deps_dir, shell) {
             Ok(Some(d)) => d,
             Ok(None) => continue,
-            Err(e) => {
-                shell.warn(format!("failed to fetch {}: {}", pkg.name, e));
-                continue;
-            }
+            Err(e) => return Err(e),
         };
 
         shell.verbose(
@@ -476,6 +480,7 @@ fn build_vendored_dependencies(
 
         let mut dep_config = Config::load(&dep_dir)?;
         dep_config.profile = config.profile;
+        dep_config.target = config.target.clone();
 
         // Auto-detect include directories for this dependency
         let inc_dirs = super::common::detect_include_dirs(&dep_dir, &dep_config);
