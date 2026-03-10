@@ -408,26 +408,31 @@ fn build_path_dependencies(
             }
         }
 
-        // Collect object files
-        let obj_dir = dep_build_dir.join("obj");
-        if obj_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&obj_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                        artifacts.objs.push(path);
-                    }
-                }
-            }
-        }
-
-        // Also collect static library artifacts
+        // Collect linkable artifacts: prefer .a archives over individual .o files
+        // to avoid duplicate symbols from stale path-encoded objects.
+        let mut has_archive = false;
         if dep_build_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&dep_build_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) == Some("a") {
                         artifacts.objs.push(path);
+                        has_archive = true;
+                    }
+                }
+            }
+        }
+
+        // Only collect individual .o files if no archive was produced
+        if !has_archive {
+            let obj_dir = dep_build_dir.join("obj");
+            if obj_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&obj_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("o") {
+                            artifacts.objs.push(path);
+                        }
                     }
                 }
             }
