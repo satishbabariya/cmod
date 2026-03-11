@@ -34,7 +34,7 @@ pub struct NodeState {
     pub flags_hash: String,
     /// Output file hashes (after successful compilation).
     pub output_hashes: Vec<(String, String)>,
-    /// Source file mtime (epoch seconds) for fast-path invalidation.
+    /// Source file mtime (epoch milliseconds) for fast-path invalidation.
     #[serde(default)]
     pub mtime: Option<u64>,
 }
@@ -120,10 +120,7 @@ impl BuildState {
             };
 
             if mtime_changed {
-                let current_hash = hash_file(source).unwrap_or_default();
-                if current_hash != prev.source_hash {
-                    return Some(RebuildReason::SourceChanged);
-                }
+                return Some(RebuildReason::SourceChanged);
             }
             // mtime unchanged → skip hash, source is assumed the same
         }

@@ -721,8 +721,11 @@ impl BuildRunner {
 
                 // Pass all available PCMs — clang needs transitive module visibility
                 // (e.g., when a module re-exports partitions via `export import :part;`)
+                // Only pass PCMs that actually exist on disk to avoid races
+                // where a parallel Interface node is still writing a PCM file.
                 let all_pcms: Vec<(&str, &Path)> = pcm_map
                     .iter()
+                    .filter(|(_, path)| path.exists())
                     .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
@@ -764,9 +767,11 @@ impl BuildRunner {
                     }
                 }
 
-                // Pass all available PCMs for transitive visibility
+                // Only pass PCMs that actually exist on disk to avoid races
+                // where a parallel Interface node is still writing a PCM file.
                 let all_pcms: Vec<(&str, &Path)> = pcm_map
                     .iter()
+                    .filter(|(_, path)| path.exists())
                     .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
@@ -809,9 +814,11 @@ impl BuildRunner {
                     fs::create_dir_all(parent)?;
                 }
 
-                // Pass all available PCMs for transitive module visibility
+                // Only pass PCMs that actually exist on disk to avoid races
+                // where a parallel Interface node is still writing a PCM file.
                 let all_pcms: Vec<(&str, &Path)> = pcm_map
                     .iter()
+                    .filter(|(_, path)| path.exists())
                     .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
@@ -829,7 +836,18 @@ impl BuildRunner {
             NodeKind::Link => {
                 let output = &node.outputs[0];
                 let mut obj_files = plan.object_paths();
-                obj_files.extend(self.extra_obj_paths.clone());
+                // For static libraries, only archive the package's own objects.
+                // Dependency objects/archives must not be nested inside this archive;
+                // downstream consumers will link them separately.
+                if plan.build_type != BuildType::StaticLib {
+                    obj_files.extend(self.extra_obj_paths.clone());
+                }
+
+                // Skip linking when there are no objects (e.g., header-only packages)
+                if obj_files.is_empty() {
+                    return Ok(NodeOutcome::Linked(start.elapsed().as_millis() as u64));
+                }
+
                 let obj_refs: Vec<&Path> = obj_files.iter().map(|p| p.as_path()).collect();
 
                 if let Some(parent) = output.parent() {
@@ -1150,9 +1168,10 @@ impl BuildRunner {
     }
 }
 
-/// Discover C++ module source files in a directory.
+/// Discover C/C++ module source files in a directory.
 ///
-/// Looks for `.cppm`, `.ixx`, `.mpp` (module interface) and `.cpp` files.
+/// Looks for `.cppm`, `.ixx`, `.mpp` (module interface), `.cpp`, `.cc`, `.cxx`,
+/// and `.c` (plain C) files. Plain C files are compiled as C++ by clang++.
 pub fn discover_sources(src_dir: &Path) -> Result<Vec<PathBuf>, CmodError> {
     let mut sources = Vec::new();
 
@@ -1166,7 +1185,7 @@ pub fn discover_sources(src_dir: &Path) -> Result<Vec<PathBuf>, CmodError> {
     {
         let path = entry.path();
         if path.is_file() {
-            if let Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx") =
+            if let Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx" | "c") =
                 path.extension().and_then(|e| e.to_str())
             {
                 sources.push(path.to_path_buf());
@@ -1212,7 +1231,7 @@ pub fn discover_sources_multi(
             }
             if !matches!(
                 path.extension().and_then(|e| e.to_str()),
-                Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx")
+                Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx" | "c")
             ) {
                 continue;
             }
@@ -1447,6 +1466,82 @@ pub fn extract_partition_owner(path: &Path) -> Result<Option<String>, CmodError>
         }
     }
     Ok(None)
+}
+
+/// Filter out source files that are `#include`d by module interface/partition files.
+///
+/// Some C++ modules (e.g., fmtlib) `#include` implementation `.cc`/`.cpp` files
+/// inside the module interface's private fragment. If those files are also discovered
+/// as standalone translation units, they get compiled twice — producing duplicate
+/// symbols at link time. This function detects such includes and removes them.
+pub fn filter_included_sources(sources: &[PathBuf]) -> Vec<PathBuf> {
+    use std::collections::HashSet;
+
+    // Identify interface/partition source files and collect their #include'd sources.
+    // Resolve each include path relative to the including file's directory so that
+    // e.g. src/foo/detail.cpp and src/bar/detail.cpp are distinguished correctly.
+    let mut included_paths: HashSet<PathBuf> = HashSet::new();
+
+    for source in sources {
+        let kind = match classify_source(source) {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+
+        // Only scan interface and partition units for #include directives
+        if !matches!(
+            kind,
+            cmod_core::types::ModuleUnitKind::InterfaceUnit
+                | cmod_core::types::ModuleUnitKind::PartitionUnit
+        ) {
+            continue;
+        }
+
+        let content = match fs::read_to_string(source) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let source_dir = source.parent().unwrap_or(Path::new("."));
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            // Match #include "file.cc", #include "file.cpp", #include "file.cxx"
+            if let Some(rest) = trimmed.strip_prefix("#include") {
+                let rest = rest.trim();
+                if let Some(quoted) = rest.strip_prefix('"') {
+                    if let Some(filename) = quoted.strip_suffix('"') {
+                        let filename = filename.trim();
+                        if filename.ends_with(".cc")
+                            || filename.ends_with(".cpp")
+                            || filename.ends_with(".cxx")
+                        {
+                            // Resolve relative to the including file's directory
+                            let resolved = source_dir.join(filename);
+                            // Canonicalize to normalize ../components; fall back to joined path
+                            let normalized = resolved.canonicalize().unwrap_or(resolved);
+                            included_paths.insert(normalized);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if included_paths.is_empty() {
+        return sources.to_vec();
+    }
+
+    sources
+        .iter()
+        .filter(|source| {
+            let normalized = source
+                .canonicalize()
+                .unwrap_or_else(|_| source.to_path_buf());
+            !included_paths.contains(&normalized)
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]

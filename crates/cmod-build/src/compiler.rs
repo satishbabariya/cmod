@@ -195,13 +195,21 @@ impl CompilerBackend for ClangBackend {
         }
 
         // First pass: compile to PCM
-        let pcm_status = Command::new(&self.clang_path)
-            .args(self.common_flags())
-            .args(
-                dep_pcms
-                    .iter()
-                    .map(|(name, path)| format!("-fmodule-file={}={}", name, path.display())),
-            )
+        // For .cc/.cpp/.cxx files, clang doesn't auto-detect module interface —
+        // we must explicitly specify the language with -x c++-module.
+        let needs_lang_override =
+            !matches!(source.extension().and_then(|e| e.to_str()), Some("cppm"));
+
+        let mut pcm_cmd = Command::new(&self.clang_path);
+        pcm_cmd.args(self.common_flags()).args(
+            dep_pcms
+                .iter()
+                .map(|(name, path)| format!("-fmodule-file={}={}", name, path.display())),
+        );
+        if needs_lang_override {
+            pcm_cmd.args(["-x", "c++-module"]);
+        }
+        let pcm_status = pcm_cmd
             .arg("--precompile")
             .arg("-o")
             .arg(pcm_output)
@@ -250,13 +258,37 @@ impl CompilerBackend for ClangBackend {
         obj_output: &Path,
         dep_pcms: &[(&str, &Path)],
     ) -> Result<(), CmodError> {
-        let status = Command::new(&self.clang_path)
-            .args(self.common_flags())
-            .args(
+        let is_c_file = source
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e == "c")
+            .unwrap_or(false);
+
+        let mut cmd = Command::new(&self.clang_path);
+
+        if is_c_file {
+            // For plain C files, use C-compatible flags instead of C++ flags.
+            // Filter out -std=c++XX and module-related flags; add -std=c17.
+            let flags = self.common_flags();
+            for flag in &flags {
+                if flag.starts_with("-std=c++") || flag.starts_with("-fmodule") {
+                    continue;
+                }
+                cmd.arg(flag);
+            }
+            cmd.arg("-std=c17");
+            // Force C language for unambiguous compilation
+            cmd.arg("-x").arg("c");
+        } else {
+            cmd.args(self.common_flags());
+            cmd.args(
                 dep_pcms
                     .iter()
                     .map(|(name, path)| format!("-fmodule-file={}={}", name, path.display())),
-            )
+            );
+        }
+
+        let status = cmd
             .arg("-c")
             .arg("-o")
             .arg(obj_output)
@@ -281,11 +313,21 @@ impl CompilerBackend for ClangBackend {
 
         match artifact {
             Artifact::StaticLib { .. } => {
-                // Use ar for static libs
+                // Use ar for static libs — filter out .a archives to prevent nesting
+                let obj_only: Vec<&&Path> = objects
+                    .iter()
+                    .filter(|p| p.extension().and_then(|e| e.to_str()) != Some("a"))
+                    .collect();
+                // Skip ar for header-only packages with no object files
+                if obj_only.is_empty() {
+                    return Ok(());
+                }
+                // Remove existing archive to avoid stale objects from prior builds
+                let _ = std::fs::remove_file(output);
                 let status = Command::new("ar")
                     .arg("rcs")
                     .arg(output)
-                    .args(objects)
+                    .args(obj_only)
                     .status()
                     .map_err(|e| CmodError::BuildFailed {
                         reason: format!("failed to run ar: {}", e),

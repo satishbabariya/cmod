@@ -1,0 +1,16 @@
+version = 1
+
+[[package]]
+name = "math-headers"
+version = "0.0.0"
+source = "git"
+repo = "path:libs/math-headers"
+commit = "local"
+hash = "local"
+deps = []
+features = []
+
+[package.toolchain]
+compiler = "clang"
+
+[package.targets]

@@ -4,6 +4,7 @@ pub mod build;
 pub mod cache;
 pub mod check;
 pub mod clean;
+pub mod common;
 pub mod compile_commands;
 pub mod deps;
 pub mod explain;

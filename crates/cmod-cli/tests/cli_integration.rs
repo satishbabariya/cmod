@@ -12,6 +12,34 @@ fn run_cmod(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("failed to run cmod")
 }
 
+/// Check if Homebrew LLVM Clang is available (required for C++20 modules).
+fn has_llvm_clang() -> bool {
+    let llvm_clang = Path::new("/opt/homebrew/opt/llvm/bin/clang++");
+    if !llvm_clang.exists() {
+        return false;
+    }
+    Command::new(llvm_clang)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Run cmod with LLVM Clang on PATH (required for C++20 module compilation).
+fn run_cmod_with_llvm(dir: &Path, args: &[&str]) -> std::process::Output {
+    let llvm_path = "/opt/homebrew/opt/llvm/bin";
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", llvm_path, current_path);
+
+    Command::new(env!("CARGO_BIN_EXE_cmod"))
+        .args(args)
+        .current_dir(dir)
+        .env("PATH", new_path)
+        .output()
+        .expect("failed to run cmod")
+}
+
 #[test]
 fn test_init_creates_project() {
     let tmp = TempDir::new().unwrap();
@@ -1586,6 +1614,10 @@ fn test_deps_tree_shows_correct_version() {
 
 #[test]
 fn test_build_with_module_import_in_main() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found (required for C++20 modules)");
+        return;
+    }
     let tmp = TempDir::new().unwrap();
     run_cmod(tmp.path(), &["init", "--name", "buildtest"]);
 
@@ -1603,7 +1635,7 @@ fn test_build_with_module_import_in_main() {
     )
     .unwrap();
 
-    let output = run_cmod(tmp.path(), &["build"]);
+    let output = run_cmod_with_llvm(tmp.path(), &["build"]);
     assert!(
         output.status.success(),
         "build should succeed: {}",
@@ -1613,6 +1645,10 @@ fn test_build_with_module_import_in_main() {
 
 #[test]
 fn test_full_build_run_test_workflow() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found (required for C++20 modules)");
+        return;
+    }
     let tmp = TempDir::new().unwrap();
     run_cmod(tmp.path(), &["init", "--name", "fulltest"]);
 
@@ -1638,7 +1674,7 @@ fn test_full_build_run_test_workflow() {
     .unwrap();
 
     // Build
-    let output = run_cmod(tmp.path(), &["build"]);
+    let output = run_cmod_with_llvm(tmp.path(), &["build"]);
     assert!(
         output.status.success(),
         "build failed: {}",
@@ -1646,7 +1682,7 @@ fn test_full_build_run_test_workflow() {
     );
 
     // Verify
-    let output = run_cmod(tmp.path(), &["verify"]);
+    let output = run_cmod_with_llvm(tmp.path(), &["verify"]);
     assert!(
         output.status.success(),
         "verify failed: {}",
@@ -1654,7 +1690,7 @@ fn test_full_build_run_test_workflow() {
     );
 
     // Run
-    let output = run_cmod(tmp.path(), &["run"]);
+    let output = run_cmod_with_llvm(tmp.path(), &["run"]);
     assert!(
         output.status.success(),
         "run failed: {}",
@@ -1662,7 +1698,7 @@ fn test_full_build_run_test_workflow() {
     );
 
     // Test
-    let output = run_cmod(tmp.path(), &["test"]);
+    let output = run_cmod_with_llvm(tmp.path(), &["test"]);
     assert!(
         output.status.success(),
         "test failed: {}",

@@ -1,0 +1,15 @@
+<svg width="220" height="120" viewBox="0 0 220 120" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&amp;display=swap');
+      .solid { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 50px; fill: #FFF; }
+      .subtitle { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 12px; fill: #007ACC; letter-spacing: 4px; }
+    </style>
+  </defs>
+  <rect x="15" y="25" width="180" height="70" fill="#007ACC" />
+  <rect x="5" y="15" width="180" height="70" fill="#111" stroke="#FFF" stroke-width="4" />
+  <text x="25" y="65" class="solid">cmod</text>
+  <text x="30" y="105" class="subtitle">BUILD SYSTEM</text>
+  <path d="M 185 15 L 205 15 L 205 35 L 185 35 Z" fill="#F46623" stroke="#FFF" stroke-width="2" />
+  <path d="M 195 20 L 195 30 M 190 25 L 200 25" stroke="#FFF" stroke-width="2" />
+</svg>

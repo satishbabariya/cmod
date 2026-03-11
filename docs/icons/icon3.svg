@@ -1,0 +1,15 @@
+<svg width="240" height="90" viewBox="0 0 240 90" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Black+Ops+One&amp;display=swap');
+      .stencil { font-family: 'Black Ops One', sans-serif; font-size: 42px; fill: #FFF; }
+    </style>
+  </defs>
+  <rect x="10" y="10" width="220" height="70" fill="#000" />
+  <rect x="5" y="5" width="220" height="70" fill="#FF4500" stroke="#000" stroke-width="4" />
+  <rect x="12" y="12" width="206" height="56" fill="none" stroke="#000" stroke-width="2" stroke-dasharray="6,4" />
+  
+  <text x="55" y="55" class="stencil">CMOD</text>
+  <rect x="20" y="25" width="24" height="24" fill="#000" />
+  <text x="22" y="43" fill="#FF4500" font-family="sans-serif" font-weight="900" font-size="16">C+</text>
+</svg>

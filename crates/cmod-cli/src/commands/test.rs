@@ -381,8 +381,40 @@ fn compile_tests(
     let target_triple = resolve_target_triple(config);
 
     // Collect PCM and object files from the build
-    let pcm_flags = collect_pcm_flags(config, &pcm_dir);
-    let obj_files = collect_obj_files(config, &obj_dir);
+    let mut pcm_flags = collect_pcm_flags(config, &pcm_dir);
+    let mut obj_files = collect_obj_files(config, &obj_dir);
+
+    // Collect dependency artifacts (PCMs, objects, include dirs)
+    let mut dep_include_flags: Vec<String> = Vec::new();
+
+    // Path dependencies
+    let path_dep_artifacts = super::common::collect_path_dep_artifacts(config);
+    for (mod_name, pcm_path) in &path_dep_artifacts.pcms {
+        pcm_flags.push(format!("-fmodule-file={}={}", mod_name, pcm_path.display()));
+    }
+    for obj in &path_dep_artifacts.objs {
+        obj_files.push(obj.display().to_string());
+    }
+    for inc_dir in &path_dep_artifacts.include_dirs {
+        dep_include_flags.push(format!("-I{}", inc_dir.display()));
+    }
+
+    // Git dependencies (from lockfile)
+    if let Ok(lockfile) = cmod_core::lockfile::Lockfile::load(&config.lockfile_path) {
+        let dep_artifacts = super::common::collect_dep_artifacts(config, &lockfile);
+
+        for (mod_name, pcm_path) in &dep_artifacts.pcms {
+            pcm_flags.push(format!("-fmodule-file={}={}", mod_name, pcm_path.display()));
+        }
+
+        for obj in &dep_artifacts.objs {
+            obj_files.push(obj.display().to_string());
+        }
+
+        for inc_dir in &dep_artifacts.include_dirs {
+            dep_include_flags.push(format!("-I{}", inc_dir.display()));
+        }
+    }
 
     // Framework flags
     let framework = config
@@ -432,6 +464,11 @@ fn compile_tests(
         cmd.arg(format!("--target={}", target_triple));
 
         for flag in &pcm_flags {
+            cmd.arg(flag);
+        }
+
+        // Dependency include directories
+        for flag in &dep_include_flags {
             cmd.arg(flag);
         }
 

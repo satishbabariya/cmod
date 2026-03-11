@@ -1,0 +1,15 @@
+<svg width="210" height="80" viewBox="0 0 190 80" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      @import url(https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&amp;display=swap);
+    </style>
+  </defs>
+  <g transform="translate(10 20)">
+    <rect width="16" height="16" rx="4" fill="#f46623"/>
+    <rect x="22" width="16" height="16" rx="4" fill="#007acc"/>
+    <rect y="22" width="16" height="16" rx="4" fill="#007acc"/>
+    <path d="M8 16v6m8-14h6" stroke="#484f58" stroke-width="3"/>
+  </g>
+  <text x="60" y="52" style="font-family:&quot;Space Grotesk&quot;,sans-serif;font-weight:700;font-size:48px;fill:#007acc">c</text>
+  <text x="88" y="52" style="font-family:&quot;Space Grotesk&quot;,sans-serif;font-weight:500;font-size:48px;fill:#e6edf3">mod</text>
+</svg>

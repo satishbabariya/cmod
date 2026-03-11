@@ -1,0 +1,18 @@
+[package]
+name = "hello"
+version = "0.1.0"
+edition = "2023"
+authors = ["Test Author"]
+license = "MIT"
+
+[module]
+name = "com.example.hello"
+root = "src/lib.cppm"
+
+[build]
+type = "binary"
+standard = "c++23"
+
+[toolchain]
+compiler = "clang"
+version = ">=17.0.0"

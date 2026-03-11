@@ -1,0 +1,127 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--vscode-editor-background, #1e1e1e);
+  color: var(--vscode-editor-foreground, #d4d4d4);
+  overflow: hidden;
+}
+
+#controls {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#controls input {
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-input-foreground, #cccccc);
+  border-radius: 3px;
+  outline: none;
+  width: 180px;
+}
+
+#controls button {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid var(--vscode-button-border, #007acc);
+  background: var(--vscode-button-background, #007acc);
+  color: var(--vscode-button-foreground, #ffffff);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+#controls button:hover {
+  background: var(--vscode-button-hoverBackground, #1c8cd9);
+}
+
+#stats {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+#graph {
+  width: 100vw;
+  height: 100vh;
+}
+
+/* Node styles */
+.node rect {
+  rx: 6;
+  ry: 6;
+  stroke-width: 2;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.node rect:hover {
+  opacity: 0.85;
+}
+
+.node text {
+  font-size: 11px;
+  fill: #1e1e1e;
+  pointer-events: none;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+
+.node .timing-label {
+  font-size: 9px;
+  fill: #555;
+}
+
+/* Status colors */
+.node.up-to-date rect { fill: #73c991; }
+.node.needs-rebuild rect { fill: #e8c86e; }
+.node.never-built rect { fill: #a0a0a0; }
+
+/* Timing border colors */
+.node.timing-fast rect { stroke: #73c991; }
+.node.timing-moderate rect { stroke: #e8c86e; }
+.node.timing-slow rect { stroke: #f14c4c; }
+.node.timing-none rect { stroke: #555; }
+
+/* Edge styles */
+.link {
+  fill: none;
+  stroke: #555;
+  stroke-width: 1.5;
+  stroke-opacity: 0.6;
+  marker-end: url(#arrowhead);
+}
+
+.link.highlighted {
+  stroke: #007acc;
+  stroke-width: 2.5;
+  stroke-opacity: 1;
+}
+
+/* Dimmed when filtering */
+.node.dimmed { opacity: 0.2; }
+.link.dimmed { stroke-opacity: 0.1; }
+
+/* Tooltip */
+.tooltip {
+  position: absolute;
+  background: var(--vscode-editorHoverWidget-background, #252526);
+  border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
+  color: var(--vscode-editorHoverWidget-foreground, #cccccc);
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 20;
+  max-width: 300px;
+}

@@ -1,0 +1,18 @@
+[package]
+name = "ixx-modules"
+version = "0.1.0"
+edition = "2023"
+description = "Example using .ixx module extension (MSVC convention)"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
+
+[module]
+name = "local.ixx_modules"
+root = "src/lib.ixx"
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "binary"

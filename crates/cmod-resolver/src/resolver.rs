@@ -237,7 +237,7 @@ impl Resolver {
 
         // Check if this is a path dependency
         if dep.is_path() {
-            return self.resolve_path_dep(name, dep, resolved);
+            return self.resolve_path_dep(name, dep, _manifest, existing_lock, offline, resolved);
         }
 
         let url = Manifest::resolve_dep_url(name, dep);
@@ -323,6 +323,26 @@ impl Resolver {
                     name: name.to_string(),
                     reason: format!("pseudo-version parse error: {}", e),
                 })?;
+                (ver, oid)
+            }
+            Dependency::Detailed(d) if d.tag.is_some() => {
+                let tag = d.tag.as_ref().unwrap();
+                let tag_ref = format!("refs/tags/{}", tag);
+                let oid = git::resolve_commit(&repo, &tag_ref)?;
+                // Try to extract version from tag name (strip 'v' prefix, try semver parse)
+                let version_str = tag.strip_prefix('v').unwrap_or(tag);
+                let ver = match Version::parse(version_str) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        // Tag is not a valid semver — generate a pseudo-version
+                        let date = git::commit_date(&repo, oid)?;
+                        let pv = version::pseudo_version(&date, &git::short_hash(&oid));
+                        Version::parse(&pv).map_err(|e| CmodError::UnresolvableConstraints {
+                            name: name.to_string(),
+                            reason: format!("pseudo-version parse error: {}", e),
+                        })?
+                    }
+                };
                 (ver, oid)
             }
             Dependency::Detailed(d) if d.branch.is_some() => {
@@ -425,10 +445,16 @@ impl Resolver {
     }
 
     /// Resolve a path dependency (local, no Git).
+    ///
+    /// Loads the path dep's manifest and recursively resolves its own
+    /// dependencies so that transitive git deps are discovered.
     fn resolve_path_dep(
-        &self,
+        &mut self,
         name: &str,
         dep: &Dependency,
+        _manifest: &Manifest,
+        existing_lock: Option<&Lockfile>,
+        offline: bool,
         resolved: &mut BTreeMap<String, ResolvedDep>,
     ) -> Result<(), CmodError> {
         let path = match dep {
@@ -439,6 +465,33 @@ impl Resolver {
         let version_str = dep.version_req().unwrap_or("0.0.0");
         let version = version::parse_version(version_str).unwrap_or(Version::new(0, 0, 0));
 
+        // Recurse into the path dep's manifest to discover its own dependencies
+        let mut transitive_deps = Vec::new();
+        let dep_manifest_path = path.join("cmod.toml");
+        if dep_manifest_path.exists() {
+            if let Ok(dep_manifest) = Manifest::load(&dep_manifest_path) {
+                // Load the path dep's own lockfile if it has one
+                let dep_lock_path = path.join("cmod.lock");
+                let dep_lock = if dep_lock_path.exists() {
+                    Lockfile::load(&dep_lock_path).ok()
+                } else {
+                    None
+                };
+
+                for (trans_name, trans_dep) in &dep_manifest.dependencies {
+                    transitive_deps.push(trans_name.clone());
+                    self.resolve_dep(
+                        trans_name,
+                        trans_dep,
+                        &dep_manifest,
+                        dep_lock.as_ref().or(existing_lock),
+                        offline,
+                        resolved,
+                    )?;
+                }
+            }
+        }
+
         resolved.insert(
             name.to_string(),
             ResolvedDep {
@@ -448,7 +501,7 @@ impl Resolver {
                 commit: "local".to_string(),
                 hash: "local".to_string(),
                 local_path: path,
-                deps: vec![],
+                deps: transitive_deps,
             },
         );
 

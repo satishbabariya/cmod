@@ -1,0 +1,21 @@
+[package]
+name = "formatter"
+version = "0.1.0"
+edition = "2023"
+description = "Formatting library that depends on fmt via git"
+authors = ["cmod contributors"]
+license = "Apache-2.0"
+
+[module]
+name = "local.formatter"
+root = "src/lib.cppm"
+
+[dependencies]
+"github.com/satishbabariya/fmt-cmod" = "^0.1"
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "static-lib"

@@ -155,30 +155,37 @@ impl BuildPlan {
             }
         }
 
-        // Add the link node
-        let output_name = package_name
-            .map(|s| s.to_string())
-            .or_else(|| graph.nodes.values().next().map(|n| n.package.clone()))
-            .unwrap_or_else(|| "output".to_string());
+        // Add the link node only when there are objects to link.
+        // Header-only packages have no translation units and produce no objects,
+        // so emitting a Link node would cause `ar` to fail on an empty file list.
+        if !obj_paths.is_empty() {
+            let output_name = package_name
+                .map(|s| s.to_string())
+                .or_else(|| graph.nodes.values().next().map(|n| n.package.clone()))
+                .unwrap_or_else(|| "output".to_string());
 
-        let link_output = match build_type {
-            BuildType::Binary => build_dir.join(sanitize_name(&output_name)),
-            BuildType::StaticLib => build_dir.join(format!("lib{}.a", sanitize_name(&output_name))),
-            BuildType::SharedLib => {
-                build_dir.join(format!("lib{}.so", sanitize_name(&output_name)))
-            }
-        };
+            let link_output = match build_type {
+                BuildType::Binary => build_dir.join(sanitize_name(&output_name)),
+                BuildType::StaticLib => {
+                    build_dir.join(format!("lib{}.a", sanitize_name(&output_name)))
+                }
+                BuildType::SharedLib => {
+                    let ext = shared_lib_extension(target);
+                    build_dir.join(format!("lib{}.{}", sanitize_name(&output_name), ext))
+                }
+            };
 
-        let link_deps: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+            let link_deps: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
 
-        nodes.push(BuildNode {
-            id: "link".to_string(),
-            kind: NodeKind::Link,
-            module_name: None,
-            source: None,
-            dependencies: link_deps,
-            outputs: vec![link_output],
-        });
+            nodes.push(BuildNode {
+                id: "link".to_string(),
+                kind: NodeKind::Link,
+                module_name: None,
+                source: None,
+                dependencies: link_deps,
+                outputs: vec![link_output],
+            });
+        }
 
         Ok(BuildPlan {
             target: target.to_string(),
@@ -307,6 +314,17 @@ pub struct CompileCommand {
     pub arguments: Vec<String>,
     /// The output file path.
     pub output: String,
+}
+
+/// Determine the shared library file extension from a target triple.
+fn shared_lib_extension(target: &str) -> &'static str {
+    if target.contains("apple") || target.contains("darwin") {
+        "dylib"
+    } else if target.contains("windows") {
+        "dll"
+    } else {
+        "so"
+    }
 }
 
 /// Sanitize a module name for use as a filename.
@@ -490,7 +508,7 @@ mod tests {
         let output_path = link_node.outputs[0].to_str().unwrap();
         assert!(
             output_path.ends_with(".so"),
-            "Expected .so output: {}",
+            "Expected .so output for Linux target: {}",
             output_path
         );
     }

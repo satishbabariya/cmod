@@ -38,7 +38,24 @@ pub fn run(shell: &Shell, target_override: Option<String>) -> Result<(), CmodErr
         .and_then(|b| b.build_type)
         .unwrap_or_default();
 
-    let (backend, target) = setup_compiler(&config);
+    let (mut backend, target) = setup_compiler(&config);
+
+    // Add dependency artifacts if lockfile exists (without building)
+    if let Ok(lockfile) = cmod_core::lockfile::Lockfile::load(&config.lockfile_path) {
+        let dep_artifacts = super::common::collect_dep_artifacts(&config, &lockfile);
+
+        // Add dep PCMs as -fmodule-file= flags
+        for (mod_name, pcm_path) in &dep_artifacts.pcms {
+            backend
+                .extra_flags
+                .push(format!("-fmodule-file={}={}", mod_name, pcm_path.display()));
+        }
+
+        // Add dep include directories
+        for inc_dir in &dep_artifacts.include_dirs {
+            backend.extra_flags.push(format!("-I{}", inc_dir.display()));
+        }
+    }
 
     let plan = BuildPlan::from_graph(
         &graph,
@@ -147,6 +164,16 @@ fn setup_compiler(config: &Config) -> (ClangBackend, String) {
         if let Some(ref sysroot) = tc.sysroot {
             backend.sysroot = Some(sysroot.clone());
         }
+    }
+
+    // Add include directories from [build] section
+    if let Some(ref build) = config.manifest.build {
+        let root = &config.root;
+        for dir in &build.include_dirs {
+            let abs = root.join(dir);
+            backend.extra_flags.push(format!("-I{}", abs.display()));
+        }
+        backend.extra_flags.extend(build.extra_flags.clone());
     }
 
     let target = config

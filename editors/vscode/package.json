@@ -1,0 +1,266 @@
+{
+  "name": "cmod",
+  "displayName": "cmod - C++ Module Manager",
+  "description": "Cargo-inspired, Git-native package and build tool for modern C++20+ modules",
+  "version": "0.1.0",
+  "publisher": "cmod",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters",
+    "Other"
+  ],
+  "keywords": [
+    "c++",
+    "cpp",
+    "modules",
+    "c++20",
+    "build",
+    "package manager",
+    "cmod"
+  ],
+  "icon": "resources/icons/cmod.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/satishbabariya/cmod"
+  },
+  "cmod": {
+    "binaryVersion": "0.1.0"
+  },
+  "activationEvents": [
+    "workspaceContains:cmod.toml",
+    "onLanguage:cpp"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cmod.build",
+        "title": "cmod: Build",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "cmod.buildRelease",
+        "title": "cmod: Build (Release)",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "cmod.test",
+        "title": "cmod: Test",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "cmod.run",
+        "title": "cmod: Run",
+        "icon": "$(play)"
+      },
+      {
+        "command": "cmod.clean",
+        "title": "cmod: Clean",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "cmod.init",
+        "title": "cmod: Initialize Project",
+        "icon": "$(add)"
+      },
+      {
+        "command": "cmod.format",
+        "title": "cmod: Format",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "cmod.lint",
+        "title": "cmod: Lint",
+        "icon": "$(warning)"
+      },
+      {
+        "command": "cmod.cacheStatus",
+        "title": "cmod: Cache Status",
+        "icon": "$(database)"
+      },
+      {
+        "command": "cmod.explain",
+        "title": "cmod: Explain Module Rebuild",
+        "icon": "$(question)"
+      },
+      {
+        "command": "cmod.showGraph",
+        "title": "cmod: Show Module Graph",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "cmod.showDeps",
+        "title": "cmod: Show Dependencies",
+        "icon": "$(list-tree)"
+      }
+    ],
+    "configuration": {
+      "title": "cmod",
+      "properties": {
+        "cmod.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the cmod binary. Leave empty to auto-download or use PATH."
+        },
+        "cmod.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the cmod LSP server for diagnostics and completions."
+        },
+        "cmod.build.defaultProfile": {
+          "type": "string",
+          "default": "debug",
+          "enum": [
+            "debug",
+            "release"
+          ],
+          "description": "Default build profile."
+        },
+        "cmod.build.jobs": {
+          "type": "number",
+          "default": 0,
+          "description": "Number of parallel build jobs. 0 uses system default."
+        },
+        "cmod.format.onSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run cmod fmt on save for C++ files."
+        },
+        "cmod.lint.onSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run cmod lint on save for C++ files."
+        },
+        "cmod.toolchain.cxx": {
+          "type": "string",
+          "default": "",
+          "description": "Path to C++ compiler (clang++). Sets CXX environment variable. Leave empty to use system default."
+        },
+        "cmod.toolchain.scanDeps": {
+          "type": "string",
+          "default": "",
+          "description": "Path to clang-scan-deps binary. Sets SCAN_DEPS environment variable. Leave empty to use system default."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cmod",
+          "title": "cmod",
+          "icon": "resources/icons/cmod.svg"
+        }
+      ]
+    },
+    "views": {
+      "cmod": [
+        {
+          "id": "cmod-dependencies",
+          "name": "Dependencies"
+        },
+        {
+          "id": "cmod-build-status",
+          "name": "Build Status"
+        }
+      ]
+    },
+    "taskDefinitions": [
+      {
+        "type": "cmod",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "The cmod task to run (build, test, run, clean)."
+          },
+          "profile": {
+            "type": "string",
+            "description": "Build profile (debug or release)."
+          },
+          "args": {
+            "type": "array",
+            "description": "Additional arguments to pass to cmod."
+          }
+        }
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "cmod",
+        "owner": "cmod",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(.+):(\\d+):(\\d+):\\s+(error|warning|note):\\s+(.+)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    ],
+    "snippets": [
+      {
+        "language": "cpp",
+        "path": "./snippets/cpp-modules.json"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "cmod.build",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "workspaceFolderCount > 0 && resourceFilename == 'cmod.toml' || editorLangId == 'cpp'"
+      }
+    ],
+    "languages": [
+      {
+        "id": "cpp",
+        "extensions": [
+          ".cppm",
+          ".ixx",
+          ".mxx"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "compile-tests": "tsc -p ."
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/mocha": "^10.0.6",
+    "@types/glob": "^8.1.0",
+    "@vscode/test-electron": "^2.3.8",
+    "@vscode/vsce": "^2.22.0",
+    "ovsx": "^0.8.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.2.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0"
+  }
+}
