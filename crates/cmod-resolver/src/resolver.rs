@@ -325,6 +325,26 @@ impl Resolver {
                 })?;
                 (ver, oid)
             }
+            Dependency::Detailed(d) if d.tag.is_some() => {
+                let tag = d.tag.as_ref().unwrap();
+                let tag_ref = format!("refs/tags/{}", tag);
+                let oid = git::resolve_commit(&repo, &tag_ref)?;
+                // Try to extract version from tag name (strip 'v' prefix, try semver parse)
+                let version_str = tag.strip_prefix('v').unwrap_or(tag);
+                let ver = match Version::parse(version_str) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        // Tag is not a valid semver — generate a pseudo-version
+                        let date = git::commit_date(&repo, oid)?;
+                        let pv = version::pseudo_version(&date, &git::short_hash(&oid));
+                        Version::parse(&pv).map_err(|e| CmodError::UnresolvableConstraints {
+                            name: name.to_string(),
+                            reason: format!("pseudo-version parse error: {}", e),
+                        })?
+                    }
+                };
+                (ver, oid)
+            }
             Dependency::Detailed(d) if d.branch.is_some() => {
                 let branch = d.branch.as_ref().unwrap();
                 let oid = git::resolve_branch(&repo, branch)?;

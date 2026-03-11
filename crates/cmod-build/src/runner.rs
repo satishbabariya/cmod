@@ -1168,9 +1168,10 @@ impl BuildRunner {
     }
 }
 
-/// Discover C++ module source files in a directory.
+/// Discover C/C++ module source files in a directory.
 ///
-/// Looks for `.cppm`, `.ixx`, `.mpp` (module interface) and `.cpp` files.
+/// Looks for `.cppm`, `.ixx`, `.mpp` (module interface), `.cpp`, `.cc`, `.cxx`,
+/// and `.c` (plain C) files. Plain C files are compiled as C++ by clang++.
 pub fn discover_sources(src_dir: &Path) -> Result<Vec<PathBuf>, CmodError> {
     let mut sources = Vec::new();
 
@@ -1184,7 +1185,7 @@ pub fn discover_sources(src_dir: &Path) -> Result<Vec<PathBuf>, CmodError> {
     {
         let path = entry.path();
         if path.is_file() {
-            if let Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx") =
+            if let Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx" | "c") =
                 path.extension().and_then(|e| e.to_str())
             {
                 sources.push(path.to_path_buf());
@@ -1230,7 +1231,7 @@ pub fn discover_sources_multi(
             }
             if !matches!(
                 path.extension().and_then(|e| e.to_str()),
-                Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx")
+                Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx" | "c")
             ) {
                 continue;
             }
