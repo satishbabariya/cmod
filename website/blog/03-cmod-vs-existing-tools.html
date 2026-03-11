@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cmod vs Existing Tools — cmod Blog</title>
+  <meta name="description" content="An honest comparison of cmod with CMake, Conan, vcpkg, and Bazel across module support, dependency management, and developer experience.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--comparison">Comparison</span>
+        <h1 class="article__title">cmod vs Existing Tools</h1>
+        <p class="article__meta">October 2025 &middot; 10 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p><em>Every C++ tool has strengths. Here's where cmod fits in &mdash; and where it doesn't.</em></p>
+
+        <p>Choosing a build tool for C++ is a high-stakes decision. Migrating later is painful. So we want to be upfront about what cmod does well, what the alternatives do well, and where each falls short.</p>
+
+        <h2>The Comparison Matrix</h2>
+
+        <table style="width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); margin-bottom: var(--space-lg);">
+          <thead>
+            <tr style="border-bottom: 2px solid var(--color-border);">
+              <th style="padding: 8px; text-align: left;">Feature</th>
+              <th style="padding: 8px; text-align: left;">cmod</th>
+              <th style="padding: 8px; text-align: left;">CMake</th>
+              <th style="padding: 8px; text-align: left;">Conan</th>
+              <th style="padding: 8px; text-align: left;">vcpkg</th>
+              <th style="padding: 8px; text-align: left;">Bazel</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">C++20 modules</td><td style="padding: 8px;"><strong>Native</strong></td><td style="padding: 8px;">Experimental</td><td style="padding: 8px;">None</td><td style="padding: 8px;">Partial</td><td style="padding: 8px;">Partial</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">Package management</td><td style="padding: 8px;"><strong>Built-in (Git)</strong></td><td style="padding: 8px;">None</td><td style="padding: 8px;">Registry</td><td style="padding: 8px;">Registry</td><td style="padding: 8px;">Rules</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">Lockfile</td><td style="padding: 8px;"><strong>Mandatory</strong></td><td style="padding: 8px;">None</td><td style="padding: 8px;">Optional</td><td style="padding: 8px;">Partial</td><td style="padding: 8px;">Implicit</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">Config format</td><td style="padding: 8px;"><strong>TOML</strong></td><td style="padding: 8px;">CMake DSL</td><td style="padding: 8px;">Python</td><td style="padding: 8px;">JSON</td><td style="padding: 8px;">Starlark</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">Registry model</td><td style="padding: 8px;"><strong>Decentralized (Git)</strong></td><td style="padding: 8px;">N/A</td><td style="padding: 8px;">Centralized</td><td style="padding: 8px;">Centralized</td><td style="padding: 8px;">Custom</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">Security</td><td style="padding: 8px;"><strong>Built-in</strong></td><td style="padding: 8px;">None</td><td style="padding: 8px;">Partial</td><td style="padding: 8px;">SHA</td><td style="padding: 8px;">Hermetic</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">IDE extensions</td><td style="padding: 8px;"><strong>VS Code + CLion</strong></td><td style="padding: 8px;">CMake Tools</td><td style="padding: 8px;">None</td><td style="padding: 8px;">None</td><td style="padding: 8px;">Plugin</td></tr>
+            <tr><td style="padding: 8px;">Setup complexity</td><td style="padding: 8px;"><strong>Low</strong></td><td style="padding: 8px;">Medium</td><td style="padding: 8px;">Medium-High</td><td style="padding: 8px;">Medium</td><td style="padding: 8px;">High</td></tr>
+          </tbody>
+        </table>
+
+        <h2>cmod vs CMake</h2>
+        <p><strong>CMake</strong> is the de facto standard for C++ build generation, supported by virtually every IDE and CI system.</p>
+        <h3>Where CMake excels</h3>
+        <ul>
+          <li><strong>Universal platform support.</strong> CMake generates build files for Make, Ninja, Visual Studio, Xcode, and more.</li>
+          <li><strong>Mature ecosystem.</strong> Thousands of <code>FindXxx.cmake</code> modules and decades of community knowledge.</li>
+          <li><strong>IDE integration.</strong> Every major C++ IDE supports CMake projects natively.</li>
+        </ul>
+        <h3>Where cmod improves on CMake</h3>
+        <ul>
+          <li><strong>Dependency management.</strong> CMake has no built-in package manager. cmod resolves, fetches, and pins dependencies automatically.</li>
+          <li><strong>Lockfiles.</strong> CMake has no concept of a lockfile.</li>
+          <li><strong>C++20 modules.</strong> CMake's module support is experimental. cmod discovers module dependencies automatically via <code>clang-scan-deps</code>.</li>
+          <li><strong>Simplicity.</strong> A <code>cmod.toml</code> is 15 lines. An equivalent CMakeLists.txt is often 50&ndash;100+ lines.</li>
+        </ul>
+
+        <h2>cmod vs Conan</h2>
+        <p><strong>Conan</strong> is the most established C++ package manager with a large central repository.</p>
+        <h3>Where Conan excels</h3>
+        <ul>
+          <li>Large package ecosystem with pre-built binaries</li>
+          <li>Flexible Python-based recipe system</li>
+        </ul>
+        <h3>Where cmod improves on Conan</h3>
+        <ul>
+          <li><strong>No central registry required.</strong> cmod uses Git URLs directly.</li>
+          <li><strong>Module-native.</strong> Conan is header-first.</li>
+          <li><strong>No Python dependency.</strong> cmod is a single Rust binary.</li>
+        </ul>
+
+        <h2>cmod vs vcpkg</h2>
+        <p><strong>vcpkg</strong> is Microsoft's C++ package manager, deeply integrated with Visual Studio.</p>
+        <h3>Where cmod improves on vcpkg</h3>
+        <ul>
+          <li><strong>Decentralized.</strong> No centralized port registry.</li>
+          <li><strong>Module-native.</strong> vcpkg's module support is limited.</li>
+          <li><strong>Stronger reproducibility.</strong> Mandatory lockfiles with exact commit hashes.</li>
+        </ul>
+
+        <h2>cmod vs Bazel</h2>
+        <p><strong>Bazel</strong> is Google's build system designed for massive monorepos.</p>
+        <h3>Where cmod improves on Bazel</h3>
+        <ul>
+          <li><strong>C++-native.</strong> cmod understands modules, BMIs, and Clang natively.</li>
+          <li><strong>Simpler setup.</strong> TOML vs Starlark rules.</li>
+          <li><strong>Lower barrier to entry.</strong> No need to learn Bazel's execution model.</li>
+        </ul>
+
+        <h2>What cmod Doesn't Do (Yet)</h2>
+        <ul>
+          <li><strong>Compiler support is LLVM/Clang-first.</strong> GCC and MSVC support is planned.</li>
+          <li><strong>Smaller ecosystem.</strong> cmod is new and doesn't have Conan's package catalog.</li>
+        </ul>
+        <h3>What cmod now does that it didn't before</h3>
+        <ul>
+          <li><strong>Remote caching</strong> &mdash; HTTP-based protocol for sharing build artifacts across teams</li>
+          <li><strong>IDE extensions</strong> &mdash; VS Code extension and CLion plugin with LSP integration and module graph visualization</li>
+          <li><strong>Distributed builds</strong> &mdash; Work-stealing distributed build workers</li>
+        </ul>
+
+        <h2>The cmod Sweet Spot</h2>
+        <p>cmod is the right choice when you're starting a new C++20+ project, you care about modules, you prefer decentralized dependencies, you value simplicity, and reproducibility is non-negotiable.</p>
+
+        <h2>Try It Yourself</h2>
+        <pre><code>git clone https://github.com/satishbabariya/cmod.git
+cd cmod && cargo build --release
+
+cmod init my_project
+cd my_project
+cmod add github.com/fmtlib/fmt@10.0
+cmod build
+cmod run</code></pre>
+
+        <p><em>cmod is open source under Apache-2.0. We welcome feedback &mdash; <a href="https://github.com/satishbabariya/cmod">join the conversation on GitHub</a>.</em></p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

@@ -192,7 +192,7 @@ cmod plugin list|run               # Manage plugins</code></pre>
         </ul>
 
         <h2 id="architecture">Architecture</h2>
-        <p>cmod is implemented in Rust as a Cargo workspace with 7 crates:</p>
+        <p>cmod is implemented in Rust as a Cargo workspace with 8 crates:</p>
 
         <table style="width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); margin-bottom: var(--space-lg);">
           <thead>
@@ -213,18 +213,51 @@ cmod plugin list|run               # Manage plugins</code></pre>
           </tbody>
         </table>
 
-        <p>Dependencies flow downward: <code>cli &rarr; {resolver, build, cache, workspace, security} &rarr; core</code>.</p>
+        <p>Dependencies flow downward: <code>cli &rarr; {resolver, build, cache, workspace, security, lsp} &rarr; core</code>.</p>
 
         <h2 id="examples">Examples</h2>
         <p>Working example projects are available in the <a href="https://github.com/satishbabariya/cmod/tree/main/examples">examples/</a> directory:</p>
         <ul>
           <li><strong>hello/</strong> &mdash; Minimal binary, no dependencies</li>
           <li><strong>library/</strong> &mdash; Static library with module partitions</li>
+          <li><strong>shared-lib/</strong> &mdash; Shared (dynamic) library build</li>
           <li><strong>with-deps/</strong> &mdash; Git dependencies (fmt + json)</li>
           <li><strong>workspace/</strong> &mdash; Multi-member monorepo</li>
           <li><strong>path-deps/</strong> &mdash; Local path dependencies</li>
+          <li><strong>nested-deps/</strong> &mdash; Path dep with transitive git dependencies</li>
+          <li><strong>header-only/</strong> &mdash; Header-only library as a path dependency</li>
+          <li><strong>include-dirs/</strong> &mdash; Using <code>include/</code> directory convention with modules</li>
+          <li><strong>ixx-modules/</strong> &mdash; <code>.ixx</code> module extension (MSVC-style)</li>
+          <li><strong>multi-binary/</strong> &mdash; Multiple binaries sharing a module library</li>
           <li><strong>with-tests/</strong> &mdash; Testing with cmod test</li>
+          <li><strong>plugin/</strong> &mdash; Plugin system with JSON IPC</li>
         </ul>
+
+        <h2 id="editors">Editor Extensions</h2>
+        <p>cmod ships with first-class IDE integrations for the two most popular C++ editors:</p>
+
+        <h3>VS Code Extension</h3>
+        <ul>
+          <li>LSP integration via <code>cmod lsp</code> for diagnostics, completions, and hover</li>
+          <li>Build, test, run, clean commands with Clang problem matcher</li>
+          <li>Interactive module graph visualization (force-directed D3.js)</li>
+          <li>Dependency tree view parsed from <code>cmod.toml</code></li>
+          <li>Format-on-save and lint-on-save</li>
+          <li>C++20 module snippets (<code>module</code>, <code>import</code>, <code>partition</code>, <code>export</code>)</li>
+          <li>File associations for <code>.cppm</code>, <code>.ixx</code>, <code>.mxx</code></li>
+        </ul>
+        <p>Install: search "cmod" in the VS Code Marketplace, or see <a href="https://github.com/satishbabariya/cmod/tree/main/editors/vscode">editors/vscode/</a></p>
+
+        <h3>CLion / IntelliJ Plugin</h3>
+        <ul>
+          <li>LSP integration with completions, diagnostics, and go-to-definition</li>
+          <li>Run configurations for build, test, and run with profile/sanitizer options</li>
+          <li>Tool window with module graph, dependency tree, and cache status panels</li>
+          <li>Build/test/run/clean/format/lint actions in the Build menu</li>
+          <li>Format-on-save and lint-on-save</li>
+          <li>File type support for <code>.cppm</code>, <code>.ixx</code>, <code>.mxx</code>, and <code>cmod.toml</code></li>
+        </ul>
+        <p>Install: search "cmod" in JetBrains Marketplace, or see <a href="https://github.com/satishbabariya/cmod/tree/main/editors/clion">editors/clion/</a></p>
 
         <h2 id="rfcs">Design Specifications</h2>
         <p>cmod's design is specified in 21 RFCs organized by priority tier:</p>

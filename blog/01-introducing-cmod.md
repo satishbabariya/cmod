@@ -111,27 +111,26 @@ Each layer has a focused responsibility:
 
 ## What's Ready Today
 
-cmod is in active development with Phases 0–2 complete:
+cmod has completed all planned development phases (0–5):
 
 - Full CLI with 30+ commands
 - Git-based dependency resolution with semver solving
 - Mandatory lockfile generation
 - LLVM/Clang build backend with module DAG construction
 - Workspace and monorepo support
-- Local artifact caching
-- 750+ passing tests
-
-## What's Coming
-
-- **Phase 3** — Distributed cache, BMI distribution, distributed build workers (complete)
-- **Phase 4** — Cryptographic signing (PGP/SSH/Sigstore), auditing, SBOM, policy enforcement (complete)
-- **Phase 5** — LSP server, plugin sandboxing, module registry, feature resolution (in progress)
+- Local and remote artifact caching (HTTP REST)
+- Distributed build workers with work stealing
+- Cryptographic signing (PGP/SSH/Sigstore), auditing, SBOM generation
+- LSP server, plugin sandboxing, module registry, feature resolution
+- **IDE extensions for VS Code and CLion/IntelliJ** with LSP integration, module graph visualization, and build status
+- 780+ passing tests across 8 focused crates
+- 12+ working example projects
 
 ## Get Started
 
 ```bash
 # Clone and build cmod
-git clone https://github.com/nickshouse/cmod.git
+git clone https://github.com/satishbabariya/cmod.git
 cd cmod
 cargo build --release
 
@@ -142,7 +141,7 @@ cmod build
 cmod run
 ```
 
-Check out the [examples/](https://github.com/nickshouse/cmod/tree/main/examples) directory for real-world project templates — from minimal binaries to workspaces with Git dependencies.
+Check out the [examples/](https://github.com/satishbabariya/cmod/tree/main/examples) directory for real-world project templates — from minimal binaries to workspaces with Git dependencies.
 
 ## Why Now?
 
@@ -154,4 +153,4 @@ C++ is powerful. Its tooling should be too.
 
 ---
 
-*cmod is open source under the Apache-2.0 license. Star the repo, file issues, and join the conversation on [GitHub](https://github.com/nickshouse/cmod).*
+*cmod is open source under the Apache-2.0 license. Star the repo, file issues, and join the conversation on [GitHub](https://github.com/satishbabariya/cmod).*

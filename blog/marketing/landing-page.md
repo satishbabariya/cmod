@@ -158,6 +158,7 @@ CLI → Resolver → Workspace → Build Orchestrator → LLVM/Clang → Cache �
 - **cmod-cache** — Content-addressed caching (SHA-256)
 - **cmod-workspace** — Monorepo management
 - **cmod-security** — Verification, trust, policy enforcement
+- **cmod-lsp** — Language Server Protocol with completion and diagnostics
 
 ---
 
@@ -170,16 +171,17 @@ CLI → Resolver → Workspace → Build Orchestrator → LLVM/Clang → Cache �
 | Scale — workspace, local cache | **Complete** |
 | Distributed — remote cache, BMI distribution, distributed workers | **Complete** |
 | Security — cryptographic signing, auditing, SBOM, policy enforcement | **Complete** |
-| Ecosystem — LSP server, plugin sandboxing, module registry, features | In Progress |
+| Ecosystem — LSP server, plugin sandboxing, module registry, features | **Complete** |
+| IDE & DX — VS Code extension, CLion plugin, module graph visualization | **Complete** |
 
-**750+ tests passing.** 8 focused crates. 21 design RFCs.
+**780+ tests passing.** 8 focused crates. 21 design RFCs. IDE extensions for VS Code and CLion.
 
 ---
 
 ## Get Started
 
 ```bash
-git clone https://github.com/nickshouse/cmod.git
+git clone https://github.com/satishbabariya/cmod.git
 cd cmod
 cargo build --release
 
@@ -194,7 +196,7 @@ cmod build && cmod run
 
 Apache-2.0 licensed. Built in public. Contributions welcome.
 
-[GitHub](https://github.com/nickshouse/cmod) | [Examples](https://github.com/nickshouse/cmod/tree/main/examples) | [Documentation](https://github.com/nickshouse/cmod/tree/main/docs) | [Contributing](https://github.com/nickshouse/cmod/blob/main/CONTRIBUTING.md)
+[GitHub](https://github.com/satishbabariya/cmod) | [Examples](https://github.com/satishbabariya/cmod/tree/main/examples) | [Documentation](https://github.com/satishbabariya/cmod/tree/main/docs) | [Contributing](https://github.com/satishbabariya/cmod/blob/main/CONTRIBUTING.md)
 
 ---
 

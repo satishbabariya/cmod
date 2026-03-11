@@ -140,17 +140,17 @@ This isn't about being clever or cutting corners. It's about recognizing that de
 
 ## The Road Ahead
 
-cmod's foundation is solid: 30+ CLI commands, Git-based resolution, mandatory lockfiles, LLVM/Clang build backend, workspace support, and artifact caching — all backed by 750+ tests.
+cmod is feature-complete across all planned phases: 30+ CLI commands, Git-based resolution, mandatory lockfiles, LLVM/Clang build backend, workspace support, local and remote artifact caching, cryptographic signing, LSP server, and plugin sandboxing — all backed by 780+ tests.
 
-What's coming next will make it production-ready for teams of any size:
+Recent additions that make cmod production-ready for teams:
 
-- **Distributed caching** — Share build artifacts across your team
-- **Signature verification** — Cryptographic proof of dependency integrity
-- **Plugin SDK** — Extend cmod for your workflow
-- **LSP integration** — First-class IDE support
+- **IDE extensions** — First-class VS Code extension and CLion/IntelliJ plugin with LSP integration, module graph visualization, dependency trees, and build status
+- **Remote caching** — HTTP-based cache protocol for sharing build artifacts across your team
+- **Distributed builds** — Work-stealing distributed build workers
+- **12+ examples** — From minimal binaries to shared libraries, workspaces, and multi-binary projects
 
-C++ is evolving. Its tooling should evolve with it.
+C++ is evolving. Its tooling has evolved with it.
 
 ---
 
-*cmod is open source under Apache-2.0. We'd love your feedback — [star the repo](https://github.com/nickshouse/cmod), file issues, and help us build the package manager C++ deserves.*
+*cmod is open source under Apache-2.0. We'd love your feedback — [star the repo](https://github.com/satishbabariya/cmod), file issues, and help us build the package manager C++ deserves.*

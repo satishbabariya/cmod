@@ -159,13 +159,14 @@ The key design principle behind cmod's security features is that **security shou
 
 When security is easy, people use it. When it's hard, they skip it. cmod makes it easy.
 
-## What's Coming
+## What's Implemented
 
-cmod's security roadmap includes:
+cmod's security features are now fully implemented (Phase 4 complete):
 
-- **Phase 4: Full signature verification** — Cryptographic proof of dependency integrity with `--locked --verify` mode
-- **Vulnerability database integration** — Automated matching against known CVEs
-- **Policy-as-code** — Define security requirements in `cmod.toml` and enforce them in CI
+- **Full signature verification** — Cryptographic proof of dependency integrity via PGP, SSH, and Sigstore with `--locked --verify` mode
+- **Dependency auditing** — Analyze your dependency tree for known security issues
+- **Policy enforcement** — Define security requirements and enforce them in CI
+- **SBOM generation** — Full dependency inventory for compliance
 
 ## Get Started
 
@@ -182,4 +183,4 @@ cmod build --locked # Reproducible, verified build
 
 ---
 
-*cmod is open source under Apache-2.0. Help us build the most secure C++ build tool — [contribute on GitHub](https://github.com/nickshouse/cmod).*
+*cmod is open source under Apache-2.0. Help us build the most secure C++ build tool — [contribute on GitHub](https://github.com/satishbabariya/cmod).*

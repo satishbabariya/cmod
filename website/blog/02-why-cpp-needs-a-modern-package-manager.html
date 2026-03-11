@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why C++ Needs a Modern Package Manager — cmod Blog</title>
+  <meta name="description" content="The most widely-used systems language has the worst dependency story. Here's why, and what we're doing about it.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--technical">Technical</span>
+        <h1 class="article__title">Why C++ Needs a Modern Package Manager</h1>
+        <p class="article__meta">October 2025 &middot; 9 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p><em>The most widely-used systems language in the world has the worst dependency story. Here's why, and what we're doing about it.</em></p>
+
+        <h2>A Brief History of C++ Dependency Management</h2>
+        <p>In 1998, when the first C++ standard was published, the concept of a "package manager" barely existed. You downloaded tarballs, ran <code>./configure &amp;&amp; make &amp;&amp; make install</code>, and hoped your system's include paths were set up correctly.</p>
+        <p>Nearly three decades later, the core workflow hasn't fundamentally changed.</p>
+
+        <h2>The Three Fundamental Problems</h2>
+
+        <h3>1. Headers Are the Root of All Build Evil</h3>
+        <p>The <code>#include</code> preprocessor directive is textual substitution. When you write <code>#include &lt;vector&gt;</code>, the compiler literally pastes the contents of that file into your translation unit. Every. Single. Time.</p>
+        <ul>
+          <li><strong>Redundant work.</strong> The same header gets parsed thousands of times across a project.</li>
+          <li><strong>Macro pollution.</strong> A macro defined in one header can silently change the meaning of code in another.</li>
+          <li><strong>Fragile ordering.</strong> Include order matters, and getting it wrong produces cryptic errors.</li>
+          <li><strong>No isolation.</strong> There's no module boundary &mdash; everything leaks.</li>
+        </ul>
+        <p>C++20 modules fix all of this. A module is compiled once into a Binary Module Interface (BMI), and consumers import the interface &mdash; not the source text. It's faster, safer, and deterministic.</p>
+
+        <h3>2. There's No Universal Identity for C++ Libraries</h3>
+        <p>In Rust, a crate is identified by its name on crates.io. In Go, a module is identified by its Git URL. In C++, a library is identified by... whatever the person who packaged it decided to call it.</p>
+        <p>Is it <code>fmt</code> or <code>fmtlib</code> or <code>libfmt</code>? This ambiguity creates real problems: version conflicts, namespace collisions, and an ecosystem where the same library exists under different names in different package managers.</p>
+
+        <h3>3. Reproducibility Is an Afterthought</h3>
+        <p>Without mandatory lockfiles, pinned compiler versions, and deterministic dependency resolution, C++ builds are inherently non-reproducible. The same <code>CMakeLists.txt</code> can produce different binaries on different machines.</p>
+
+        <h2>How cmod Addresses Each Problem</h2>
+
+        <h3>Modules as the Unit of Composition</h3>
+        <p>cmod doesn't treat modules as an optional feature bolted onto a header-based system. Modules are the foundation. The full build graph is known before any compilation begins, enabling parallel compilation, correct ordering, and cached BMIs that skip redundant work.</p>
+
+        <h3>Git URLs as Universal Identity</h3>
+        <pre><code>[dependencies]
+"github.com/fmtlib/fmt" = ">=10.0"
+"github.com/nlohmann/json" = "^3.11"</code></pre>
+        <p>There's no ambiguity. No registry to search. No name squatting. Private dependencies work the same way. No vendor lock-in. Forking is trivial.</p>
+
+        <h3>Lockfiles Are Mandatory</h3>
+        <p>Every cmod project has a <code>cmod.lock</code> file that records the exact Git commit hash for every dependency. When you build with <code>--locked</code>, cmod will refuse to proceed if the lockfile doesn't match. No surprises.</p>
+
+        <h2>The Developer Experience Gap</h2>
+        <p><strong>With CMake + Conan:</strong> at least 6 steps, two configuration files, and two different tools to learn.</p>
+        <p><strong>With cmod:</strong></p>
+        <pre><code>cmod init my_project
+cmod add github.com/fmtlib/fmt@10.0
+cmod build</code></pre>
+        <p>Three commands. One configuration file. One tool.</p>
+
+        <h2>Who Is cmod For?</h2>
+        <ul>
+          <li><strong>Systems programmers</strong> who want fast, deterministic builds without fighting their build system.</li>
+          <li><strong>Game engine teams</strong> managing complex dependency graphs with monorepo support.</li>
+          <li><strong>Open-source maintainers</strong> who want to publish C++ libraries without registry accounts.</li>
+          <li><strong>Infrastructure teams</strong> who need reproducible CI/CD pipelines.</li>
+        </ul>
+
+        <h2>The Road Ahead</h2>
+        <p>cmod is feature-complete across all planned phases: 30+ CLI commands, Git-based resolution, mandatory lockfiles, LLVM/Clang build backend, workspace support, local and remote artifact caching, cryptographic signing, LSP server, and plugin sandboxing &mdash; all backed by 780+ tests.</p>
+        <p>Recent additions:</p>
+        <ul>
+          <li><strong>IDE extensions</strong> &mdash; VS Code extension and CLion/IntelliJ plugin with LSP integration, module graph visualization, and build status</li>
+          <li><strong>Remote caching</strong> &mdash; HTTP-based cache protocol for sharing build artifacts across your team</li>
+          <li><strong>Distributed builds</strong> &mdash; Work-stealing distributed build workers</li>
+          <li><strong>12+ examples</strong> &mdash; From minimal binaries to shared libraries, workspaces, and multi-binary projects</li>
+        </ul>
+
+        <p><em>cmod is open source under Apache-2.0. <a href="https://github.com/satishbabariya/cmod">Star the repo</a>, file issues, and help us build the package manager C++ deserves.</em></p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

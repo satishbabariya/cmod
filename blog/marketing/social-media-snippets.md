@@ -50,11 +50,11 @@
 > That's it. No CMakeLists.txt. No conanfile.py. No WORKSPACE.
 
 **Tweet 5 (CTA):**
-> cmod is open source (Apache-2.0), built in Rust, with 750+ tests.
+> cmod is open source (Apache-2.0), built in Rust, with 780+ tests and IDE extensions for VS Code and CLion.
 >
 > Star the repo, try it out, file issues.
 >
-> github.com/nickshouse/cmod
+> github.com/satishbabariya/cmod
 
 ---
 
@@ -119,11 +119,11 @@ Key differentiators:
 - **Supply chain security** — Hash verification, TOFU trust, SBOM generation built in.
 - **Cargo-like simplicity** — `cmod init`, `cmod add`, `cmod build`. Three commands to productivity.
 
-Built in Rust. 750+ tests. 30+ CLI commands. Apache-2.0 licensed.
+Built in Rust. 780+ tests. 30+ CLI commands. VS Code + CLion extensions. Apache-2.0 licensed.
 
 If you work with C++ and care about developer experience, reproducibility, or supply chain security, I'd love your feedback.
 
-github.com/nickshouse/cmod
+github.com/satishbabariya/cmod
 
 #cpp #cplusplus #opensource #devtools #packagemanager #buildsystems
 
@@ -145,7 +145,7 @@ Combined with Git-based dependency management (no central registry), mandatory l
 
 We'd welcome feedback from the C++ community. What's working? What's missing? What would make you consider switching your build system?
 
-github.com/nickshouse/cmod
+github.com/satishbabariya/cmod
 
 ---
 
@@ -165,13 +165,13 @@ We've been working on cmod, a new build tool designed specifically for C++20 mod
 4. **Cargo-like UX** — `cmod init`, `cmod add`, `cmod build`
 5. **Security built-in** — hash verification, TOFU trust, SBOM generation
 
-It's written in Rust, has 750+ tests, and covers 30+ CLI commands. Currently Clang-first (GCC/MSVC planned).
+It's written in Rust, has 780+ tests, 30+ CLI commands, and first-class IDE extensions for VS Code and CLion. Currently Clang-first (GCC/MSVC planned).
 
 We know this space is crowded and opinions are strong. We're not trying to replace CMake for everyone — cmod is specifically for teams that want to use C++20 modules with a modern, integrated workflow.
 
 Would love honest feedback. What's your biggest pain point with current C++ tooling?
 
-GitHub: github.com/nickshouse/cmod
+GitHub: github.com/satishbabariya/cmod
 
 ### r/rust
 
@@ -189,10 +189,13 @@ The Rust implementation is a Cargo workspace with 8 crates:
 - `cmod-cache` — SHA-256 content-addressed cache
 - `cmod-workspace` — monorepo management
 - `cmod-security` — verification + trust
+- `cmod-lsp` — Language Server Protocol server
 
-750+ tests, clean clippy, formatted with rustfmt. The Rust ecosystem made building a complex tool like this remarkably pleasant.
+Plus IDE extensions for VS Code (TypeScript) and CLion (Kotlin) with LSP integration, module graph visualization, and build status.
 
-GitHub: github.com/nickshouse/cmod
+780+ tests, clean clippy, formatted with rustfmt. The Rust ecosystem made building a complex tool like this remarkably pleasant.
+
+GitHub: github.com/satishbabariya/cmod
 
 ---
 
@@ -213,15 +216,13 @@ cmod is a package and build tool for modern C++. The key design decisions:
 
 It's written in Rust, uses clang-scan-deps for module discovery, and includes supply chain security features (hash verification, TOFU trust, SBOM generation).
 
-Current status: 30+ CLI commands, 750+ tests, Phases 0-4 complete, Phase 5 in progress (LSP server, plugin sandboxing, module registry).
-
-What's planned: distributed caching, signature verification, LSP integration, plugin SDK.
+Current status: 30+ CLI commands, 780+ tests, all 6 phases complete. LSP server, plugin sandboxing, module registry, distributed caching, signature verification, and IDE extensions (VS Code + CLion) are all shipped.
 
 I've been frustrated with C++ tooling for years. CMake is powerful but complex. Conan and vcpkg are centralized. None of them understand modules natively. cmod is our attempt to fix this.
 
 Feedback welcome — especially from people who've tried and abandoned other C++ build tools.
 
-github.com/nickshouse/cmod
+github.com/satishbabariya/cmod
 
 ---
 

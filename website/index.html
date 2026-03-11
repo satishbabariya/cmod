@@ -104,7 +104,7 @@
           <div class="stat__label">CLI Commands</div>
         </div>
         <div class="stat">
-          <div class="stat__number text-green">750+</div>
+          <div class="stat__number text-green">780+</div>
           <div class="stat__label">Passing Tests</div>
         </div>
         <div class="stat">
@@ -175,6 +175,22 @@
           </div>
           <h3 class="feature-card__title">Security Built In</h3>
           <p class="feature-card__text">Hash verification, trust-on-first-use, signature checking, SBOM generation, and dependency auditing. Supply chain security from day one.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-card__icon feature-card__icon--purple">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <h3 class="feature-card__title">IDE Integration</h3>
+          <p class="feature-card__text">First-class extensions for VS Code and CLion/IntelliJ. LSP-powered diagnostics, module graph visualization, dependency tree, and build status &mdash; all built in.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-card__icon feature-card__icon--orange">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <h3 class="feature-card__title">Remote Cache</h3>
+          <p class="feature-card__text">HTTP-based remote cache protocol for sharing build artifacts across your team. Push and pull BMIs and object files to eliminate redundant compilation.</p>
         </div>
       </div>
     </div>
@@ -304,6 +320,14 @@
               <td class="check">Native</td>
             </tr>
             <tr>
+              <td>IDE Extensions</td>
+              <td class="check">VS Code + CLion</td>
+              <td class="partial">CMake Tools</td>
+              <td class="cross">No</td>
+              <td class="cross">No</td>
+              <td class="partial">Plugin</td>
+            </tr>
+            <tr>
               <td>Setup Complexity</td>
               <td class="check">Low</td>
               <td class="partial">Medium</td>
@@ -327,7 +351,7 @@
       <div class="section__header">
         <div class="section__label">Architecture</div>
         <h2 class="section__title">Built in Rust. Modular by design.</h2>
-        <p class="section__description">8 focused crates, each with a single responsibility. Clean dependency flow from CLI down to core.</p>
+        <p class="section__description">8 focused crates plus IDE extensions for VS Code and CLion. Clean dependency flow from CLI down to core.</p>
       </div>
 
       <div class="architecture">
@@ -344,10 +368,16 @@
         <div class="arch-layer">
           <div class="arch-box arch-box--purple">cmod-cache</div>
           <div class="arch-box arch-box--purple">cmod-security</div>
+          <div class="arch-box arch-box--purple">cmod-lsp</div>
         </div>
         <div class="arch-arrow">&darr;</div>
         <div class="arch-layer">
           <div class="arch-box arch-box--orange">cmod-core</div>
+        </div>
+        <div class="arch-arrow" style="opacity: 0.5;">&uarr;</div>
+        <div class="arch-layer">
+          <div class="arch-box" style="background: var(--color-bg-secondary); border: 1px solid var(--color-border); color: var(--color-text-secondary);">VS Code Extension</div>
+          <div class="arch-box" style="background: var(--color-bg-secondary); border: 1px solid var(--color-border); color: var(--color-text-secondary);">CLion Plugin</div>
         </div>
       </div>
 
@@ -368,7 +398,7 @@ cmod.toml <span class="code-operator">&rarr;</span> dependency graph <span class
 lockfile <span class="code-operator">&rarr;</span> module DAG <span class="code-operator">&rarr;</span> Clang invocations <span class="code-operator">&rarr;</span> artifacts
 
 <span class="code-comment"># Cache</span>
-SHA-256 key <span class="code-operator">&rarr;</span> local cache <span class="code-operator">&rarr;</span> remote cache (planned)</code></pre>
+SHA-256 key <span class="code-operator">&rarr;</span> local cache <span class="code-operator">&rarr;</span> remote cache (HTTP REST)</code></pre>
         </div>
       </div>
     </div>
@@ -420,11 +450,18 @@ SHA-256 key <span class="code-operator">&rarr;</span> local cache <span class="c
             <span class="roadmap__status roadmap__status--done">Complete</span>
           </div>
           <div class="roadmap__item">
-            <div class="roadmap__dot roadmap__dot--active"></div>
+            <div class="roadmap__dot roadmap__dot--done"></div>
             <div class="roadmap__phase">Phase 5</div>
             <div class="roadmap__title">Ecosystem</div>
             <div class="roadmap__desc">LSP server, plugin sandboxing, module registry, feature resolution, conditional dependencies</div>
-            <span class="roadmap__status roadmap__status--planned">In Progress</span>
+            <span class="roadmap__status roadmap__status--done">Complete</span>
+          </div>
+          <div class="roadmap__item">
+            <div class="roadmap__dot roadmap__dot--active"></div>
+            <div class="roadmap__phase">Phase 6</div>
+            <div class="roadmap__title">IDE &amp; Developer Experience</div>
+            <div class="roadmap__desc">VS Code extension, CLion/IntelliJ plugin, module graph visualization, format/lint-on-save, binary publishing</div>
+            <span class="roadmap__status roadmap__status--done">Complete</span>
           </div>
         </div>
       </div>
@@ -479,6 +516,7 @@ SHA-256 key <span class="code-operator">&rarr;</span> local cache <span class="c
             <h4>Resources</h4>
             <ul>
               <li><a href="https://github.com/satishbabariya/cmod/tree/main/examples" target="_blank" rel="noopener">Examples</a></li>
+              <li><a href="https://github.com/satishbabariya/cmod/tree/main/editors" target="_blank" rel="noopener">Editor Extensions</a></li>
               <li><a href="https://github.com/satishbabariya/cmod/tree/main/docs" target="_blank" rel="noopener">Design Specs</a></li>
               <li><a href="https://github.com/satishbabariya/cmod/tree/main/docs/rfc" target="_blank" rel="noopener">RFCs</a></li>
               <li><a href="https://github.com/satishbabariya/cmod/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a></li>

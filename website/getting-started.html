@@ -108,9 +108,31 @@ cmod fmt               # Format with clang-format
 cmod fmt --check       # Check without modifying</code></pre>
 
         <h2>IDE Integration</h2>
-        <pre><code># Generate compile_commands.json
+        <p>cmod has first-class editor extensions with LSP support, module graph visualization, and build integration:</p>
+
+        <h3>VS Code</h3>
+        <p>Install the <strong>cmod</strong> extension from the VS Code Marketplace (or search "cmod" in Extensions). You get:</p>
+        <ul>
+          <li>LSP-powered diagnostics, completions, and hover info</li>
+          <li>Build/test/run commands with <code>Ctrl+Shift+B</code> / <code>Cmd+Shift+B</code></li>
+          <li>Interactive module graph visualization</li>
+          <li>Dependency tree view and build status</li>
+          <li>C++20 module snippets and format-on-save</li>
+        </ul>
+
+        <h3>CLion / IntelliJ</h3>
+        <p>Install the <strong>cmod</strong> plugin from JetBrains Marketplace (<strong>Settings &gt; Plugins &gt; Marketplace</strong>). You get:</p>
+        <ul>
+          <li>LSP-powered code intelligence</li>
+          <li>Run configurations for build, test, and run</li>
+          <li>Tool window with graph, dependencies, and cache panels</li>
+          <li>Build menu actions and format/lint-on-save</li>
+        </ul>
+
+        <h3>Other Editors</h3>
+        <pre><code># Generate compile_commands.json for any LSP-compatible editor
 cmod compile-commands</code></pre>
-        <p>This enables full code intelligence in any LSP-compatible editor: VS Code, CLion, Neovim, etc.</p>
+        <p>This enables code intelligence in Neovim, Emacs, Sublime Text, and other editors with clangd support.</p>
 
         <h2>Work Offline</h2>
         <pre><code># Build without network access
@@ -159,7 +181,8 @@ cmod tidy --apply        # Remove unused deps</code></pre>
 
         <h2>Next Steps</h2>
         <ul>
-          <li>Browse the <a href="https://github.com/satishbabariya/cmod/tree/main/examples">example projects</a></li>
+          <li>Browse the <a href="https://github.com/satishbabariya/cmod/tree/main/examples">12+ example projects</a> (hello, library, shared-lib, workspace, path-deps, and more)</li>
+          <li>Install the <a href="https://github.com/satishbabariya/cmod/tree/main/editors">VS Code or CLion extension</a> for full IDE integration</li>
           <li>Read the <a href="docs.html">full documentation</a></li>
           <li>Check out the <a href="blog.html">blog</a> for deep-dives</li>
           <li>Run <code>cmod --help</code> for the complete command reference</li>

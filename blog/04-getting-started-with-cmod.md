@@ -11,7 +11,7 @@ The best way to understand cmod is to use it. This guide walks you through creat
 cmod is written in Rust and builds with Cargo:
 
 ```bash
-git clone https://github.com/nickshouse/cmod.git
+git clone https://github.com/satishbabariya/cmod.git
 cd cmod
 cargo build --release
 ```
@@ -238,7 +238,16 @@ cmod audit
 
 ## IDE Integration
 
-Generate `compile_commands.json` for clangd, CLion, VS Code, or any LSP-compatible editor:
+cmod provides first-class editor extensions:
+
+### VS Code
+Install the **cmod** extension from the VS Code Marketplace. You get LSP-powered diagnostics, build/test/run commands, interactive module graph visualization, dependency tree view, C++20 module snippets, and format-on-save.
+
+### CLion / IntelliJ
+Install the **cmod** plugin from JetBrains Marketplace. You get LSP integration, run configurations, a tool window with module graph/dependency tree/cache status, and build menu actions.
+
+### Other Editors
+Generate `compile_commands.json` for clangd, Neovim, Emacs, or any LSP-compatible editor:
 
 ```bash
 cmod compile-commands
@@ -301,10 +310,10 @@ Run `cmod --help` to see all available commands, or `cmod <command> --help` for 
 
 Now that you're up and running, explore:
 
-- The [examples/](https://github.com/nickshouse/cmod/tree/main/examples) directory for real-world project templates
-- The [docs/](https://github.com/nickshouse/cmod/tree/main/docs) directory for design specifications and RFCs
-- The [CONTRIBUTING.md](https://github.com/nickshouse/cmod/blob/main/CONTRIBUTING.md) guide if you want to help build the future of C++ tooling
+- The [examples/](https://github.com/satishbabariya/cmod/tree/main/examples) directory for real-world project templates
+- The [docs/](https://github.com/satishbabariya/cmod/tree/main/docs) directory for design specifications and RFCs
+- The [CONTRIBUTING.md](https://github.com/satishbabariya/cmod/blob/main/CONTRIBUTING.md) guide if you want to help build the future of C++ tooling
 
 ---
 
-*cmod is open source under Apache-2.0. Questions? Issues? Feature requests? We're on [GitHub](https://github.com/nickshouse/cmod).*
+*cmod is open source under Apache-2.0. Questions? Issues? Feature requests? We're on [GitHub](https://github.com/satishbabariya/cmod).*

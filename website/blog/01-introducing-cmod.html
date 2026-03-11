@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Introducing cmod — cmod Blog</title>
+  <meta name="description" content="Introducing cmod: a Cargo-inspired, Git-native package and build tool for modern C++20 modules.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--announcement">Announcement</span>
+        <h1 class="article__title">Introducing cmod</h1>
+        <p class="article__meta">October 2025 &middot; 7 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p><em>C++ has modules now. It deserves a build tool that knows it.</em></p>
+
+        <p>C++ powers the world's most critical software &mdash; operating systems, game engines, databases, compilers, embedded systems. Yet it remains the only major programming language without a standard, unified package manager.</p>
+
+        <p>Rust has Cargo. Go has <code>go mod</code>. Python has pip. JavaScript has npm. C++ has... a fragmented landscape of CMake scripts, Conan recipes, vcpkg manifests, and Bazel BUILD files &mdash; none of which understand C++20 modules natively.</p>
+
+        <p>Today, we're introducing <strong>cmod</strong>: a Cargo-inspired, Git-native package and build tool built from the ground up for modern C++20 modules.</p>
+
+        <h2>The Problem</h2>
+
+        <p>If you've worked on a C++ project of any significant size, you know the pain:</p>
+
+        <ul>
+          <li><strong>No standard package manager.</strong> Every team reinvents dependency management with shell scripts, Git submodules, or third-party tools that require their own ecosystems.</li>
+          <li><strong>Header-based compilation is fundamentally broken.</strong> Textual <code>#include</code> means redundant parsing, macro pollution, and non-deterministic builds. A single header change can trigger a full rebuild.</li>
+          <li><strong>Existing tools don't understand modules.</strong> C++20 introduced modules three years ago, but the tooling ecosystem never caught up. CMake treats modules as an afterthought. Conan and vcpkg are still header-first.</li>
+          <li><strong>Reproducibility is optional.</strong> Without mandatory lockfiles and pinned toolchains, "works on my machine" remains the norm.</li>
+        </ul>
+
+        <h2>What cmod Does Differently</h2>
+
+        <h3>Git Is Your Registry</h3>
+        <p>cmod doesn't require a central package server. Module identity is bound directly to Git URLs:</p>
+        <pre><code>[dependencies]
+"github.com/fmtlib/fmt" = ">=10.0"
+"github.com/nlohmann/json" = "^3.11"</code></pre>
+        <p>Want to publish a C++ module? Push a Git tag. That's it. No accounts to create, no packages to upload, no approval queues. Your repository <em>is</em> your package.</p>
+
+        <h3>Modules Are First-Class</h3>
+        <p>cmod understands C++20 modules, partitions, and Binary Module Interfaces (BMIs) natively. It uses <code>clang-scan-deps</code> to discover module dependencies automatically and builds a full dependency graph before compilation begins.</p>
+        <p>Modules are compiled once into BMIs, enabling genuinely fast incremental builds &mdash; not the "reparse every header" approach that existing tools rely on.</p>
+
+        <h3>Deterministic by Default</h3>
+        <p>Every cmod project has a <code>cmod.lock</code> file that pins exact commit hashes and toolchain versions. This isn't optional. Reproducible builds are a guarantee, not a best practice you hope your team follows.</p>
+        <pre><code>cmod resolve         # Generate/update the lockfile
+cmod build --locked  # Build with exact pinned versions</code></pre>
+
+        <h3>Cargo-Like Simplicity</h3>
+        <p>If you've used Cargo, cmod will feel immediately familiar:</p>
+        <pre><code>cmod init my_project                    # Create a new project
+cmod add github.com/fmtlib/fmt@10.0    # Add a dependency
+cmod build                              # Build
+cmod test                               # Run tests
+cmod run                                # Run the binary</code></pre>
+        <p>No 200-line CMakeLists.txt. No <code>conanfile.py</code> with class inheritance. Just a clean <code>cmod.toml</code> and predictable commands.</p>
+
+        <h2>A Quick Look</h2>
+        <p>Here's what a <code>cmod.toml</code> looks like:</p>
+        <pre><code>[package]
+name = "my_project"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[module]
+name = "com.github.yourname.my_project"
+root = "src/my_project.cppm"
+
+[dependencies]
+"github.com/fmtlib/fmt" = ">=10.0"
+
+[toolchain]
+compiler = "clang"
+std = "c++23"
+
+[build]
+type = "binary"</code></pre>
+        <p>Clean. Readable. No domain-specific language to learn.</p>
+
+        <h2>Architecture</h2>
+        <p>cmod is built in Rust as a modular, layered system:</p>
+        <pre><code>CLI &rarr; Resolver &rarr; Workspace &rarr; Build Orchestrator &rarr; LLVM/Clang &rarr; Cache &rarr; Security</code></pre>
+        <p>Each layer has a focused responsibility:</p>
+        <ul>
+          <li><strong>cmod-resolver</strong> &mdash; Fetches Git repositories, solves semver constraints, generates lockfiles</li>
+          <li><strong>cmod-build</strong> &mdash; Constructs the module DAG, plans compilation order, invokes Clang</li>
+          <li><strong>cmod-cache</strong> &mdash; Content-addressed artifact caching with SHA-256 keys</li>
+          <li><strong>cmod-workspace</strong> &mdash; Monorepo support with unified dependency resolution</li>
+          <li><strong>cmod-security</strong> &mdash; Hash verification, trust-on-first-use, SBOM generation</li>
+          <li><strong>cmod-lsp</strong> &mdash; Language Server Protocol with completion and diagnostics</li>
+        </ul>
+
+        <h2>What's Ready Today</h2>
+        <p>cmod has completed all planned development phases (0&ndash;5):</p>
+        <ul>
+          <li>Full CLI with 30+ commands</li>
+          <li>Git-based dependency resolution with semver solving</li>
+          <li>Mandatory lockfile generation</li>
+          <li>LLVM/Clang build backend with module DAG construction</li>
+          <li>Workspace and monorepo support</li>
+          <li>Local and remote artifact caching (HTTP REST)</li>
+          <li>Distributed build workers with work stealing</li>
+          <li>Cryptographic signing (PGP/SSH/Sigstore), auditing, SBOM generation</li>
+          <li>LSP server, plugin sandboxing, module registry, feature resolution</li>
+          <li><strong>IDE extensions for VS Code and CLion/IntelliJ</strong> with LSP integration, module graph visualization, and build status</li>
+          <li>780+ passing tests across 8 focused crates</li>
+          <li>12+ working example projects</li>
+        </ul>
+
+        <h2>Get Started</h2>
+        <pre><code>git clone https://github.com/satishbabariya/cmod.git
+cd cmod
+cargo build --release
+
+cmod init hello_world
+cd hello_world
+cmod build
+cmod run</code></pre>
+
+        <p>Check out the <a href="https://github.com/satishbabariya/cmod/tree/main/examples">examples/</a> directory for real-world project templates &mdash; from minimal binaries to workspaces with Git dependencies.</p>
+
+        <h2>Why Now?</h2>
+        <p>C++20 modules have been standardized. C++23 and C++26 are pushing the language forward. But the tooling remains stuck in the <code>#include</code> era.</p>
+        <p>cmod is built for the C++ that exists today and the C++ that's coming tomorrow. It treats modules as the fundamental unit of composition, Git as the universal package registry, and developer experience as a first-class concern.</p>
+        <p>C++ is powerful. Its tooling should be too.</p>
+
+        <p><em>cmod is open source under the Apache-2.0 license. Star the repo, file issues, and join the conversation on <a href="https://github.com/satishbabariya/cmod">GitHub</a>.</em></p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

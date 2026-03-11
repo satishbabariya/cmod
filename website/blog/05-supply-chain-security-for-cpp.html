@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Supply Chain Security for C++ — cmod Blog</title>
+  <meta name="description" content="How cmod addresses software supply chain security with hash verification, TOFU trust, mandatory lockfiles, and SBOM generation.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--security">Security</span>
+        <h1 class="article__title">Supply Chain Security for C++</h1>
+        <p class="article__meta">November 2025 &middot; 8 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p><em>In a world of dependency confusion attacks and compromised packages, C++ deserves built-in supply chain security. cmod delivers it.</em></p>
+
+        <h2>The Supply Chain Problem</h2>
+        <p>Software supply chain attacks have exploded in recent years. The C++ ecosystem is particularly vulnerable because most projects download dependencies without verifying hashes or signatures, and there's no standard audit trail.</p>
+        <p>cmod was designed with supply chain security as a first-class concern &mdash; not an afterthought.</p>
+
+        <h2>How cmod Secures Your Build</h2>
+
+        <h3>1. Mandatory Lockfiles</h3>
+        <p>Every cmod project has a <code>cmod.lock</code> file that records the exact Git commit hash for every dependency. When you build with <code>--locked</code>, cmod verifies that every dependency matches its pinned commit exactly.</p>
+        <p>This prevents silent dependency updates, version tag mutations, and resolution inconsistencies.</p>
+
+        <h3>2. Trust-On-First-Use (TOFU)</h3>
+        <p>cmod records the identity of each dependency on first use. On subsequent resolutions, it verifies the identity hasn't changed. This catches repository takeover attacks, URL hijacking, and key rotation without notification.</p>
+
+        <h3>3. Hash Verification</h3>
+        <pre><code>cmod verify</code></pre>
+        <p>Verifies Git commit hashes match the lockfile, source contents haven't been modified, and no unexpected files have been added.</p>
+
+        <h3>4. Signature Verification</h3>
+        <pre><code>cmod verify --signatures</code></pre>
+        <p>Checks that Git tags are signed with a known key, signatures are valid, and signing keys match trusted identities. Supports PGP, SSH, and Sigstore.</p>
+
+        <h3>5. Security Policy Enforcement</h3>
+        <p>Configurable policies define which sources are trusted, verification levels required, and whether unsigned dependencies are permitted. The <code>--untrusted</code> flag makes security trade-offs explicit.</p>
+
+        <h3>6. Dependency Auditing</h3>
+        <pre><code>cmod audit</code></pre>
+        <p>Analyzes your dependency tree for known security issues.</p>
+
+        <h3>7. Software Bill of Materials (SBOM)</h3>
+        <pre><code>cmod sbom --output sbom.json</code></pre>
+        <p>Generates a complete SBOM listing every dependency, its version, source, and verification status. Required by government regulations and compliance frameworks.</p>
+
+        <h2>The Security Pipeline</h2>
+        <pre><code># CI/CD security pipeline
+cmod resolve
+cmod build --locked --release
+cmod verify --signatures
+cmod audit
+cmod sbom --output sbom.json
+cmod test --release</code></pre>
+        <p>Every step is auditable, deterministic, and automated.</p>
+
+        <h2>Comparison with Other Ecosystems</h2>
+        <table style="width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); margin-bottom: var(--space-lg);">
+          <thead>
+            <tr style="border-bottom: 2px solid var(--color-border);">
+              <th style="padding: 8px; text-align: left;">Feature</th>
+              <th style="padding: 8px;">cmod</th>
+              <th style="padding: 8px;">npm</th>
+              <th style="padding: 8px;">Cargo</th>
+              <th style="padding: 8px;">pip</th>
+              <th style="padding: 8px;">Conan</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">Mandatory lockfiles</td><td style="padding: 8px;">Yes</td><td style="padding: 8px;">Yes (v7+)</td><td style="padding: 8px;">Yes</td><td style="padding: 8px;">No</td><td style="padding: 8px;">Optional</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">Hash verification</td><td style="padding: 8px;">Yes</td><td style="padding: 8px;">Yes</td><td style="padding: 8px;">Yes</td><td style="padding: 8px;">Yes</td><td style="padding: 8px;">Partial</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">Signature verification</td><td style="padding: 8px;">Yes</td><td style="padding: 8px;">No</td><td style="padding: 8px;">No</td><td style="padding: 8px;">No</td><td style="padding: 8px;">Partial</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">TOFU trust model</td><td style="padding: 8px;">Yes</td><td style="padding: 8px;">No</td><td style="padding: 8px;">No</td><td style="padding: 8px;">No</td><td style="padding: 8px;">No</td></tr>
+            <tr style="border-bottom: 1px solid var(--color-border);"><td style="padding: 8px;">SBOM generation</td><td style="padding: 8px;">Built-in</td><td style="padding: 8px;">Third-party</td><td style="padding: 8px;">Third-party</td><td style="padding: 8px;">Third-party</td><td style="padding: 8px;">No</td></tr>
+            <tr><td style="padding: 8px;">Audit command</td><td style="padding: 8px;">Built-in</td><td style="padding: 8px;">Built-in</td><td style="padding: 8px;">cargo-audit</td><td style="padding: 8px;">pip-audit</td><td style="padding: 8px;">No</td></tr>
+          </tbody>
+        </table>
+
+        <h2>Security Without Friction</h2>
+        <p>The key design principle: <strong>security should be the default, not an opt-in.</strong> Lockfiles are mandatory. Verification is built into the standard workflow. Opting out requires an explicit flag.</p>
+        <p>When security is easy, people use it. When it's hard, they skip it. cmod makes it easy.</p>
+
+        <h2>What's Implemented</h2>
+        <p>cmod's security features are fully implemented (Phase 4 complete):</p>
+        <ul>
+          <li><strong>Full signature verification</strong> &mdash; PGP, SSH, and Sigstore with <code>--locked --verify</code> mode</li>
+          <li><strong>Dependency auditing</strong> &mdash; Analyze dependencies for known security issues</li>
+          <li><strong>Policy enforcement</strong> &mdash; Define and enforce security requirements in CI</li>
+          <li><strong>SBOM generation</strong> &mdash; Full dependency inventory for compliance</li>
+        </ul>
+
+        <h2>Get Started</h2>
+        <pre><code>cmod init my_secure_project
+cd my_secure_project
+cmod add github.com/fmtlib/fmt@10.0
+cmod resolve
+cmod verify
+cmod build --locked</code></pre>
+
+        <p><em>cmod is open source under Apache-2.0. Help us build the most secure C++ build tool &mdash; <a href="https://github.com/satishbabariya/cmod">contribute on GitHub</a>.</em></p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

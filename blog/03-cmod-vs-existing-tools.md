@@ -113,9 +113,13 @@ cmod includes `cmod compile-commands` for IDE integration and plans for `cmod em
 We believe in being honest about limitations:
 
 - **Compiler support is LLVM/Clang-first.** GCC and MSVC support is planned but not implemented.
-- **No pre-built binary distribution.** cmod builds from source. Distributed caching (Phase 3) will address team-wide build sharing.
 - **Smaller ecosystem.** cmod is new. It doesn't have Conan's package catalog or CMake's 20-year ecosystem.
-- **No IDE project generation.** cmod generates `compile_commands.json` but doesn't create Visual Studio solutions or Xcode projects.
+
+### What cmod now does that it didn't before
+
+- **Remote caching** — HTTP-based protocol for sharing build artifacts across teams (Phase 3, complete)
+- **IDE extensions** — First-class VS Code extension and CLion/IntelliJ plugin with LSP integration, module graph visualization, and build status
+- **Distributed builds** — Work-stealing distributed build workers for large codebases
 
 ## The cmod Sweet Spot
 
@@ -133,7 +137,7 @@ cmod is the right choice when:
 The best way to evaluate a tool is to use it:
 
 ```bash
-git clone https://github.com/nickshouse/cmod.git
+git clone https://github.com/satishbabariya/cmod.git
 cd cmod && cargo build --release
 
 cmod init my_project
@@ -147,4 +151,4 @@ Compare that to your current workflow and decide for yourself.
 
 ---
 
-*cmod is open source under Apache-2.0. We welcome feedback, comparisons, and honest critique — [join the conversation on GitHub](https://github.com/nickshouse/cmod).*
+*cmod is open source under Apache-2.0. We welcome feedback, comparisons, and honest critique — [join the conversation on GitHub](https://github.com/satishbabariya/cmod).*

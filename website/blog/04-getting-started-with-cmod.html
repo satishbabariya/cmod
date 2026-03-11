@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started with cmod — cmod Blog</title>
+  <meta name="description" content="A hands-on tutorial: install cmod, create your first project, add dependencies, build, test, and explore your dependency graph.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="../index.html" class="nav__logo">c<span>mod</span></a>
+      <ul class="nav__links">
+        <li><a href="../blog.html">Blog</a></li>
+        <li><a href="../docs.html">Docs</a></li>
+        <li><a href="https://github.com/satishbabariya/cmod" class="nav__cta" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <button class="nav__hamburger" aria-label="Toggle navigation">&#9776;</button>
+    </div>
+  </nav>
+
+  <article class="article">
+    <div class="container container--narrow">
+      <div class="article__header">
+        <span class="article__tag blog-card__tag--tutorial">Tutorial</span>
+        <h1 class="article__title">Getting Started with cmod</h1>
+        <p class="article__meta">November 2025 &middot; 6 min read</p>
+      </div>
+
+      <div class="article__body">
+        <p><em>A hands-on guide to creating, building, and managing C++20 projects with cmod.</em></p>
+
+        <h2>Install cmod</h2>
+        <pre><code>git clone https://github.com/satishbabariya/cmod.git
+cd cmod
+cargo build --release
+export PATH="$PWD/target/release:$PATH"</code></pre>
+        <p><strong>Requirements:</strong> Rust 1.70+, Clang 18+ with <code>clang-scan-deps</code>, Git 2.25+</p>
+
+        <h2>Create Your First Project</h2>
+        <pre><code>cmod init hello
+cd hello</code></pre>
+        <p>This creates:</p>
+        <pre><code>hello/
+&#9500;&#9472;&#9472; cmod.toml
+&#9492;&#9472;&#9472; src/
+    &#9492;&#9472;&#9472; main.cpp</code></pre>
+        <p>Build and run:</p>
+        <pre><code>cmod build
+cmod run</code></pre>
+
+        <h2>Add a Dependency</h2>
+        <pre><code>cmod add github.com/fmtlib/fmt@10.0
+cmod resolve
+cmod build</code></pre>
+        <p>cmod clones the repository, resolves the best matching version from Git tags, records the exact commit hash in <code>cmod.lock</code>, and compiles it.</p>
+
+        <h2>The Lockfile</h2>
+        <p>Check <code>cmod.lock</code> into version control. In CI, always use:</p>
+        <pre><code>cmod build --locked</code></pre>
+
+        <h2>Dependency Graph</h2>
+        <pre><code>cmod deps --tree
+cmod graph --format dot > deps.dot
+cmod deps --why fmt</code></pre>
+
+        <h2>Run Tests</h2>
+        <pre><code>cmod test
+cmod test --release</code></pre>
+
+        <h2>Build Profiles</h2>
+        <pre><code>cmod build              # Debug (default)
+cmod build --release    # Optimized release
+cmod build --jobs 8     # Parallel compilation</code></pre>
+
+        <h2>Set Up a Workspace</h2>
+        <pre><code>cmod init my_workspace --workspace
+cd my_workspace
+cmod workspace add core
+cmod workspace add app
+cmod build</code></pre>
+
+        <h2>Cache Management</h2>
+        <pre><code>cmod cache status
+cmod cache clean
+cmod cache gc</code></pre>
+
+        <h2>Verify &amp; Audit</h2>
+        <pre><code>cmod verify
+cmod audit
+cmod sbom --output sbom.json</code></pre>
+
+        <h2>IDE Integration</h2>
+        <p>cmod provides first-class editor extensions:</p>
+        <ul>
+          <li><strong>VS Code</strong> &mdash; Install the <strong>cmod</strong> extension from the Marketplace for LSP diagnostics, build commands, module graph visualization, dependency tree, and C++20 snippets.</li>
+          <li><strong>CLion / IntelliJ</strong> &mdash; Install the <strong>cmod</strong> plugin from JetBrains Marketplace for LSP integration, run configurations, and tool window panels.</li>
+          <li><strong>Other editors</strong> &mdash; Run <code>cmod compile-commands</code> to generate <code>compile_commands.json</code> for any LSP-compatible editor.</li>
+        </ul>
+
+        <h2>Common Workflows</h2>
+
+        <h3>Daily development</h3>
+        <pre><code>cmod build
+cmod test
+cmod run -- arg1</code></pre>
+
+        <h3>CI pipeline</h3>
+        <pre><code>cmod build --locked --release
+cmod test --release
+cmod verify
+cmod sbom --output sbom.json</code></pre>
+
+        <h3>Updating dependencies</h3>
+        <pre><code>cmod update
+cmod update --patch
+cmod tidy --apply</code></pre>
+
+        <h2>What's Next</h2>
+        <ul>
+          <li>Browse the <a href="https://github.com/satishbabariya/cmod/tree/main/examples">12+ example projects</a></li>
+          <li>Install the <a href="https://github.com/satishbabariya/cmod/tree/main/editors">VS Code or CLion extension</a></li>
+          <li>Read the <a href="../docs.html">full documentation</a></li>
+          <li>Run <code>cmod --help</code> for the complete command reference</li>
+        </ul>
+
+        <p><em>cmod is open source under Apache-2.0. Questions? <a href="https://github.com/satishbabariya/cmod">We're on GitHub</a>.</em></p>
+      </div>
+    </div>
+  </article>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__bottom">
+        <span>&copy; cmod &middot; Apache-2.0</span>
+        <span><a href="../index.html">Home</a> &middot; <a href="../blog.html">Blog</a> &middot; <a href="../docs.html">Docs</a></span>
+      </div>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>
