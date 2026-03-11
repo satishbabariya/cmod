@@ -390,6 +390,12 @@ enum Commands {
     /// Export a CMakeLists.txt for interop with CMake-based projects
     EmitCmake,
 
+    /// Migrate from another build system to cmod
+    Migrate {
+        #[command(subcommand)]
+        from: MigrateFrom,
+    },
+
     /// Start the LSP server for IDE integration
     Lsp,
 }
@@ -430,6 +436,16 @@ enum PluginAction {
         /// Arguments to pass to the plugin (key=value pairs)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MigrateFrom {
+    /// Migrate from a CMake project
+    Cmake {
+        /// Path to directory containing CMakeLists.txt
+        #[arg(long)]
+        path: Option<std::path::PathBuf>,
     },
 }
 
@@ -634,6 +650,9 @@ fn main() {
         },
         Commands::Plan => commands::build::plan(&shell, cli.target.clone()),
         Commands::EmitCmake => commands::build::emit_cmake(&shell),
+        Commands::Migrate { from } => match from {
+            MigrateFrom::Cmake { path } => commands::migrate::run(path, &shell),
+        },
         Commands::Lsp => {
             let mut server = cmod_lsp::server::LspServer::new();
             server.run()

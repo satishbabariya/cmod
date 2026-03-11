@@ -1705,3 +1705,98 @@ fn test_full_build_run_test_workflow() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn test_migrate_cmake_command() {
+    let tmp = TempDir::new().unwrap();
+
+    // Create a CMakeLists.txt to migrate from.
+    std::fs::write(
+        tmp.path().join("CMakeLists.txt"),
+        "\
+cmake_minimum_required(VERSION 3.20)
+project(myapp VERSION 1.0.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(fmt REQUIRED)
+
+add_executable(myapp
+    src/main.cpp
+    src/utils.cpp
+)
+
+target_link_libraries(myapp PRIVATE fmt::fmt)
+target_compile_options(myapp PRIVATE -Wall)
+target_include_directories(myapp PRIVATE include)
+",
+    )
+    .unwrap();
+
+    // Create src/ with a dummy source file so scan works.
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(tmp.path().join("src/main.cpp"), "int main() {}\n").unwrap();
+
+    let output = run_cmod(tmp.path(), &["migrate", "cmake"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "migrate cmake failed: {}", stderr);
+
+    // Verify cmod.toml was created.
+    let cmod_toml = tmp.path().join("cmod.toml");
+    assert!(cmod_toml.exists(), "cmod.toml should be generated");
+
+    let content = std::fs::read_to_string(&cmod_toml).unwrap();
+    assert!(
+        content.contains("name = \"myapp\""),
+        "should contain project name"
+    );
+    assert!(
+        content.contains("version = \"1.0.0\""),
+        "should contain version"
+    );
+    assert!(
+        content.contains("cxx_standard = \"20\""),
+        "should contain C++ standard"
+    );
+    assert!(
+        content.contains("find_package(fmt)"),
+        "should contain TODO for find_package"
+    );
+}
+
+#[test]
+fn test_migrate_cmake_no_cmakelists() {
+    let tmp = TempDir::new().unwrap();
+
+    let output = run_cmod(tmp.path(), &["migrate", "cmake"]);
+    assert!(
+        !output.status.success(),
+        "should fail without CMakeLists.txt"
+    );
+}
+
+#[test]
+fn test_migrate_cmake_existing_cmod_toml() {
+    let tmp = TempDir::new().unwrap();
+
+    std::fs::write(
+        tmp.path().join("CMakeLists.txt"),
+        "project(test VERSION 0.1.0)\n",
+    )
+    .unwrap();
+
+    // Pre-create cmod.toml.
+    std::fs::write(
+        tmp.path().join("cmod.toml"),
+        "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let output = run_cmod(tmp.path(), &["migrate", "cmake"]);
+    assert!(
+        !output.status.success(),
+        "should fail when cmod.toml already exists"
+    );
+}
