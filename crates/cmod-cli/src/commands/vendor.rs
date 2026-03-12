@@ -5,6 +5,38 @@ use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
 use cmod_core::shell::Shell;
 
+/// Validate that a package name is safe for use in file paths.
+///
+/// Rejects path traversal sequences and other dangerous patterns.
+fn is_safe_package_name(name: &str) -> bool {
+    // Reject empty strings
+    if name.is_empty() {
+        return false;
+    }
+
+    // Reject path traversal sequences
+    if name.contains("..") {
+        return false;
+    }
+
+    // Reject path separators
+    if name.contains('/') || name.contains('\\') {
+        return false;
+    }
+
+    // Reject strings that start with a dot (hidden files, traversal)
+    if name.starts_with('.') {
+        return false;
+    }
+
+    // Reject null bytes and other control characters
+    if name.chars().any(|c| c.is_control()) {
+        return false;
+    }
+
+    true
+}
+
 /// Run `cmod vendor` — vendor dependencies for offline builds.
 pub fn run(sync: bool, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
@@ -26,6 +58,16 @@ pub fn run(sync: bool, shell: &Shell) -> Result<(), CmodError> {
     let mut vendored = 0;
 
     for pkg in &lockfile.packages {
+        // Validate package name to prevent path traversal attacks
+        if !is_safe_package_name(&pkg.name) {
+            return Err(CmodError::SecurityViolation {
+                reason: format!(
+                    "unsafe package name in lockfile: '{}' contains path traversal or invalid characters",
+                    pkg.name
+                ),
+            });
+        }
+
         let pkg_dir = vendor_dir.join(&pkg.name);
 
         if pkg_dir.exists() && !sync {
@@ -71,6 +113,13 @@ fn vendor_git_dep(
     dest: &Path,
     shell: &Shell,
 ) -> Result<(), CmodError> {
+    // Package name is already validated in run(), but double-check for safety
+    if !is_safe_package_name(&pkg.name) {
+        return Err(CmodError::SecurityViolation {
+            reason: format!("unsafe package name: '{}'", pkg.name),
+        });
+    }
+
     let deps_dir = config.deps_dir();
     let checkout = deps_dir.join(&pkg.name);
 
