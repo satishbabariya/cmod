@@ -5,11 +5,79 @@ use semver::Version;
 
 use cmod_core::error::CmodError;
 
+/// Allowed Git URL schemes for security.
+const ALLOWED_SCHEMES: &[&str] = &["https://", "ssh://git@", "git@"];
+
+/// Environment variable to allow file:// URLs (for testing only).
+const ALLOW_LOCAL_GIT_URLS_ENV: &str = "CMOD_ALLOW_LOCAL_GIT_URLS";
+
+/// Validate that a Git URL uses a secure protocol.
+///
+/// Only allows https://, ssh://git@, and git@ (SSH shorthand) schemes.
+/// Rejects file://, git://, http://, and local paths which could be
+/// used for unauthorized access or data exfiltration.
+///
+/// For testing purposes, set `CMOD_ALLOW_LOCAL_GIT_URLS=1` to allow file:// URLs.
+fn validate_git_url(url: &str) -> Result<(), CmodError> {
+    // Check for allowed schemes
+    let has_allowed_scheme = ALLOWED_SCHEMES.iter().any(|scheme| url.starts_with(scheme));
+
+    if has_allowed_scheme {
+        return Ok(());
+    }
+
+    // Allow file:// URLs if explicitly enabled (for testing)
+    if (url.starts_with("file://") || url.starts_with('/') || url.starts_with('.'))
+        && std::env::var(ALLOW_LOCAL_GIT_URLS_ENV).is_ok_and(|v| v == "1" || v == "true")
+    {
+        return Ok(());
+    }
+
+    // Provide specific error message for common insecure protocols
+    if url.starts_with("http://") {
+        return Err(CmodError::SecurityViolation {
+            reason: format!(
+                "insecure Git protocol: '{}' uses unencrypted HTTP. Use HTTPS instead.",
+                url
+            ),
+        });
+    }
+    if url.starts_with("git://") {
+        return Err(CmodError::SecurityViolation {
+            reason: format!(
+                "insecure Git protocol: '{}' uses unencrypted git://. Use HTTPS or SSH instead.",
+                url
+            ),
+        });
+    }
+    if url.starts_with("file://") || url.starts_with('/') || url.starts_with('.') {
+        return Err(CmodError::SecurityViolation {
+            reason: format!(
+                "local file paths not allowed as Git URLs: '{}'. Use a remote repository URL.",
+                url
+            ),
+        });
+    }
+
+    Err(CmodError::SecurityViolation {
+        reason: format!(
+            "unsupported Git URL scheme: '{}'. Only HTTPS and SSH URLs are allowed.",
+            url
+        ),
+    })
+}
+
 /// Fetch or open a Git repository.
 ///
 /// If `dest` exists and is already a Git repo, fetches updates.
 /// Otherwise, clones from `url`.
+///
+/// Only allows secure protocols (HTTPS, SSH). Rejects file://, git://,
+/// http://, and local paths for security.
 pub fn fetch_repo(url: &str, dest: &Path) -> Result<Repository, CmodError> {
+    // Validate URL before any network operations
+    validate_git_url(url)?;
+
     if dest.exists() && dest.join(".git").exists() {
         // Open and fetch
         let repo = Repository::open(dest).map_err(|e| CmodError::GitError {
@@ -30,7 +98,12 @@ pub fn fetch_repo(url: &str, dest: &Path) -> Result<Repository, CmodError> {
 }
 
 /// Clone a repository.
+///
+/// Validates URL security before cloning. Only HTTPS and SSH are allowed.
 fn clone_repo(url: &str, dest: &Path) -> Result<Repository, CmodError> {
+    // Validate URL (double-check even if called from fetch_repo)
+    validate_git_url(url)?;
+
     std::fs::create_dir_all(dest)?;
     Repository::clone(url, dest).map_err(|e| CmodError::GitRepoNotFound {
         url: format!("{}: {}", url, e),
