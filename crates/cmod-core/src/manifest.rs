@@ -634,14 +634,33 @@ impl Manifest {
     /// Get the effective set of dependencies for a given target triple.
     ///
     /// Merges the base `[dependencies]` with any matching `[target.'cfg(...)'.dependencies]`.
+    ///
+    /// Optimized to avoid unnecessary cloning when there are no target-specific deps.
     pub fn effective_dependencies(&self, target_triple: &str) -> BTreeMap<String, Dependency> {
+        // Fast path: if no target-specific deps, return a reference-based view
+        // or clone only once at the end
+        if self.target.is_empty() {
+            return self.dependencies.clone();
+        }
+
+        // Check if any target configs match before cloning
+        let matching_targets: Vec<_> = self
+            .target
+            .iter()
+            .filter(|(cfg_expr, _)| eval_cfg(cfg_expr, target_triple))
+            .collect();
+
+        if matching_targets.is_empty() {
+            // No matching targets, just return base deps
+            return self.dependencies.clone();
+        }
+
+        // Only clone if we actually need to merge
         let mut deps = self.dependencies.clone();
 
-        for (cfg_expr, spec) in &self.target {
-            if eval_cfg(cfg_expr, target_triple) {
-                for (name, dep) in &spec.dependencies {
-                    deps.entry(name.clone()).or_insert_with(|| dep.clone());
-                }
+        for (_, spec) in matching_targets {
+            for (name, dep) in &spec.dependencies {
+                deps.entry(name.clone()).or_insert_with(|| dep.clone());
             }
         }
 
