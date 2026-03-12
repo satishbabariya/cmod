@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use cmod_core::error::CmodError;
@@ -12,7 +12,8 @@ struct CmakeInfo {
     project_name: Option<String>,
     project_version: Option<String>,
     /// Versions discovered via set(<NAME>_VERSION ...) or set(PROJECT_VERSION ...).
-    set_versions: Vec<String>,
+    /// Keyed by the exact CMake variable name (e.g. "SPDLOG_VERSION", "PROJECT_VERSION").
+    set_versions: HashMap<String, String>,
     cxx_standard: Option<String>,
     /// All C++ standards seen (for picking the highest).
     all_cxx_standards: Vec<String>,
@@ -147,7 +148,16 @@ fn build_manifest(info: &CmakeInfo, name: &str) -> Manifest {
     let version = info
         .project_version
         .clone()
-        .or_else(|| info.set_versions.first().cloned())
+        .or_else(|| {
+            // Fall back to PROJECT_VERSION or <NAME>_VERSION from set() calls.
+            info.set_versions
+                .get("PROJECT_VERSION")
+                .or_else(|| {
+                    let upper_name = name.to_uppercase().replace('-', "_");
+                    info.set_versions.get(&format!("{}_VERSION", upper_name))
+                })
+                .cloned()
+        })
         .unwrap_or_else(|| "0.1.0".to_string());
     manifest.package = Package {
         name: name.to_string(),
@@ -171,11 +181,13 @@ fn build_manifest(info: &CmakeInfo, name: &str) -> Manifest {
         root: PathBuf::from(module_root),
     });
 
-    // Toolchain.
-    let cxx_std = info
+    // Toolchain — only set cxx_standard when the value is a concrete number.
+    let resolved_std = info
         .cxx_standard
-        .clone()
-        .unwrap_or_else(|| "20".to_string());
+        .as_deref()
+        .filter(|s| !s.contains("${") && s.chars().all(|c| c.is_ascii_digit()))
+        .map(|s| s.to_string());
+    let cxx_std = resolved_std.unwrap_or_else(|| "20".to_string());
     manifest.toolchain = Some(Toolchain {
         compiler: Some(Compiler::Clang),
         version: None,
@@ -304,9 +316,21 @@ fn parse_cmake(content: &str) -> CmakeInfo {
 
     // Post-process: resolve version if it contains ${VAR}.
     if let Some(ref ver) = info.project_version {
-        if ver.contains("${") {
-            // Try to use a version from set(<NAME>_VERSION ...).
-            info.project_version = info.set_versions.first().cloned();
+        if let Some(var_name) = extract_variable_name(ver) {
+            // Look up the exact variable referenced, then fall back to
+            // PROJECT_VERSION or <PROJECT_NAME>_VERSION.
+            let resolved = info
+                .set_versions
+                .get(&var_name)
+                .or_else(|| info.set_versions.get("PROJECT_VERSION"))
+                .or_else(|| {
+                    info.project_name.as_ref().and_then(|pn| {
+                        info.set_versions
+                            .get(&format!("{}_VERSION", pn.to_uppercase()))
+                    })
+                })
+                .cloned();
+            info.project_version = resolved;
         }
     }
 
@@ -425,8 +449,18 @@ fn extract_commands(content: &str) -> Vec<(String, String)> {
                         in_quotes = !in_quotes;
                         args.push(c);
                     } else if in_quotes {
-                        // Inside quotes, parentheses are literal.
+                        // Inside quotes, parentheses and # are literal.
                         args.push(c);
+                    } else if c == '#' {
+                        // Inline comment: skip until end of line.
+                        // Replace with a space so adjacent tokens stay separated.
+                        args.push(' ');
+                        while let Some(&nc) = chars.peek() {
+                            if nc == '\n' {
+                                break;
+                            }
+                            chars.next();
+                        }
                     } else if c == '(' {
                         depth += 1;
                         args.push(c);
@@ -519,17 +553,19 @@ fn parse_set(args: &str, info: &mut CmakeInfo) {
 
     if var_name == "CMAKE_CXX_STANDARD" {
         // Track all standards seen; post-processing picks the highest.
-        if !value.contains("${") {
+        // Only store concrete numeric values — skip unresolved variables.
+        if !value.contains("${") && value.chars().all(|c| c.is_ascii_digit()) {
             info.all_cxx_standards.push(value.clone());
+            info.cxx_standard = Some(value.clone());
         }
-        info.cxx_standard = Some(value.clone());
     }
 
     // Capture set(<NAME>_VERSION ...) and set(PROJECT_VERSION ...) as version hints.
     if (var_name.ends_with("_VERSION") || var_name == "PROJECT_VERSION") && !value.contains("${") {
         // Only capture version-like values (digits and dots).
         if value.chars().all(|c| c.is_ascii_digit() || c == '.') && value.contains('.') {
-            info.set_versions.push(value.clone());
+            info.set_versions
+                .insert(var_name.clone(), value.clone());
         }
     }
 }
@@ -568,11 +604,10 @@ fn parse_add_library(args: &str, info: &mut CmakeInfo) {
         return;
     }
 
-    info.has_library = true;
-
     // Determine library type.
     let mut bt = BuildType::StaticLib;
     let mut source_start = 1;
+    let mut is_concrete = true;
 
     let lib_keywords = [
         "STATIC",
@@ -599,7 +634,9 @@ fn parse_add_library(args: &str, info: &mut CmakeInfo) {
                 source_start = i + 1;
             }
             "INTERFACE" | "IMPORTED" | "ALIAS" => {
-                source_start = i + 1;
+                // Non-concrete targets — skip source collection entirely.
+                is_concrete = false;
+                break;
             }
             _ => {
                 if !lib_keywords.contains(&token.as_str()) {
@@ -611,6 +648,11 @@ fn parse_add_library(args: &str, info: &mut CmakeInfo) {
         }
     }
 
+    if !is_concrete {
+        return;
+    }
+
+    info.has_library = true;
     info.build_type = Some(bt);
 
     for token in &tokens[source_start..] {
@@ -685,6 +727,15 @@ fn parse_target_compile_features(args: &str, info: &mut CmakeInfo) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Extract the variable name from a CMake `${VAR}` reference.
+/// Returns `None` if the string does not contain a `${...}` pattern.
+fn extract_variable_name(s: &str) -> Option<String> {
+    let start = s.find("${")?;
+    let rest = &s[start + 2..];
+    let end = rest.find('}')?;
+    Some(rest[..end].to_string())
+}
 
 fn dir_name(path: &Path) -> String {
     path.file_name()
@@ -1031,7 +1082,10 @@ project(FMT CXX)
         let info = parse_cmake(cmake);
         assert_eq!(info.project_name.as_deref(), Some("FMT"));
         // No VERSION in project(), but set_versions should be captured.
-        assert_eq!(info.set_versions, vec!["10.2.1"]);
+        assert_eq!(
+            info.set_versions.get("FMT_VERSION").map(|s| s.as_str()),
+            Some("10.2.1")
+        );
     }
 
     #[test]
@@ -1111,5 +1165,119 @@ set(CMAKE_CXX_STANDARD 20)
         assert_eq!(tokens[0], "myapp");
         assert_eq!(tokens[1], "path with spaces/main.cpp");
         assert_eq!(tokens[2], "src/utils.cpp");
+    }
+
+    #[test]
+    fn test_unresolved_cxx_standard_skipped() {
+        let cmake = "set(CMAKE_CXX_STANDARD ${MY_STD})";
+        let info = parse_cmake(cmake);
+        // Unresolved variable should not be stored.
+        assert_eq!(info.cxx_standard, None);
+        assert!(info.all_cxx_standards.is_empty());
+    }
+
+    #[test]
+    fn test_set_version_resolved_by_variable_name() {
+        // project() references ${SPDLOG_VERSION}, so look up SPDLOG_VERSION specifically.
+        let cmake = "\
+set(OTHER_VERSION 9.9.9)
+set(SPDLOG_VERSION 1.14.1)
+project(spdlog VERSION ${SPDLOG_VERSION})
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.project_version.as_deref(), Some("1.14.1"));
+    }
+
+    #[test]
+    fn test_set_version_falls_back_to_project_name_version() {
+        // No VERSION in project(), fall back to <NAME>_VERSION from set().
+        let cmake = "\
+set(FMT_VERSION 10.2.1)
+project(FMT CXX)
+";
+        let info = parse_cmake(cmake);
+        let manifest = build_manifest(&info, info.project_name.as_deref().unwrap());
+        assert_eq!(manifest.package.version, "10.2.1");
+    }
+
+    #[test]
+    fn test_alias_library_not_concrete() {
+        let cmake = "add_library(spdlog::spdlog ALIAS spdlog)";
+        let info = parse_cmake(cmake);
+        assert!(!info.has_library, "ALIAS should not count as a concrete library");
+        assert_eq!(info.build_type, None);
+    }
+
+    #[test]
+    fn test_imported_library_not_concrete() {
+        let cmake = "add_library(ext IMPORTED)";
+        let info = parse_cmake(cmake);
+        assert!(!info.has_library, "IMPORTED should not count as a concrete library");
+    }
+
+    #[test]
+    fn test_interface_library_not_concrete() {
+        let cmake = "add_library(header_only INTERFACE)";
+        let info = parse_cmake(cmake);
+        assert!(!info.has_library, "INTERFACE should not count as a concrete library");
+    }
+
+    #[test]
+    fn test_concrete_library_still_detected() {
+        let cmake = "\
+add_library(mylib STATIC src/lib.cpp)
+add_library(mylib::mylib ALIAS mylib)
+add_library(header_only INTERFACE)
+";
+        let info = parse_cmake(cmake);
+        assert!(info.has_library, "concrete STATIC library should be detected");
+        assert_eq!(info.build_type, Some(BuildType::StaticLib));
+        assert_eq!(info.sources, vec!["src/lib.cpp"]);
+    }
+
+    #[test]
+    fn test_inline_comment_in_add_executable() {
+        let cmake = "\
+add_executable(myapp
+    src/main.cpp
+    # old.cpp
+    src/utils.cpp
+)
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.build_type, Some(BuildType::Binary));
+        assert_eq!(
+            info.sources,
+            vec!["src/main.cpp", "src/utils.cpp"],
+            "commented-out source should not appear"
+        );
+    }
+
+    #[test]
+    fn test_inline_comment_with_hash_in_quotes_preserved() {
+        let cmake = r#"
+set(MY_VAR "value # not a comment")
+add_executable(myapp src/main.cpp)
+"#;
+        let info = parse_cmake(cmake);
+        // Should still parse add_executable correctly.
+        assert_eq!(info.sources, vec!["src/main.cpp"]);
+    }
+
+    #[test]
+    fn test_folly_set_then_project_variable() {
+        // Folly pattern: set(PACKAGE_NAME "folly") then project(${PACKAGE_NAME} ...)
+        // We can't resolve arbitrary set() variables, but the version should not crash.
+        let cmake = "\
+set(PACKAGE_NAME \"folly\")
+set(PACKAGE_VERSION \"2024.01.01.00\")
+project(${PACKAGE_NAME} CXX C ASM)
+add_library(folly SHARED src/lib.cpp)
+";
+        let info = parse_cmake(cmake);
+        // project_name will be the literal "${PACKAGE_NAME}" — that's expected.
+        // has_library should be true from the concrete add_library.
+        assert!(info.has_library);
+        assert_eq!(info.build_type, Some(BuildType::SharedLib));
     }
 }
