@@ -2,8 +2,8 @@
 /// Module interface for local.with_deps
 ///
 /// Demonstrates importing external Git dependencies:
-///   - fmt (from github.com/satishbabariya/fmt-cmod)
-///   - nlohmann.json (from github.com/satishbabariya/json-cmod)
+///   - fmt (from github.com/cmod-ecosystem/fmt)
+///   - nlohmann.json (from github.com/cmod-ecosystem/json)
 
 module;
 

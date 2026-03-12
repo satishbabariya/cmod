@@ -46,5 +46,5 @@ cmod build
 
 The `with-deps`, `workspace`, and `nested-deps` examples depend on:
 
-- [satishbabariya/fmt-cmod](https://github.com/satishbabariya/fmt-cmod) — C++20 module wrapper for {fmt}
-- [satishbabariya/json-cmod](https://github.com/satishbabariya/json-cmod) — C++20 module wrapper for nlohmann/json
+- [cmod-ecosystem/fmt](https://github.com/cmod-ecosystem/fmt/tree/cmod-support) — {fmt} with cmod support
+- [cmod-ecosystem/json](https://github.com/cmod-ecosystem/json/tree/cmod-support) — nlohmann/json with cmod support

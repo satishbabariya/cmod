@@ -12,6 +12,7 @@ pub mod fmt;
 pub mod graph;
 pub mod init;
 pub mod lint;
+pub mod migrate;
 pub mod plugin;
 #[allow(dead_code)]
 pub mod plugin_sandbox;

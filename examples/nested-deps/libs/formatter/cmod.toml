@@ -11,7 +11,7 @@ name = "local.formatter"
 root = "src/lib.cppm"
 
 [dependencies]
-"github.com/satishbabariya/fmt-cmod" = "^0.1"
+"github.com/cmod-ecosystem/fmt" = { version = "^0.1", branch = "cmod-support" }
 
 [toolchain]
 compiler = "clang"
