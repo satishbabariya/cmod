@@ -1,0 +1,41 @@
+[package]
+name = "CLI11"
+version = "0.1.0"
+edition = "2023"
+authors = []
+
+[module]
+name = "com.github.cmod_ecosystem.CLI11"
+root = "src/lib.cppm"
+
+[dependencies]
+
+[dev-dependencies]
+
+[build-dependencies]
+
+[features]
+
+[compat]
+cpp = ">=11"
+platforms = []
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "11"
+
+[build]
+type = "binary"
+parallel = true
+incremental = true
+include_dirs = []
+extra_flags = []
+sources = []
+exclude = []
+
+[target]
+
+# ==========================================================
+# TODO: Manual dependency mapping needed
+# ==========================================================
+# find_package(Doxygen) -> add Git URL to [dependencies]

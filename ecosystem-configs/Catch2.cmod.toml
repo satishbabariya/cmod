@@ -1,0 +1,41 @@
+[package]
+name = "Catch2"
+version = "3.13.0"
+edition = "2023"
+authors = []
+
+[module]
+name = "com.github.cmod_ecosystem.Catch2"
+root = "src/lib.cppm"
+
+[dependencies]
+
+[dev-dependencies]
+
+[build-dependencies]
+
+[features]
+
+[compat]
+cpp = ">=20"
+platforms = []
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "binary"
+parallel = true
+incremental = true
+include_dirs = []
+extra_flags = []
+sources = []
+exclude = []
+
+[target]
+
+# ==========================================================
+# TODO: Manual dependency mapping needed
+# ==========================================================
+# find_package(Python3) -> add Git URL to [dependencies]

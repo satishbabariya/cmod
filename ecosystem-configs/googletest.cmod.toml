@@ -1,0 +1,44 @@
+[package]
+name = "googletest"
+version = "1.16.0"
+edition = "2023"
+authors = []
+
+[module]
+name = "com.github.cmod_ecosystem.googletest"
+root = "src/lib.cppm"
+
+[dependencies]
+"github.com/cmod-ecosystem/abseil-cpp" = "*"
+
+[dev-dependencies]
+
+[build-dependencies]
+
+[features]
+
+[compat]
+cpp = ">=20"
+platforms = []
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "binary"
+parallel = true
+incremental = true
+include_dirs = []
+extra_flags = []
+sources = []
+exclude = []
+
+[target]
+
+# ==========================================================
+# TODO: Manual dependency mapping needed
+# ==========================================================
+# find_package(absl) -> add Git URL to [dependencies]
+#   e.g. "github.com/abseil/abseil-cpp" = "^1.0"
+# find_package(re2) -> add Git URL to [dependencies]

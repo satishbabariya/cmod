@@ -1,0 +1,43 @@
+[package]
+name = "absl"
+version = "0.1.0"
+edition = "2023"
+authors = []
+
+[module]
+name = "com.github.cmod_ecosystem.abseil_cpp"
+root = "src/lib.cppm"
+
+[dependencies]
+
+[dev-dependencies]
+
+[build-dependencies]
+
+[features]
+
+[compat]
+cpp = ">=20"
+platforms = []
+
+[toolchain]
+compiler = "clang"
+cxx_standard = "20"
+
+[build]
+type = "static-lib"
+parallel = true
+incremental = true
+include_dirs = []
+extra_flags = []
+sources = []
+exclude = []
+
+[target]
+
+# ==========================================================
+# TODO: Manual dependency mapping needed
+# ==========================================================
+# find_package(Threads) -> add Git URL to [dependencies]
+# find_package(GTest) -> add Git URL to [dependencies]
+#   e.g. "github.com/google/googletest" = "^1.0"
