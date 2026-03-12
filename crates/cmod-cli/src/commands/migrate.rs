@@ -564,8 +564,7 @@ fn parse_set(args: &str, info: &mut CmakeInfo) {
     if (var_name.ends_with("_VERSION") || var_name == "PROJECT_VERSION") && !value.contains("${") {
         // Only capture version-like values (digits and dots).
         if value.chars().all(|c| c.is_ascii_digit() || c == '.') && value.contains('.') {
-            info.set_versions
-                .insert(var_name.clone(), value.clone());
+            info.set_versions.insert(var_name.clone(), value.clone());
         }
     }
 }
@@ -1204,7 +1203,10 @@ project(FMT CXX)
     fn test_alias_library_not_concrete() {
         let cmake = "add_library(spdlog::spdlog ALIAS spdlog)";
         let info = parse_cmake(cmake);
-        assert!(!info.has_library, "ALIAS should not count as a concrete library");
+        assert!(
+            !info.has_library,
+            "ALIAS should not count as a concrete library"
+        );
         assert_eq!(info.build_type, None);
     }
 
@@ -1212,14 +1214,20 @@ project(FMT CXX)
     fn test_imported_library_not_concrete() {
         let cmake = "add_library(ext IMPORTED)";
         let info = parse_cmake(cmake);
-        assert!(!info.has_library, "IMPORTED should not count as a concrete library");
+        assert!(
+            !info.has_library,
+            "IMPORTED should not count as a concrete library"
+        );
     }
 
     #[test]
     fn test_interface_library_not_concrete() {
         let cmake = "add_library(header_only INTERFACE)";
         let info = parse_cmake(cmake);
-        assert!(!info.has_library, "INTERFACE should not count as a concrete library");
+        assert!(
+            !info.has_library,
+            "INTERFACE should not count as a concrete library"
+        );
     }
 
     #[test]
@@ -1230,7 +1238,10 @@ add_library(mylib::mylib ALIAS mylib)
 add_library(header_only INTERFACE)
 ";
         let info = parse_cmake(cmake);
-        assert!(info.has_library, "concrete STATIC library should be detected");
+        assert!(
+            info.has_library,
+            "concrete STATIC library should be detected"
+        );
         assert_eq!(info.build_type, Some(BuildType::StaticLib));
         assert_eq!(info.sources, vec!["src/lib.cpp"]);
     }
