@@ -26,7 +26,7 @@ compiler = "clang"
 cxx_standard = "20"
 
 [build]
-type = "binary"
+type = "static-lib"
 parallel = true
 incremental = true
 include_dirs = []

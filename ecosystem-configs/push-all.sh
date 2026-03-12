@@ -40,11 +40,15 @@ for repo in "${!BRANCHES[@]}"; do
   cd "$repo"
   cp "$config_file" cmod.toml
   git add cmod.toml
-  git commit -m "Add cmod.toml for cmod package manager integration
+  if ! git diff --staged --quiet --exit-code cmod.toml; then
+    git commit -m "Add cmod.toml for cmod package manager integration
 
 Generated via \`cmod migrate cmake\` from existing CMakeLists.txt.
 Enables this library to be used as a cmod dependency."
-  git push origin "$branch"
+    git push origin "$branch"
+  else
+    echo "SKIP $repo: no changes to commit"
+  fi
   cd "$WORK_DIR"
   rm -rf "$repo"
   echo

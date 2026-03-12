@@ -9,9 +9,9 @@ name = "com.github.cmod_ecosystem.folly"
 root = "src/lib.cppm"
 
 [dependencies]
-"github.com/cmod-ecosystem/googletest" = "*"
 
 [dev-dependencies]
+"github.com/cmod-ecosystem/googletest" = "*"
 
 [build-dependencies]
 

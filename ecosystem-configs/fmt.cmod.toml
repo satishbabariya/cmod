@@ -29,7 +29,7 @@ type = "static-lib"
 parallel = true
 incremental = true
 include_dirs = []
-extra_flags = ["-fmodules-ts"]
+extra_flags = []
 sources = []
 exclude = []
 

@@ -40,6 +40,4 @@ exclude = []
 # TODO: Manual dependency mapping needed
 # ==========================================================
 # find_package(Threads) -> add Git URL to [dependencies]
-# find_package(fmt) -> add Git URL to [dependencies]
-#   e.g. "github.com/fmtlib/fmt" = "^1.0"
 # Linked libraries: Threads::Threads, Threads::Threads, fmt::fmt-header-only, fmt::fmt-header-only, fmt::fmt, fmt::fmt, log, log
