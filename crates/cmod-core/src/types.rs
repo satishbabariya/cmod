@@ -44,7 +44,50 @@ impl ModuleId {
             .collect::<Vec<&str>>()
             .join(".");
 
+        // Validate that the module ID is safe for use in paths
+        if !Self::is_safe_path_component(&module_name) {
+            return None;
+        }
+
         Some(ModuleId(module_name))
+    }
+
+    /// Check if a string is safe to use as a path component.
+    ///
+    /// Rejects path traversal sequences and other dangerous patterns.
+    pub fn is_safe_path_component(s: &str) -> bool {
+        // Reject empty strings
+        if s.is_empty() {
+            return false;
+        }
+
+        // Reject path traversal sequences
+        if s.contains("..") || s.contains('/') || s.contains('\\') {
+            return false;
+        }
+
+        // Reject strings that start or end with dots (hidden files, traversal)
+        if s.starts_with('.') || s.ends_with('.') {
+            return false;
+        }
+
+        // Reject null bytes and other control characters
+        if s.chars().any(|c| c.is_control()) {
+            return false;
+        }
+
+        true
+    }
+
+    /// Validate that this module ID is safe for use in file paths.
+    pub fn is_safe_for_path(&self) -> bool {
+        // Each segment (separated by '.') must be safe
+        self.0.split('.').all(|segment| {
+            !segment.is_empty()
+                && !segment.contains('/')
+                && !segment.contains('\\')
+                && !segment.chars().any(|c| c.is_control())
+        })
     }
 
     /// Check whether this module ID uses a reserved prefix (std.*, stdx.*).
