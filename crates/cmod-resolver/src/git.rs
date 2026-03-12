@@ -194,8 +194,11 @@ pub fn resolve_commit(repo: &Repository, rev: &str) -> Result<Oid, CmodError> {
 }
 
 /// Get the short hash (first 8 chars) of an OID.
+///
+/// Uses safe string slicing to avoid panics on malformed OIDs.
 pub fn short_hash(oid: &Oid) -> String {
-    oid.to_string()[..8].to_string()
+    let full = oid.to_string();
+    full.chars().take(8).collect()
 }
 
 /// Get the date of a commit as YYYYMMDD.
