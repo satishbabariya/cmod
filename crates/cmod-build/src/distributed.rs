@@ -230,7 +230,79 @@ impl WorkerPool {
         Ok(available)
     }
 
+    /// Select the best worker for a task and atomically reserve a slot.
+    ///
+    /// This combines worker selection and slot reservation into a single atomic
+    /// operation to avoid race conditions where multiple threads could select
+    /// the same worker and oversubscribe it.
+    ///
+    /// Returns the worker ID if a slot was successfully reserved, None otherwise.
+    pub fn select_and_reserve_worker(&self, _task: &RemoteTask) -> Option<String> {
+        let mut workers = self.workers.lock().ok()?;
+
+        // Find available workers
+        let available_indices: Vec<usize> = workers
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| w.status == WorkerStatus::Ready || w.status == WorkerStatus::Busy)
+            .filter(|(_, w)| w.active_jobs < w.max_jobs)
+            .map(|(i, _)| i)
+            .collect();
+
+        if available_indices.is_empty() {
+            return None;
+        }
+
+        let selected_idx = match self.strategy {
+            SchedulerStrategy::LeastLoaded => {
+                *available_indices
+                    .iter()
+                    .min_by_key(|&&i| workers[i].active_jobs)?
+            }
+            SchedulerStrategy::RoundRobin => {
+                let mut idx = self.round_robin_idx.lock().ok()?;
+                let selected = available_indices[*idx % available_indices.len()];
+                *idx = (*idx + 1) % available_indices.len();
+                selected
+            }
+            SchedulerStrategy::TargetAffinity => {
+                let target_map = self.worker_target_map.lock().ok()?;
+                let task_target = &_task.working_dir;
+
+                // First: find a worker that previously handled the same target
+                let affinity_match = available_indices
+                    .iter()
+                    .filter(|&&i| target_map.get(&workers[i].id).is_some_and(|t| t == task_target))
+                    .min_by_key(|&&i| workers[i].active_jobs)
+                    .copied();
+
+                if let Some(idx) = affinity_match {
+                    idx
+                } else {
+                    // Fallback: least-loaded worker
+                    *available_indices
+                        .iter()
+                        .min_by_key(|&&i| workers[i].active_jobs)?
+                }
+            }
+        };
+
+        // Atomically reserve the slot while still holding the lock
+        let worker = &mut workers[selected_idx];
+        worker.active_jobs += 1;
+        if worker.active_jobs >= worker.max_jobs {
+            worker.status = WorkerStatus::Full;
+        } else {
+            worker.status = WorkerStatus::Busy;
+        }
+
+        Some(worker.id.clone())
+    }
+
     /// Select the best worker for a task based on the scheduling strategy.
+    ///
+    /// DEPRECATED: Use `select_and_reserve_worker` instead to avoid race conditions.
+    /// This method is kept for backward compatibility but callers should migrate.
     pub fn select_worker(&self, _task: &RemoteTask) -> Option<String> {
         let workers = self.workers.lock().ok()?;
 
@@ -283,7 +355,15 @@ impl WorkerPool {
     ///
     /// Uses exponential backoff (1s, 2s, 4s) for up to `max_retries` attempts.
     /// On permanent failure after all retries, returns the last error.
-    pub fn submit_task(&self, worker_id: &str, task: RemoteTask) -> Result<(), CmodError> {
+    ///
+    /// Note: If slot was pre-reserved via `select_and_reserve_worker`, set
+    /// `slot_already_reserved` to true to avoid double-counting.
+    pub fn submit_task_with_reservation(
+        &self,
+        worker_id: &str,
+        task: RemoteTask,
+        slot_already_reserved: bool,
+    ) -> Result<(), CmodError> {
         let task_id = task.task_id.clone();
 
         // Extract the endpoint while holding the workers lock briefly.
@@ -300,12 +380,10 @@ impl WorkerPool {
         };
 
         // Retry with exponential backoff.
-        // Reserve the worker slot *before* the network call so concurrent
-        // submitters cannot oversubscribe a worker.
         let mut last_error = None;
         for attempt in 0..self.max_retries {
-            // --- Reserve the slot (pre-call) ---
-            {
+            // --- Reserve the slot (pre-call) if not already reserved ---
+            if !slot_already_reserved || attempt > 0 {
                 let mut workers = self
                     .workers
                     .lock()
@@ -322,8 +400,6 @@ impl WorkerPool {
 
             match self.send_task(&endpoint, &task) {
                 Ok(result) => {
-                    // Slot already reserved — commit the rest of the bookkeeping.
-
                     // Store the result so collect_result() can return it.
                     {
                         let mut results = self
@@ -378,32 +454,46 @@ impl WorkerPool {
         Err(last_error.unwrap_or_else(|| CmodError::Other("task submission failed".to_string())))
     }
 
-    /// Collect a completed task result from a worker.
+    /// Submit a task to a worker with retry on transient failures.
+    ///
+    /// Uses exponential backoff (1s, 2s, 4s) for up to `max_retries` attempts.
+    /// On permanent failure after all retries, returns the last error.
+    ///
+    /// Note: This method reserves slots internally. For atomic select+reserve,
+    /// use `select_and_reserve_worker` followed by `submit_task_with_reservation`.
+    pub fn submit_task(&self, worker_id: &str, task: RemoteTask) -> Result<(), CmodError> {
+        self.submit_task_with_reservation(worker_id, task, false)
+    }
+
+    /// Collect a completed task result from a worker atomically.
     ///
     /// Removes the result from the map **and** releases the originating
     /// worker's slot (decrements `active_jobs`, transitions status away
     /// from `Full` when appropriate).
+    ///
+    /// This operation is atomic - all three maps (results, task_workers, workers)
+    /// are locked in sequence to prevent race conditions.
     pub fn collect_result(&self, task_id: &str) -> Option<RemoteTaskResult> {
-        let result = {
-            let mut results = self.results.lock().ok()?;
-            results.remove(task_id)?
-        };
+        // Lock all resources in a consistent order to prevent deadlocks
+        // Order: results -> task_workers -> workers
+        let mut results = self.results.lock().ok()?;
+        let mut task_workers = self.task_workers.lock().ok()?;
+        let mut workers = self.workers.lock().ok()?;
 
-        // Look up which worker owned this task and release its slot.
-        let worker_id = {
-            let mut tw = self.task_workers.lock().ok()?;
-            tw.remove(task_id)
-        };
+        // Remove result - if not present, early return
+        let result = results.remove(task_id)?;
 
+        // Look up and remove which worker owned this task
+        let worker_id = task_workers.remove(task_id);
+
+        // Release the worker slot if we found the worker mapping
         if let Some(worker_id) = worker_id {
-            if let Ok(mut workers) = self.workers.lock() {
-                if let Some(worker) = workers.iter_mut().find(|w| w.id == worker_id) {
-                    worker.active_jobs = worker.active_jobs.saturating_sub(1);
-                    if worker.active_jobs == 0 {
-                        worker.status = WorkerStatus::Ready;
-                    } else if worker.active_jobs < worker.max_jobs {
-                        worker.status = WorkerStatus::Busy;
-                    }
+            if let Some(worker) = workers.iter_mut().find(|w| w.id == worker_id) {
+                worker.active_jobs = worker.active_jobs.saturating_sub(1);
+                if worker.active_jobs == 0 {
+                    worker.status = WorkerStatus::Ready;
+                } else if worker.active_jobs < worker.max_jobs {
+                    worker.status = WorkerStatus::Busy;
                 }
             }
         }
@@ -411,33 +501,32 @@ impl WorkerPool {
         Some(result)
     }
 
-    /// Non-blocking poll for any completed task result.
+    /// Non-blocking poll for any completed task result atomically.
     ///
     /// Returns `Some((task_id, result))` if a result is available, `None` otherwise.
     /// This allows the scheduler to dispatch more work while waiting for results.
+    ///
+    /// This operation is atomic - all three maps are locked together.
     pub fn try_collect_result(&self) -> Option<(String, RemoteTaskResult)> {
-        let (task_id, result) = {
-            let mut results = self.results.lock().ok()?;
-            let task_id = results.keys().next()?.clone();
-            let result = results.remove(&task_id)?;
-            (task_id, result)
-        };
+        // Lock all resources in a consistent order to prevent deadlocks
+        let mut results = self.results.lock().ok()?;
+        let mut task_workers = self.task_workers.lock().ok()?;
+        let mut workers = self.workers.lock().ok()?;
+
+        // Get any available result
+        let task_id = results.keys().next()?.clone();
+        let result = results.remove(&task_id)?;
 
         // Release the worker slot
-        let worker_id = {
-            let mut tw = self.task_workers.lock().ok()?;
-            tw.remove(&task_id)
-        };
+        let worker_id = task_workers.remove(&task_id);
 
         if let Some(worker_id) = worker_id {
-            if let Ok(mut workers) = self.workers.lock() {
-                if let Some(worker) = workers.iter_mut().find(|w| w.id == worker_id) {
-                    worker.active_jobs = worker.active_jobs.saturating_sub(1);
-                    if worker.active_jobs == 0 {
-                        worker.status = WorkerStatus::Ready;
-                    } else if worker.active_jobs < worker.max_jobs {
-                        worker.status = WorkerStatus::Busy;
-                    }
+            if let Some(worker) = workers.iter_mut().find(|w| w.id == worker_id) {
+                worker.active_jobs = worker.active_jobs.saturating_sub(1);
+                if worker.active_jobs == 0 {
+                    worker.status = WorkerStatus::Ready;
+                } else if worker.active_jobs < worker.max_jobs {
+                    worker.status = WorkerStatus::Busy;
                 }
             }
         }
