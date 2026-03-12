@@ -2,10 +2,10 @@ version = 1
 integrity = "sha256:5fdd169060de0826ea91acc34af4ff3faef0ca88842b43fa1cc58fef3ea1e4b7"
 
 [[package]]
-name = "github.com/satishbabariya/fmt-cmod"
+name = "github.com/cmod-ecosystem/fmt"
 version = "0.1.1"
 source = "git"
-repo = "https://github.com/satishbabariya/fmt-cmod"
+repo = "https://github.com/cmod-ecosystem/fmt"
 commit = "9befbe6c75335d8f3e4c8efec7f01908527ffea9"
 hash = "sha256:1e08a7f5d86f087e455f547dc9b0edce887ce1cc9cdb4fbfe305de0980bcb688"
 deps = []
@@ -17,10 +17,10 @@ compiler = "clang"
 [package.targets]
 
 [[package]]
-name = "github.com/satishbabariya/json-cmod"
+name = "github.com/cmod-ecosystem/json"
 version = "0.0.0-20260302-35dfc45f"
 source = "git"
-repo = "https://github.com/satishbabariya/json-cmod"
+repo = "https://github.com/cmod-ecosystem/json"
 commit = "35dfc45fe87d20598cc47f33f7bd54642d9e3cf5"
 hash = "sha256:ab112e6b7670ed648717c0ed78e3aaab579a5644559e157c250451723d7d0325"
 deps = []

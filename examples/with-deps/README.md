@@ -24,8 +24,8 @@ with-deps/
 
 | Dependency | Git URL | Constraint | Module name |
 |---|---|---|---|
-| fmt-cmod | `github.com/satishbabariya/fmt-cmod` | `^0.1` | `fmt` |
-| json-cmod | `github.com/satishbabariya/json-cmod` | `^0.1` (branch: develop) | `nlohmann.json` |
+| fmt | `github.com/cmod-ecosystem/fmt` | `^0.1` (branch: cmod-support) | `fmt` |
+| json | `github.com/cmod-ecosystem/json` | `^0.1` (branch: cmod-support) | `nlohmann.json` |
 
 ## Usage
 

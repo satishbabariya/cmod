@@ -177,7 +177,7 @@ After adding a dependency, import its module by name:
 ```toml
 # cmod.toml
 [dependencies]
-"github.com/satishbabariya/fmt-cmod" = "^0.1"
+"github.com/cmod-ecosystem/fmt" = { version = "^0.1", branch = "cmod-support" }
 ```
 
 ```cpp

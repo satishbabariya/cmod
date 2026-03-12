@@ -190,8 +190,8 @@ name = "local.with_deps"
 root = "src/lib.cppm"
 
 [dependencies]
-"github.com/satishbabariya/fmt-cmod" = "^0.1"
-"github.com/satishbabariya/json-cmod" = { version = "^0.1", branch = "develop" }
+"github.com/cmod-ecosystem/fmt" = { version = "^0.1", branch = "cmod-support" }
+"github.com/cmod-ecosystem/json" = { version = "^0.1", branch = "cmod-support" }
 
 [toolchain]
 compiler = "clang"

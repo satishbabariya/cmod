@@ -155,10 +155,10 @@ cmod uses Git URLs as package identifiers. There is no central registry — depe
 
 ```bash
 # Add a dependency with a version constraint
-cmod add "github.com/satishbabariya/fmt-cmod@^0.1"
+cmod add "github.com/cmod-ecosystem/fmt@^0.1" --branch cmod-support
 
 # Add a dependency pinned to a branch
-cmod add "github.com/satishbabariya/json-cmod" --branch develop
+cmod add "github.com/cmod-ecosystem/json" --branch cmod-support
 ```
 
 After adding dependencies, resolve and lock them:

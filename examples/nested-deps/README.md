@@ -1,6 +1,6 @@
 # nested-deps
 
-Example where the main project has a path dependency (`formatter`), and that path dependency itself has a git dependency (`fmt-cmod`).
+Example where the main project has a path dependency (`formatter`), and that path dependency itself has a git dependency (`fmt`).
 
 ## Structure
 
@@ -12,7 +12,7 @@ nested-deps/
 │   └── main.cpp
 └── libs/
     └── formatter/
-        ├── cmod.toml                # depends on fmt-cmod via git
+        ├── cmod.toml                # depends on fmt via git
         ├── cmod.lock                # locks the git dependency
         └── src/
             └── lib.cppm             # formatting utilities
@@ -33,5 +33,5 @@ cmod run
 
 - Path dependencies can have their own `cmod.lock` with git dependencies
 - cmod loads the path dep's lockfile and builds its git deps transitively
-- The dependency chain: `nested-deps` → (path) `formatter` → (git) `fmt-cmod`
+- The dependency chain: `nested-deps` → (path) `formatter` → (git) `fmt`
 - This pattern is common in monorepos where internal libraries wrap external ones
