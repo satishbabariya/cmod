@@ -11,8 +11,14 @@ use cmod_core::types::{BuildType, Compiler};
 struct CmakeInfo {
     project_name: Option<String>,
     project_version: Option<String>,
+    /// Versions discovered via set(<NAME>_VERSION ...) or set(PROJECT_VERSION ...).
+    set_versions: Vec<String>,
     cxx_standard: Option<String>,
+    /// All C++ standards seen (for picking the highest).
+    all_cxx_standards: Vec<String>,
     build_type: Option<BuildType>,
+    /// Whether an add_library was seen (takes priority over add_executable).
+    has_library: bool,
     sources: Vec<String>,
     include_dirs: Vec<String>,
     extra_flags: Vec<String>,
@@ -138,12 +144,14 @@ fn build_manifest(info: &CmakeInfo, name: &str) -> Manifest {
     let mut manifest = default_manifest(name);
 
     // Package.
+    let version = info
+        .project_version
+        .clone()
+        .or_else(|| info.set_versions.first().cloned())
+        .unwrap_or_else(|| "0.1.0".to_string());
     manifest.package = Package {
         name: name.to_string(),
-        version: info
-            .project_version
-            .clone()
-            .unwrap_or_else(|| "0.1.0".to_string()),
+        version,
         edition: Some("2023".to_string()),
         description: None,
         authors: vec![],
@@ -294,6 +302,40 @@ fn parse_cmake(content: &str) -> CmakeInfo {
         }
     }
 
+    // Post-process: resolve version if it contains ${VAR}.
+    if let Some(ref ver) = info.project_version {
+        if ver.contains("${") {
+            // Try to use a version from set(<NAME>_VERSION ...).
+            info.project_version = info.set_versions.first().cloned();
+        }
+    }
+
+    // Post-process: pick the highest C++ standard seen.
+    if !info.all_cxx_standards.is_empty() {
+        let best = info
+            .all_cxx_standards
+            .iter()
+            .filter_map(|s| s.parse::<u32>().ok())
+            .max();
+        if let Some(best_std) = best {
+            info.cxx_standard = Some(best_std.to_string());
+        }
+    }
+
+    // Post-process: if a library was seen, prefer library build type.
+    // Many projects have both add_library (the actual product) and add_executable (examples/tests).
+    if info.has_library && info.build_type == Some(BuildType::Binary) {
+        info.build_type = Some(BuildType::StaticLib);
+    }
+
+    // Post-process: filter out MSVC-style flags (/flag) since cmod targets Clang,
+    // and flags containing unresolved CMake variables (${...}).
+    info.extra_flags
+        .retain(|f| !f.starts_with('/') && !f.contains("${"));
+
+    // Same for include_dirs — filter unresolved variables.
+    info.include_dirs.retain(|d| !d.contains("${"));
+
     info
 }
 
@@ -376,9 +418,16 @@ fn extract_commands(content: &str) -> Vec<(String, String)> {
                 chars.next(); // consume '('
                 let mut depth = 1;
                 let mut args = String::new();
+                let mut in_quotes = false;
                 while let Some(&c) = chars.peek() {
                     chars.next();
-                    if c == '(' {
+                    if c == '"' {
+                        in_quotes = !in_quotes;
+                        args.push(c);
+                    } else if in_quotes {
+                        // Inside quotes, parentheses are literal.
+                        args.push(c);
+                    } else if c == '(' {
                         depth += 1;
                         args.push(c);
                     } else if c == ')' {
@@ -465,8 +514,23 @@ fn parse_set(args: &str, info: &mut CmakeInfo) {
         return;
     }
 
-    if tokens[0].as_str() == "CMAKE_CXX_STANDARD" {
-        info.cxx_standard = Some(tokens[1].clone());
+    let var_name = &tokens[0];
+    let value = &tokens[1];
+
+    if var_name == "CMAKE_CXX_STANDARD" {
+        // Track all standards seen; post-processing picks the highest.
+        if !value.contains("${") {
+            info.all_cxx_standards.push(value.clone());
+        }
+        info.cxx_standard = Some(value.clone());
+    }
+
+    // Capture set(<NAME>_VERSION ...) and set(PROJECT_VERSION ...) as version hints.
+    if (var_name.ends_with("_VERSION") || var_name == "PROJECT_VERSION") && !value.contains("${") {
+        // Only capture version-like values (digits and dots).
+        if value.chars().all(|c| c.is_ascii_digit() || c == '.') && value.contains('.') {
+            info.set_versions.push(value.clone());
+        }
     }
 }
 
@@ -503,6 +567,8 @@ fn parse_add_library(args: &str, info: &mut CmakeInfo) {
     if tokens.is_empty() {
         return;
     }
+
+    info.has_library = true;
 
     // Determine library type.
     let mut bt = BuildType::StaticLib;
@@ -610,6 +676,7 @@ fn parse_target_compile_features(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
     for token in &tokens {
         if let Some(stripped) = token.strip_prefix("cxx_std_") {
+            info.all_cxx_standards.push(stripped.to_string());
             info.cxx_standard = Some(stripped.to_string());
         }
     }
@@ -908,6 +975,133 @@ add_executable(hello src/main.cpp)
         assert!(toml_str.contains("name = \"hello\""));
         assert!(toml_str.contains("version = \"0.1.0\""));
         assert!(toml_str.contains("cxx_standard = \"20\""));
+    }
+
+    #[test]
+    fn test_parse_cmake_version_from_set_variable() {
+        // When project() uses ${VAR}, fall back to set(<NAME>_VERSION ...).
+        let cmake = "\
+set(SPDLOG_VERSION 1.14.1)
+project(spdlog VERSION ${SPDLOG_VERSION})
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.project_version.as_deref(), Some("1.14.1"));
+    }
+
+    #[test]
+    fn test_parse_cmake_highest_cxx_standard_wins() {
+        // When multiple standards are set (e.g., fallback branches), pick the highest.
+        let cmake = "\
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 11)
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.cxx_standard.as_deref(), Some("20"));
+    }
+
+    #[test]
+    fn test_parse_cmake_library_preferred_over_executable() {
+        // Library projects often have both add_library and add_executable (for examples).
+        let cmake = "\
+add_library(mylib STATIC src/lib.cpp)
+add_executable(example src/example.cpp)
+";
+        let info = parse_cmake(cmake);
+        // add_library should take precedence.
+        assert!(info.has_library);
+        assert_eq!(info.build_type, Some(BuildType::StaticLib));
+    }
+
+    #[test]
+    fn test_parse_cmake_msvc_flags_filtered() {
+        let cmake = "\
+target_compile_options(myapp PRIVATE -Wall /W4 /EHsc -Wextra /Zc:preprocessor)
+";
+        let info = parse_cmake(cmake);
+        // MSVC-style /flags should be filtered out.
+        assert_eq!(info.extra_flags, vec!["-Wall", "-Wextra"]);
+    }
+
+    #[test]
+    fn test_parse_cmake_project_version_set_pattern() {
+        let cmake = "\
+set(FMT_VERSION 10.2.1)
+project(FMT CXX)
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.project_name.as_deref(), Some("FMT"));
+        // No VERSION in project(), but set_versions should be captured.
+        assert_eq!(info.set_versions, vec!["10.2.1"]);
+    }
+
+    #[test]
+    fn test_parse_cmake_spdlog_like() {
+        // Simulates spdlog's pattern: library with variable sources, ALIAS, INTERFACE.
+        let cmake = "\
+find_package(Threads REQUIRED)
+add_library(spdlog SHARED ${SPDLOG_SRCS} ${SPDLOG_ALL_HEADERS})
+add_library(spdlog STATIC ${SPDLOG_SRCS} ${SPDLOG_ALL_HEADERS})
+add_library(spdlog::spdlog ALIAS spdlog)
+add_library(spdlog_header_only INTERFACE)
+";
+        let info = parse_cmake(cmake);
+        assert!(info.has_library, "should detect library");
+        assert_ne!(
+            info.build_type,
+            Some(BuildType::Binary),
+            "should not be binary"
+        );
+    }
+
+    #[test]
+    fn test_parse_cmake_quoted_parens_in_option() {
+        // Parentheses inside quoted strings must not break command extraction.
+        let cmake = r#"
+option(FOO "Build something (requires bar)" OFF)
+add_library(mylib STATIC src/lib.cpp)
+find_package(fmt REQUIRED)
+"#;
+        let info = parse_cmake(cmake);
+        assert!(
+            info.has_library,
+            "add_library should be found after quoted parens"
+        );
+        assert_eq!(info.build_type, Some(BuildType::StaticLib));
+        assert_eq!(info.packages, vec!["fmt"]);
+    }
+
+    #[test]
+    fn test_parse_cmake_spdlog_realistic() {
+        // Realistic spdlog-like pattern with if/else/endif wrapping libraries.
+        let cmake = "\
+project(spdlog VERSION ${SPDLOG_VERSION} LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 11)
+find_package(Threads REQUIRED)
+if(SPDLOG_BUILD_SHARED OR BUILD_SHARED_LIBS)
+    if(WIN32)
+        configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.rc.in ${CMAKE_CURRENT_BINARY_DIR}/version.rc @ONLY)
+    endif()
+    add_library(spdlog SHARED ${SPDLOG_SRCS} ${SPDLOG_ALL_HEADERS})
+    target_compile_definitions(spdlog PUBLIC SPDLOG_SHARED_LIB)
+else()
+    add_library(spdlog STATIC ${SPDLOG_SRCS} ${SPDLOG_ALL_HEADERS})
+endif()
+add_library(spdlog::spdlog ALIAS spdlog)
+target_include_directories(spdlog PUBLIC include)
+add_library(spdlog_header_only INTERFACE)
+add_library(spdlog::spdlog_header_only ALIAS spdlog_header_only)
+set(CMAKE_CXX_STANDARD 20)
+";
+        let info = parse_cmake(cmake);
+        assert!(info.has_library, "should detect library");
+        assert_ne!(
+            info.build_type,
+            Some(BuildType::Binary),
+            "should not be binary, got: {:?}",
+            info.build_type
+        );
+        // Highest standard should win.
+        assert_eq!(info.cxx_standard.as_deref(), Some("20"));
     }
 
     #[test]
