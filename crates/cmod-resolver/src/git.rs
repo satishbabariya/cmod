@@ -202,6 +202,9 @@ pub fn short_hash(oid: &Oid) -> String {
 }
 
 /// Get the date of a commit as YYYYMMDD.
+///
+/// Logs a warning if the commit has an invalid timestamp and falls back
+/// to the current date to avoid cache key collisions.
 pub fn commit_date(repo: &Repository, oid: Oid) -> Result<String, CmodError> {
     let commit = repo.find_commit(oid).map_err(|e| CmodError::GitError {
         reason: format!("commit not found: {}", e),
@@ -209,7 +212,20 @@ pub fn commit_date(repo: &Repository, oid: Oid) -> Result<String, CmodError> {
 
     let time = commit.time();
     let secs = time.seconds();
-    let dt = chrono::DateTime::from_timestamp(secs, 0).unwrap_or(chrono::DateTime::UNIX_EPOCH);
+    let dt = match chrono::DateTime::from_timestamp(secs, 0) {
+        Some(dt) => dt,
+        None => {
+            // Log warning about invalid timestamp - use eprintln for now
+            // In production, this should use a proper logging framework
+            eprintln!(
+                "warning: commit {} has invalid timestamp ({}), using current date",
+                short_hash(&oid),
+                secs
+            );
+            // Fall back to current time instead of UNIX_EPOCH to avoid cache collisions
+            chrono::Utc::now()
+        }
+    };
     Ok(dt.format("%Y%m%d").to_string())
 }
 
