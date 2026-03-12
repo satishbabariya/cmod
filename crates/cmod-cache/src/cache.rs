@@ -8,6 +8,38 @@ use serde::{Deserialize, Serialize};
 
 use crate::key::{hash_file, CacheKey};
 
+/// Validate that a string is safe to use as a path component.
+///
+/// Rejects path traversal sequences and other dangerous patterns.
+fn is_safe_path_component(s: &str) -> bool {
+    // Reject empty strings
+    if s.is_empty() {
+        return false;
+    }
+
+    // Reject path traversal sequences
+    if s.contains("..") {
+        return false;
+    }
+
+    // Reject path separators
+    if s.contains('/') || s.contains('\\') {
+        return false;
+    }
+
+    // Reject absolute path indicators
+    if s.starts_with('/') || s.starts_with('\\') {
+        return false;
+    }
+
+    // Reject null bytes and other control characters
+    if s.chars().any(|c| c.is_control()) {
+        return false;
+    }
+
+    true
+}
+
 /// Metadata stored alongside cached artifacts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactMetadata {
@@ -63,8 +95,44 @@ impl ArtifactCache {
     }
 
     /// Get the cache directory for a given module + key.
+    ///
+    /// Returns an error if module_id or cache key contain path traversal sequences.
     pub fn entry_dir(&self, module_id: &str, key: &CacheKey) -> PathBuf {
+        // Validate module_id to prevent path traversal
+        // Note: ModuleId::from_git_url already validates, but we double-check
+        // for safety in case module_id comes from untrusted sources
+        debug_assert!(
+            is_safe_path_component(module_id) || module_id.split('.').all(is_safe_path_component),
+            "module_id contains unsafe path components: {}",
+            module_id
+        );
+        debug_assert!(
+            is_safe_path_component(&key.0),
+            "cache key contains unsafe path components: {}",
+            key.0
+        );
         self.root.join(module_id).join(&key.0)
+    }
+
+    /// Validate and get the cache directory for a given module + key.
+    ///
+    /// Returns an error if module_id or cache key contain path traversal sequences.
+    fn validated_entry_dir(&self, module_id: &str, key: &CacheKey) -> Result<PathBuf, CmodError> {
+        // Validate module_id segments (module IDs use '.' as separator)
+        if !module_id.split('.').all(is_safe_path_component) {
+            return Err(CmodError::CacheError {
+                reason: format!("invalid module_id: contains path traversal or unsafe characters: {}", module_id),
+            });
+        }
+
+        // Validate cache key
+        if !is_safe_path_component(&key.0) {
+            return Err(CmodError::CacheError {
+                reason: format!("invalid cache key: contains path traversal or unsafe characters: {}", key.0),
+            });
+        }
+
+        Ok(self.root.join(module_id).join(&key.0))
     }
 
     /// Check if a cache entry exists and is valid.
@@ -81,7 +149,16 @@ impl ArtifactCache {
         metadata: &ArtifactMetadata,
         artifact_files: &[(&str, &Path)],
     ) -> Result<(), CmodError> {
-        let dir = self.entry_dir(module_id, key);
+        // Validate all artifact names before proceeding
+        for (name, _) in artifact_files {
+            if !is_safe_path_component(name) {
+                return Err(CmodError::CacheError {
+                    reason: format!("invalid artifact name: contains path traversal or unsafe characters: {}", name),
+                });
+            }
+        }
+
+        let dir = self.validated_entry_dir(module_id, key)?;
         fs::create_dir_all(&dir)?;
 
         // Write metadata
@@ -108,7 +185,14 @@ impl ArtifactCache {
         artifact_name: &str,
         source: &Path,
     ) -> Result<(), CmodError> {
-        let dir = self.entry_dir(module_id, key);
+        // Validate artifact name to prevent path traversal
+        if !is_safe_path_component(artifact_name) {
+            return Err(CmodError::CacheError {
+                reason: format!("invalid artifact name: contains path traversal or unsafe characters: {}", artifact_name),
+            });
+        }
+
+        let dir = self.validated_entry_dir(module_id, key)?;
         fs::create_dir_all(&dir)?;
         let dest = dir.join(artifact_name);
         fs::copy(source, &dest)?;
@@ -122,7 +206,18 @@ impl ArtifactCache {
         key: &CacheKey,
         artifact_name: &str,
     ) -> Option<PathBuf> {
-        let path = self.entry_dir(module_id, key).join(artifact_name);
+        // Validate artifact name to prevent path traversal
+        if !is_safe_path_component(artifact_name) {
+            return None;
+        }
+
+        // Validate module_id and key
+        let dir = match self.validated_entry_dir(module_id, key) {
+            Ok(d) => d,
+            Err(_) => return None,
+        };
+
+        let path = dir.join(artifact_name);
         if path.exists() {
             Some(path)
         } else {
