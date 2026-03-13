@@ -121,14 +121,20 @@ impl ArtifactCache {
         // Validate module_id segments (module IDs use '.' as separator)
         if !module_id.split('.').all(is_safe_path_component) {
             return Err(CmodError::CacheError {
-                reason: format!("invalid module_id: contains path traversal or unsafe characters: {}", module_id),
+                reason: format!(
+                    "invalid module_id: contains path traversal or unsafe characters: {}",
+                    module_id
+                ),
             });
         }
 
         // Validate cache key
         if !is_safe_path_component(&key.0) {
             return Err(CmodError::CacheError {
-                reason: format!("invalid cache key: contains path traversal or unsafe characters: {}", key.0),
+                reason: format!(
+                    "invalid cache key: contains path traversal or unsafe characters: {}",
+                    key.0
+                ),
             });
         }
 
@@ -153,7 +159,10 @@ impl ArtifactCache {
         for (name, _) in artifact_files {
             if !is_safe_path_component(name) {
                 return Err(CmodError::CacheError {
-                    reason: format!("invalid artifact name: contains path traversal or unsafe characters: {}", name),
+                    reason: format!(
+                        "invalid artifact name: contains path traversal or unsafe characters: {}",
+                        name
+                    ),
                 });
             }
         }
@@ -188,7 +197,10 @@ impl ArtifactCache {
         // Validate artifact name to prevent path traversal
         if !is_safe_path_component(artifact_name) {
             return Err(CmodError::CacheError {
-                reason: format!("invalid artifact name: contains path traversal or unsafe characters: {}", artifact_name),
+                reason: format!(
+                    "invalid artifact name: contains path traversal or unsafe characters: {}",
+                    artifact_name
+                ),
             });
         }
 

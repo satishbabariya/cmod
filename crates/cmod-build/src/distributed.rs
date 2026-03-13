@@ -254,11 +254,9 @@ impl WorkerPool {
         }
 
         let selected_idx = match self.strategy {
-            SchedulerStrategy::LeastLoaded => {
-                *available_indices
-                    .iter()
-                    .min_by_key(|&&i| workers[i].active_jobs)?
-            }
+            SchedulerStrategy::LeastLoaded => *available_indices
+                .iter()
+                .min_by_key(|&&i| workers[i].active_jobs)?,
             SchedulerStrategy::RoundRobin => {
                 let mut idx = self.round_robin_idx.lock().ok()?;
                 let selected = available_indices[*idx % available_indices.len()];
@@ -272,7 +270,11 @@ impl WorkerPool {
                 // First: find a worker that previously handled the same target
                 let affinity_match = available_indices
                     .iter()
-                    .filter(|&&i| target_map.get(&workers[i].id).is_some_and(|t| t == task_target))
+                    .filter(|&&i| {
+                        target_map
+                            .get(&workers[i].id)
+                            .is_some_and(|t| t == task_target)
+                    })
                     .min_by_key(|&&i| workers[i].active_jobs)
                     .copied();
 

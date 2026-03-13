@@ -1022,42 +1022,57 @@ impl BuildRunner {
                                 total_compile_ms.fetch_add(ms as usize, Ordering::Relaxed);
                                 // Handle poisoned locks gracefully by recovering inner data
                                 match node_timings.lock() {
-                                    Ok(mut guard) => { guard.insert(node.id.clone(), ms); }
-                                    Err(poisoned) => { poisoned.into_inner().insert(node.id.clone(), ms); }
+                                    Ok(mut guard) => {
+                                        guard.insert(node.id.clone(), ms);
+                                    }
+                                    Err(poisoned) => {
+                                        poisoned.into_inner().insert(node.id.clone(), ms);
+                                    }
                                 }
                                 match outcome {
                                     NodeOutcome::CacheHit(_) => {
                                         cache_hits.fetch_add(1, Ordering::Relaxed);
                                         match new_build_state.lock() {
                                             Ok(mut guard) => guard.record_node(node, &flags_hash),
-                                            Err(poisoned) => poisoned.into_inner().record_node(node, &flags_hash),
+                                            Err(poisoned) => {
+                                                poisoned.into_inner().record_node(node, &flags_hash)
+                                            }
                                         }
                                     }
                                     NodeOutcome::Compiled(_) => {
                                         cache_misses.fetch_add(1, Ordering::Relaxed);
                                         match new_build_state.lock() {
                                             Ok(mut guard) => guard.record_node(node, &flags_hash),
-                                            Err(poisoned) => poisoned.into_inner().record_node(node, &flags_hash),
+                                            Err(poisoned) => {
+                                                poisoned.into_inner().record_node(node, &flags_hash)
+                                            }
                                         }
                                     }
                                     NodeOutcome::Skipped(_) => {
                                         incr_skipped.fetch_add(1, Ordering::Relaxed);
                                         if let Some(prev) = build_state.nodes.get(&node.id) {
                                             match new_build_state.lock() {
-                                                Ok(mut guard) => { guard.nodes.insert(node.id.clone(), prev.clone()); }
-                                                Err(poisoned) => { poisoned.into_inner().nodes.insert(node.id.clone(), prev.clone()); }
+                                                Ok(mut guard) => {
+                                                    guard
+                                                        .nodes
+                                                        .insert(node.id.clone(), prev.clone());
+                                                }
+                                                Err(poisoned) => {
+                                                    poisoned
+                                                        .into_inner()
+                                                        .nodes
+                                                        .insert(node.id.clone(), prev.clone());
+                                                }
                                             }
                                         }
                                     }
                                     NodeOutcome::Linked(_) => {}
                                 }
                             }
-                            Err(e) => {
-                                match errors.lock() {
-                                    Ok(mut guard) => guard.push(e),
-                                    Err(poisoned) => poisoned.into_inner().push(e),
-                                }
-                            }
+                            Err(e) => match errors.lock() {
+                                Ok(mut guard) => guard.push(e),
+                                Err(poisoned) => poisoned.into_inner().push(e),
+                            },
                         }
 
                         // Signal completion and enqueue newly-ready nodes
