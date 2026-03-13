@@ -39,3 +39,5 @@ editors/vscode/*.vsix
 editors/clion/build/
 editors/clion/.gradle/
 editors/clion/.idea/
+
+www/
