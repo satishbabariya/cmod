@@ -152,9 +152,12 @@ jobs:
         run: ls -la vsix-artifacts/
 
       - name: Publish to VS Code Marketplace
-        if: ${{ secrets.VSCE_PAT != '' }}
         working-directory: editors/vscode
         run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "VSCE_PAT not set, skipping VS Code Marketplace publish"
+            exit 0
+          fi
           npm ci
           for vsix in ../../vsix-artifacts/*-*.vsix; do
             echo "Publishing $vsix to VS Code Marketplace"
@@ -164,9 +167,12 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
       - name: Publish to Open VSX
-        if: ${{ secrets.OVSX_PAT != '' }}
         working-directory: editors/vscode
         run: |
+          if [ -z "$OVSX_PAT" ]; then
+            echo "OVSX_PAT not set, skipping Open VSX publish"
+            exit 0
+          fi
           npm ci
           # Publish only the universal VSIX (excludes platform-specific @target files)
           UNIVERSAL_VSIX=$(ls ../../vsix-artifacts/cmod-*.vsix | grep -v '@' | head -1)

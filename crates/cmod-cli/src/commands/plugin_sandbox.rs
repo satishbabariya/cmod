@@ -594,9 +594,10 @@ max_memory_mb = 256
 
     #[test]
     fn test_min_cmod_version_satisfied() {
-        // Current version should satisfy a low requirement
+        // Current version should satisfy a low requirement.
+        // Use >=0.1.0-0 so pre-release versions like 0.1.0-alpha.1 also match.
         let current = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
-        let required = semver::VersionReq::parse(">=0.1.0").unwrap();
+        let required = semver::VersionReq::parse(">=0.1.0-0").unwrap();
         assert!(required.matches(&current));
     }
 

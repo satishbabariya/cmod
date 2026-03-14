@@ -59,18 +59,26 @@ jobs:
         run: ls -la editors/clion/build/distributions/
 
       - name: Sign plugin
-        if: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN != '' }}
         working-directory: editors/clion
-        run: ./gradlew signPlugin
+        run: |
+          if [ -z "$CERTIFICATE_CHAIN" ]; then
+            echo "JETBRAINS_CERTIFICATE_CHAIN not set, skipping plugin signing"
+            exit 0
+          fi
+          ./gradlew signPlugin
         env:
           CERTIFICATE_CHAIN: ${{ secrets.JETBRAINS_CERTIFICATE_CHAIN }}
           PRIVATE_KEY: ${{ secrets.JETBRAINS_PRIVATE_KEY }}
           PRIVATE_KEY_PASSWORD: ${{ secrets.JETBRAINS_PRIVATE_KEY_PASSWORD }}
 
       - name: Publish to JetBrains Marketplace
-        if: ${{ secrets.JETBRAINS_PUBLISH_TOKEN != '' }}
         working-directory: editors/clion
-        run: ./gradlew publishPlugin
+        run: |
+          if [ -z "$PUBLISH_TOKEN" ]; then
+            echo "JETBRAINS_PUBLISH_TOKEN not set, skipping JetBrains publish"
+            exit 0
+          fi
+          ./gradlew publishPlugin
         env:
           PUBLISH_TOKEN: ${{ secrets.JETBRAINS_PUBLISH_TOKEN }}
 

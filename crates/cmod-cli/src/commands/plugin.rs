@@ -103,8 +103,10 @@ pub fn run_plugin(name: &str, raw_args: &[String], shell: &Shell) -> Result<(), 
             Ok(manifest) => {
                 // Check min_cmod_version compatibility
                 if let Some(ref min_ver) = manifest.plugin.min_cmod_version {
-                    let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+                    let mut current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
                         .unwrap_or_else(|_| semver::Version::new(0, 0, 0));
+                    // Strip pre-release so 0.1.0-alpha.1 satisfies >=0.1.0
+                    current.pre = semver::Prerelease::EMPTY;
                     if let Ok(required) = semver::VersionReq::parse(&format!(">={}", min_ver)) {
                         if !required.matches(&current) {
                             return Err(CmodError::Other(format!(
