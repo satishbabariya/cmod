@@ -24,8 +24,9 @@ fn is_safe_package_name(name: &str) -> bool {
         return false;
     }
 
-    // Reject strings that start with a dot (hidden files, traversal)
-    if name.starts_with('.') {
+    // Reject strings that start or end with a dot (hidden files, traversal,
+    // and Windows path collisions like "foo.")
+    if name.starts_with('.') || name.ends_with('.') {
         return false;
     }
 

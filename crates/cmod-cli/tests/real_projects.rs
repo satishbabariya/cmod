@@ -1848,9 +1848,14 @@ fn test_real_git_update_resolves_new_tags() {
     assert!(output.status.success());
 
     let dep_url = local_file_url(&dep_dir);
-    run_cmod_with_local_git(
+    let add_output = run_cmod_with_local_git(
         &proj_dir,
         &["add", "updlib", "--git", &dep_url, "--untrusted"],
+    );
+    assert!(
+        add_output.status.success(),
+        "add updlib failed: {}",
+        stderr(&add_output)
     );
     let output = run_cmod_with_local_git(&proj_dir, &["resolve", "--untrusted"]);
     assert!(

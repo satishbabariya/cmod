@@ -637,8 +637,8 @@ impl Manifest {
     ///
     /// Optimized to avoid unnecessary cloning when there are no target-specific deps.
     pub fn effective_dependencies(&self, target_triple: &str) -> BTreeMap<String, Dependency> {
-        // Fast path: if no target-specific deps, return a reference-based view
-        // or clone only once at the end
+        // Fast path: if there are no target-specific deps, no merging is needed —
+        // clone dependencies once and return immediately without iterating targets.
         if self.target.is_empty() {
             return self.dependencies.clone();
         }

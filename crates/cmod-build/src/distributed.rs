@@ -402,20 +402,19 @@ impl WorkerPool {
 
             match self.send_task(&endpoint, &task) {
                 Ok(result) => {
-                    // Store the result so collect_result() can return it.
+                    // Store the result and record the task->worker mapping atomically.
+                    // Acquire locks in the same order used by collect_result /
+                    // try_collect_result (results first, then task_workers) to avoid
+                    // lock-order inversions.
                     {
                         let mut results = self
                             .results
                             .lock()
                             .map_err(|_| CmodError::Other("failed to lock results".to_string()))?;
-                        results.insert(task_id.clone(), result);
-                    }
-
-                    // Record which worker owns this task for slot release.
-                    {
                         let mut tw = self.task_workers.lock().map_err(|_| {
                             CmodError::Other("failed to lock task workers".to_string())
                         })?;
+                        results.insert(task_id.clone(), result);
                         tw.insert(task_id.clone(), worker_id.to_string());
                     }
 

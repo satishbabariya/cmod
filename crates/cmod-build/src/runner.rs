@@ -988,6 +988,7 @@ impl BuildRunner {
                 let node_timings = Arc::clone(&node_timings);
 
                 scope.spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     loop {
                         // Check if all work is done
                         if completed.load(Ordering::SeqCst) >= total {
@@ -1092,6 +1093,23 @@ impl BuildRunner {
                         let _ = c;
                     }
                     drop(work_tx);
+                    })); // end catch_unwind closure
+                    if let Err(panic_payload) = result {
+                        let msg = panic_payload
+                            .downcast_ref::<&str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                panic_payload
+                                    .downcast_ref::<String>()
+                                    .map(|s| s.clone())
+                            })
+                            .unwrap_or_else(|| "worker thread panicked".to_string());
+                        if let Ok(mut guard) = errors.lock() {
+                            guard.push(CmodError::BuildFailed {
+                                reason: format!("worker panicked: {}", msg),
+                            });
+                        }
+                    }
                 });
             }
             // Drop sender on main thread so workers can detect disconnection

@@ -218,12 +218,13 @@ pub fn commit_date(repo: &Repository, oid: Oid) -> Result<String, CmodError> {
             // Log warning about invalid timestamp - use eprintln for now
             // In production, this should use a proper logging framework
             eprintln!(
-                "warning: commit {} has invalid timestamp ({}), using current date",
+                "warning: commit {} has invalid timestamp ({}), using sentinel date",
                 short_hash(&oid),
                 secs
             );
-            // Fall back to current time instead of UNIX_EPOCH to avoid cache collisions
-            chrono::Utc::now()
+            // Fall back to a fixed sentinel (UNIX_EPOCH) so pseudo-versions are
+            // deterministic and reproducible instead of varying by wall-clock time.
+            chrono::DateTime::from_timestamp(0, 0).expect("UNIX_EPOCH is always valid")
         }
     };
     Ok(dt.format("%Y%m%d").to_string())

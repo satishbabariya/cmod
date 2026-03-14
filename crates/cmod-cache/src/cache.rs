@@ -11,9 +11,25 @@ use crate::key::{hash_file, CacheKey};
 /// Validate that a string is safe to use as a path component.
 ///
 /// Rejects path traversal sequences and other dangerous patterns.
+/// Rules mirror those in `cmod_core::types` path validation:
+/// - Must be non-empty
+/// - Must not be `"."` or `".."`
+/// - Must not start or end with `'.'`
+/// - Must not contain path separators, control characters, or `".."`
 fn is_safe_path_component(s: &str) -> bool {
     // Reject empty strings
     if s.is_empty() {
+        return false;
+    }
+
+    // Reject the special directory entries "." and ".."
+    if s == "." || s == ".." {
+        return false;
+    }
+
+    // Reject components starting or ending with '.' (hidden files, Windows
+    // collisions like "foo.", and relative-path building via e.g. ".hidden")
+    if s.starts_with('.') || s.ends_with('.') {
         return false;
     }
 
@@ -24,11 +40,6 @@ fn is_safe_path_component(s: &str) -> bool {
 
     // Reject path separators
     if s.contains('/') || s.contains('\\') {
-        return false;
-    }
-
-    // Reject absolute path indicators
-    if s.starts_with('/') || s.starts_with('\\') {
         return false;
     }
 
@@ -143,7 +154,10 @@ impl ArtifactCache {
 
     /// Check if a cache entry exists and is valid.
     pub fn has(&self, module_id: &str, key: &CacheKey) -> bool {
-        let dir = self.entry_dir(module_id, key);
+        let dir = match self.validated_entry_dir(module_id, key) {
+            Ok(d) => d,
+            Err(_) => return false,
+        };
         dir.join("metadata.json").exists()
     }
 
@@ -243,7 +257,7 @@ impl ArtifactCache {
         module_id: &str,
         key: &CacheKey,
     ) -> Result<ArtifactMetadata, CmodError> {
-        let path = self.entry_dir(module_id, key).join("metadata.json");
+        let path = self.validated_entry_dir(module_id, key)?.join("metadata.json");
         let content = fs::read_to_string(&path).map_err(|_| CmodError::CacheError {
             reason: format!("cache metadata not found for {} at key {}", module_id, key),
         })?;
@@ -254,7 +268,7 @@ impl ArtifactCache {
 
     /// Remove a single cache entry.
     pub fn evict(&self, module_id: &str, key: &CacheKey) -> Result<(), CmodError> {
-        let dir = self.entry_dir(module_id, key);
+        let dir = self.validated_entry_dir(module_id, key)?;
         if dir.exists() {
             fs::remove_dir_all(&dir)?;
         }
@@ -263,6 +277,15 @@ impl ArtifactCache {
 
     /// Remove all cache entries for a module.
     pub fn evict_module(&self, module_id: &str) -> Result<(), CmodError> {
+        // Validate module_id segments before joining into a path.
+        if !module_id.split('.').all(is_safe_path_component) {
+            return Err(CmodError::CacheError {
+                reason: format!(
+                    "invalid module_id: contains path traversal or unsafe characters: {}",
+                    module_id
+                ),
+            });
+        }
         let dir = self.root.join(module_id);
         if dir.exists() {
             fs::remove_dir_all(&dir)?;
@@ -365,8 +388,18 @@ impl ArtifactCache {
         key: &CacheKey,
         artifact_name: &str,
     ) -> Result<bool, CmodError> {
+        // Validate artifact name to prevent path traversal
+        if !is_safe_path_component(artifact_name) {
+            return Err(CmodError::CacheError {
+                reason: format!(
+                    "invalid artifact name: contains path traversal or unsafe characters: {}",
+                    artifact_name
+                ),
+            });
+        }
+
         let metadata = self.get_metadata(module_id, key)?;
-        let artifact_path = self.entry_dir(module_id, key).join(artifact_name);
+        let artifact_path = self.validated_entry_dir(module_id, key)?.join(artifact_name);
 
         if !artifact_path.exists() {
             return Ok(false);
@@ -519,7 +552,19 @@ impl ArtifactCache {
         metadata: &ArtifactMetadata,
         artifact_files: &[(&str, &Path)],
     ) -> Result<(), CmodError> {
-        let dir = self.entry_dir(module_id, key);
+        // Validate all artifact names before proceeding
+        for (name, _) in artifact_files {
+            if !is_safe_path_component(name) {
+                return Err(CmodError::CacheError {
+                    reason: format!(
+                        "invalid artifact name: contains path traversal or unsafe characters: {}",
+                        name
+                    ),
+                });
+            }
+        }
+
+        let dir = self.validated_entry_dir(module_id, key)?;
         fs::create_dir_all(&dir)?;
 
         // Write metadata
@@ -548,7 +593,17 @@ impl ArtifactCache {
         artifact_name: &str,
         dest: &Path,
     ) -> Result<bool, CmodError> {
-        let entry_dir = self.entry_dir(module_id, key);
+        // Validate artifact name to prevent path traversal
+        if !is_safe_path_component(artifact_name) {
+            return Err(CmodError::CacheError {
+                reason: format!(
+                    "invalid artifact name: contains path traversal or unsafe characters: {}",
+                    artifact_name
+                ),
+            });
+        }
+
+        let entry_dir = self.validated_entry_dir(module_id, key)?;
 
         // Try compressed version first
         let compressed_path = entry_dir.join(format!("{}.zst", artifact_name));
@@ -577,7 +632,7 @@ impl ArtifactCache {
 
     /// Inspect a specific cache entry and return its metadata plus file info.
     pub fn inspect(&self, module_id: &str, key: &CacheKey) -> Result<CacheEntryInfo, CmodError> {
-        let dir = self.entry_dir(module_id, key);
+        let dir = self.validated_entry_dir(module_id, key)?;
         if !dir.exists() {
             return Err(CmodError::CacheError {
                 reason: format!("cache entry not found: {}/{}", module_id, key),
