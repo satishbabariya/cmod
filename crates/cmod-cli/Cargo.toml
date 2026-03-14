@@ -31,6 +31,7 @@ serde_json = { workspace = true }
 semver = { workspace = true }
 walkdir = { workspace = true }
 git2 = { workspace = true }
+openssl = { workspace = true }
 tempfile = { workspace = true }
 dirs = { workspace = true }
 crossbeam-channel = { workspace = true }
