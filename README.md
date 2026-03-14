@@ -44,7 +44,7 @@ curl -sSf https://raw.githubusercontent.com/satishbabariya/cmod/main/install.sh 
 Or install a specific version:
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/satishbabariya/cmod/main/install.sh | sh -s -- --version v0.1.0
+curl -sSf https://raw.githubusercontent.com/satishbabariya/cmod/main/install.sh | sh -s -- --version v0.1.0-alpha.1
 ```
 
 Supports Linux (x86_64, aarch64) and macOS (x86_64, Apple Silicon). For Windows, download binaries from the [releases page](https://github.com/satishbabariya/cmod/releases).
