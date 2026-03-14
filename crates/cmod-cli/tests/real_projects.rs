@@ -37,6 +37,16 @@ fn run_cmod(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("failed to run cmod")
 }
 
+/// Run cmod with local Git URLs allowed (for testing file:// URLs).
+fn run_cmod_with_local_git(dir: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_cmod"))
+        .args(args)
+        .current_dir(dir)
+        .env("CMOD_ALLOW_LOCAL_GIT_URLS", "1")
+        .output()
+        .expect("failed to run cmod")
+}
+
 /// Run cmod with LLVM Clang on PATH (prepends /opt/homebrew/opt/llvm/bin).
 fn run_cmod_with_llvm(dir: &Path, args: &[&str]) -> std::process::Output {
     let llvm_path = "/opt/homebrew/opt/llvm/bin";
@@ -1621,7 +1631,7 @@ fn test_real_git_local_repo_semver_resolve() {
 
     // Add the local repo as a dependency using file:// URL with semver constraint
     let dep_url = local_file_url(&dep_dir);
-    let output = run_cmod(
+    let output = run_cmod_with_local_git(
         &proj_dir,
         &["add", "mymath@^1.0", "--git", &dep_url, "--untrusted"],
     );
@@ -1632,7 +1642,7 @@ fn test_real_git_local_repo_semver_resolve() {
     );
 
     // Resolve
-    let output = run_cmod(&proj_dir, &["resolve", "--untrusted"]);
+    let output = run_cmod_with_local_git(&proj_dir, &["resolve", "--untrusted"]);
     assert!(
         output.status.success(),
         "resolve failed: {}",
@@ -1711,7 +1721,7 @@ fn test_real_git_local_repo_branch_resolve() {
     assert!(output.status.success());
 
     let dep_url = local_file_url(&dep_dir);
-    let output = run_cmod(
+    let output = run_cmod_with_local_git(
         &proj_dir,
         &[
             "add",
@@ -1729,7 +1739,7 @@ fn test_real_git_local_repo_branch_resolve() {
         stderr(&output)
     );
 
-    let output = run_cmod(&proj_dir, &["resolve", "--untrusted"]);
+    let output = run_cmod_with_local_git(&proj_dir, &["resolve", "--untrusted"]);
     assert!(
         output.status.success(),
         "resolve with branch failed: {}",
@@ -1776,7 +1786,7 @@ fn test_real_git_local_repo_rev_resolve() {
     assert!(output.status.success());
 
     let dep_url = local_file_url(&dep_dir);
-    let output = run_cmod(
+    let output = run_cmod_with_local_git(
         &proj_dir,
         &[
             "add",
@@ -1794,7 +1804,7 @@ fn test_real_git_local_repo_rev_resolve() {
         stderr(&output)
     );
 
-    let output = run_cmod(&proj_dir, &["resolve", "--untrusted"]);
+    let output = run_cmod_with_local_git(&proj_dir, &["resolve", "--untrusted"]);
     assert!(
         output.status.success(),
         "resolve with rev failed: {}",
@@ -1838,11 +1848,11 @@ fn test_real_git_update_resolves_new_tags() {
     assert!(output.status.success());
 
     let dep_url = local_file_url(&dep_dir);
-    run_cmod(
+    run_cmod_with_local_git(
         &proj_dir,
         &["add", "updlib", "--git", &dep_url, "--untrusted"],
     );
-    let output = run_cmod(&proj_dir, &["resolve", "--untrusted"]);
+    let output = run_cmod_with_local_git(&proj_dir, &["resolve", "--untrusted"]);
     assert!(
         output.status.success(),
         "initial resolve failed: {}",
@@ -1872,7 +1882,7 @@ fn test_real_git_update_resolves_new_tags() {
         .unwrap();
 
     // Update should pick up the new version
-    let output = run_cmod(&proj_dir, &["update", "--untrusted"]);
+    let output = run_cmod_with_local_git(&proj_dir, &["update", "--untrusted"]);
     assert!(
         output.status.success(),
         "update failed: {}",

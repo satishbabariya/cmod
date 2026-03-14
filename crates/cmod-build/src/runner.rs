@@ -950,7 +950,11 @@ impl BuildRunner {
 
         // Enqueue initially ready compile nodes (in-degree == 0)
         {
-            let in_deg = in_degree.lock().unwrap();
+            // Use .ok() to handle poisoned lock gracefully - if poisoned, we can't proceed
+            let in_deg = match in_degree.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             for &(idx, _) in &compile_nodes {
                 if in_deg[idx] == 0 {
                     let _ = work_tx.send(idx);
@@ -990,7 +994,12 @@ impl BuildRunner {
                             break;
                         }
                         // Check if there are errors — stop early
-                        if !errors.lock().unwrap().is_empty() {
+                        // Handle poisoned lock by recovering the inner data
+                        let has_errors = match errors.lock() {
+                            Ok(guard) => !guard.is_empty(),
+                            Err(poisoned) => !poisoned.into_inner().is_empty(),
+                        };
+                        if has_errors {
                             break;
                         }
 
@@ -1011,44 +1020,68 @@ impl BuildRunner {
                             Ok(outcome) => {
                                 let ms = outcome.time_ms();
                                 total_compile_ms.fetch_add(ms as usize, Ordering::Relaxed);
-                                node_timings.lock().unwrap().insert(node.id.clone(), ms);
+                                // Handle poisoned locks gracefully by recovering inner data
+                                match node_timings.lock() {
+                                    Ok(mut guard) => {
+                                        guard.insert(node.id.clone(), ms);
+                                    }
+                                    Err(poisoned) => {
+                                        poisoned.into_inner().insert(node.id.clone(), ms);
+                                    }
+                                }
                                 match outcome {
                                     NodeOutcome::CacheHit(_) => {
                                         cache_hits.fetch_add(1, Ordering::Relaxed);
-                                        new_build_state
-                                            .lock()
-                                            .unwrap()
-                                            .record_node(node, &flags_hash);
+                                        match new_build_state.lock() {
+                                            Ok(mut guard) => guard.record_node(node, &flags_hash),
+                                            Err(poisoned) => {
+                                                poisoned.into_inner().record_node(node, &flags_hash)
+                                            }
+                                        }
                                     }
                                     NodeOutcome::Compiled(_) => {
                                         cache_misses.fetch_add(1, Ordering::Relaxed);
-                                        new_build_state
-                                            .lock()
-                                            .unwrap()
-                                            .record_node(node, &flags_hash);
+                                        match new_build_state.lock() {
+                                            Ok(mut guard) => guard.record_node(node, &flags_hash),
+                                            Err(poisoned) => {
+                                                poisoned.into_inner().record_node(node, &flags_hash)
+                                            }
+                                        }
                                     }
                                     NodeOutcome::Skipped(_) => {
                                         incr_skipped.fetch_add(1, Ordering::Relaxed);
                                         if let Some(prev) = build_state.nodes.get(&node.id) {
-                                            new_build_state
-                                                .lock()
-                                                .unwrap()
-                                                .nodes
-                                                .insert(node.id.clone(), prev.clone());
+                                            match new_build_state.lock() {
+                                                Ok(mut guard) => {
+                                                    guard
+                                                        .nodes
+                                                        .insert(node.id.clone(), prev.clone());
+                                                }
+                                                Err(poisoned) => {
+                                                    poisoned
+                                                        .into_inner()
+                                                        .nodes
+                                                        .insert(node.id.clone(), prev.clone());
+                                                }
+                                            }
                                         }
                                     }
                                     NodeOutcome::Linked(_) => {}
                                 }
                             }
-                            Err(e) => {
-                                errors.lock().unwrap().push(e);
-                            }
+                            Err(e) => match errors.lock() {
+                                Ok(mut guard) => guard.push(e),
+                                Err(poisoned) => poisoned.into_inner().push(e),
+                            },
                         }
 
                         // Signal completion and enqueue newly-ready nodes
                         let c = completed.fetch_add(1, Ordering::SeqCst) + 1;
                         {
-                            let mut in_deg = in_degree.lock().unwrap();
+                            let mut in_deg = match in_degree.lock() {
+                                Ok(guard) => guard,
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
                             for &dep_idx in &dependents[idx] {
                                 in_deg[dep_idx] -= 1;
                                 if in_deg[dep_idx] == 0 {
@@ -1065,8 +1098,11 @@ impl BuildRunner {
             drop(work_tx);
         });
 
-        // Check for errors
-        let errs = errors.lock().unwrap();
+        // Check for errors - handle poisoned lock
+        let errs = match errors.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         if let Some(first) = errs.first() {
             return Err(CmodError::BuildFailed {
                 reason: format!("{}", first),
@@ -1074,11 +1110,17 @@ impl BuildRunner {
         }
         drop(errs);
 
-        // Save the new build state with node timings
+        // Save the new build state with node timings - handle poisoned locks
         {
-            let mut final_state = new_build_state.lock().unwrap().clone();
-            let timings = node_timings.lock().unwrap();
-            final_state.node_timings = timings.clone();
+            let mut final_state = match new_build_state.lock() {
+                Ok(guard) => guard.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            };
+            let timings = match node_timings.lock() {
+                Ok(guard) => guard.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            };
+            final_state.node_timings = timings;
             let _ = final_state.save(&plan.build_dir);
         }
 

@@ -154,6 +154,10 @@ impl BuildState {
     }
 
     /// Record the state of a successfully built node.
+    ///
+    /// Note: If hash computation fails for output files, we log a warning and
+    /// use an empty hash. This means the next build will recompute the node,
+    /// which is the safe fallback behavior.
     pub fn record_node(&mut self, node: &BuildNode, flags_hash: &str) {
         let source_hash = node
             .source
@@ -179,7 +183,18 @@ impl BuildState {
                 .and_then(|f| f.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let hash = hash_file(output).unwrap_or_default();
+            let hash = match hash_file(output) {
+                Ok(h) => h,
+                Err(e) => {
+                    // Log warning - hash failure means this node will rebuild next time
+                    eprintln!(
+                        "warning: failed to hash output file '{}': {} (node will rebuild next time)",
+                        output.display(),
+                        e
+                    );
+                    String::new()
+                }
+            };
             output_hashes.push((name, hash));
         }
 
