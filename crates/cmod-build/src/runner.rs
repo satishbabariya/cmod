@@ -541,8 +541,8 @@ impl BuildRunner {
 
         let task_id = task.task_id.clone();
 
-        // Select a worker
-        let worker_id = match pool.select_worker(&task) {
+        // Select a worker and atomically reserve a slot
+        let worker_id = match pool.select_and_reserve_worker(&task) {
             Some(id) => id,
             None => {
                 self.emit_verbose(
@@ -553,8 +553,8 @@ impl BuildRunner {
             }
         };
 
-        // Submit task
-        match pool.submit_task(&worker_id, task) {
+        // Submit task (slot already reserved)
+        match pool.submit_task_with_reservation(&worker_id, task, true) {
             Ok(()) => {
                 self.emit_verbose(
                     "Distributed",

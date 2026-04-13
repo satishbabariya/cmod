@@ -288,3 +288,192 @@ pub fn content_hash_at_commit(repo: &Repository, oid: Oid) -> Result<String, Cmo
 
     Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- validate_git_url tests ---
+
+    #[test]
+    fn test_validate_https_url() {
+        assert!(validate_git_url("https://github.com/fmtlib/fmt").is_ok());
+        assert!(validate_git_url("https://gitlab.com/org/repo.git").is_ok());
+    }
+
+    #[test]
+    fn test_validate_ssh_url() {
+        assert!(validate_git_url("ssh://git@github.com/org/repo").is_ok());
+        assert!(validate_git_url("git@github.com:org/repo.git").is_ok());
+    }
+
+    #[test]
+    fn test_reject_http_url() {
+        let err = validate_git_url("http://github.com/fmtlib/fmt").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("insecure") || msg.contains("HTTP"));
+    }
+
+    #[test]
+    fn test_reject_git_protocol() {
+        let err = validate_git_url("git://github.com/fmtlib/fmt").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("insecure") || msg.contains("git://"));
+    }
+
+    #[test]
+    fn test_reject_file_url() {
+        let err = validate_git_url("file:///tmp/repo").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("local file"));
+    }
+
+    #[test]
+    fn test_reject_absolute_path() {
+        let err = validate_git_url("/tmp/repo").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("local file"));
+    }
+
+    #[test]
+    fn test_reject_relative_path() {
+        let err = validate_git_url("./local/repo").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("local file"));
+    }
+
+    #[test]
+    fn test_reject_unknown_scheme() {
+        let err = validate_git_url("ftp://example.com/repo").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("unsupported"));
+    }
+
+    // --- short_hash tests ---
+
+    #[test]
+    fn test_short_hash_length() {
+        let oid = Oid::from_str("aabbccdd11223344556677889900aabbccddeeff").unwrap();
+        let short = short_hash(&oid);
+        assert_eq!(short.len(), 8);
+        assert_eq!(short, "aabbccdd");
+    }
+
+    // --- content_hash_at_commit tests ---
+
+    #[test]
+    fn test_content_hash_deterministic() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = Repository::init(tmp.path()).unwrap();
+
+        // Create a file and commit it
+        let file_path = tmp.path().join("hello.txt");
+        std::fs::write(&file_path, "hello world\n").unwrap();
+
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("hello.txt")).unwrap();
+        index.write().unwrap();
+        let tree_oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        let commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        let hash1 = content_hash_at_commit(&repo, commit_oid).unwrap();
+        let hash2 = content_hash_at_commit(&repo, commit_oid).unwrap();
+        assert_eq!(hash1, hash2);
+        assert!(hash1.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn test_content_hash_changes_with_content() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = Repository::init(tmp.path()).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+
+        // First commit
+        std::fs::write(tmp.path().join("file.txt"), "version 1").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("file.txt"))
+            .unwrap();
+        index.write().unwrap();
+        let tree1 = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let oid1 = repo
+            .commit(Some("HEAD"), &sig, &sig, "v1", &tree1, &[])
+            .unwrap();
+
+        // Second commit with different content
+        std::fs::write(tmp.path().join("file.txt"), "version 2").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("file.txt"))
+            .unwrap();
+        index.write().unwrap();
+        let tree2 = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let parent = repo.find_commit(oid1).unwrap();
+        let oid2 = repo
+            .commit(Some("HEAD"), &sig, &sig, "v2", &tree2, &[&parent])
+            .unwrap();
+
+        let hash1 = content_hash_at_commit(&repo, oid1).unwrap();
+        let hash2 = content_hash_at_commit(&repo, oid2).unwrap();
+        assert_ne!(hash1, hash2);
+    }
+
+    // --- list_version_tags tests ---
+
+    #[test]
+    fn test_list_version_tags_parses_semver() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = Repository::init(tmp.path()).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+
+        // Create initial commit
+        std::fs::write(tmp.path().join("f.txt"), "data").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("f.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let commit_obj = repo.find_object(commit_oid, None).unwrap();
+
+        // Create semver tags
+        repo.tag_lightweight("v1.0.0", &commit_obj, false).unwrap();
+        repo.tag_lightweight("v2.1.0", &commit_obj, false).unwrap();
+        repo.tag_lightweight("not-semver", &commit_obj, false)
+            .unwrap();
+
+        let tags = list_version_tags(&repo).unwrap();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].0.to_string(), "1.0.0");
+        assert_eq!(tags[1].0.to_string(), "2.1.0");
+    }
+
+    #[test]
+    fn test_list_version_tags_strips_v_prefix() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = Repository::init(tmp.path()).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+
+        std::fs::write(tmp.path().join("f.txt"), "data").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("f.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let obj = repo.find_object(oid, None).unwrap();
+
+        // Tag without v prefix should also parse
+        repo.tag_lightweight("3.0.0", &obj, false).unwrap();
+
+        let tags = list_version_tags(&repo).unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].0.to_string(), "3.0.0");
+    }
+}

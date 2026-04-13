@@ -254,7 +254,7 @@ impl ArtifactCache {
 
     /// Remove a single cache entry.
     pub fn evict(&self, module_id: &str, key: &CacheKey) -> Result<(), CmodError> {
-        let dir = self.entry_dir(module_id, key);
+        let dir = self.validated_entry_dir(module_id, key)?;
         if dir.exists() {
             fs::remove_dir_all(&dir)?;
         }
@@ -263,6 +263,15 @@ impl ArtifactCache {
 
     /// Remove all cache entries for a module.
     pub fn evict_module(&self, module_id: &str) -> Result<(), CmodError> {
+        // Validate module_id segments to prevent path traversal
+        if !module_id.split('.').all(is_safe_path_component) {
+            return Err(CmodError::CacheError {
+                reason: format!(
+                    "invalid module_id: contains path traversal or unsafe characters: {}",
+                    module_id
+                ),
+            });
+        }
         let dir = self.root.join(module_id);
         if dir.exists() {
             fs::remove_dir_all(&dir)?;

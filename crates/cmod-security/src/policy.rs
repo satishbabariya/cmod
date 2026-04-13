@@ -139,6 +139,12 @@ impl SecurityPolicy {
                 let repo_path = deps_dir.join(&pkg.name);
                 if !repo_path.exists() {
                     // Can't check signature if repo not checked out
+                    violations.push(PolicyViolation {
+                        package: pkg.name.clone(),
+                        severity,
+                        reason: "cannot verify signature: dependency repo not checked out"
+                            .to_string(),
+                    });
                     continue;
                 }
 
