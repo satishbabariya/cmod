@@ -395,9 +395,7 @@ mod tests {
         // First commit
         std::fs::write(tmp.path().join("file.txt"), "version 1").unwrap();
         let mut index = repo.index().unwrap();
-        index
-            .add_path(std::path::Path::new("file.txt"))
-            .unwrap();
+        index.add_path(std::path::Path::new("file.txt")).unwrap();
         index.write().unwrap();
         let tree1 = repo.find_tree(index.write_tree().unwrap()).unwrap();
         let oid1 = repo
@@ -407,9 +405,7 @@ mod tests {
         // Second commit with different content
         std::fs::write(tmp.path().join("file.txt"), "version 2").unwrap();
         let mut index = repo.index().unwrap();
-        index
-            .add_path(std::path::Path::new("file.txt"))
-            .unwrap();
+        index.add_path(std::path::Path::new("file.txt")).unwrap();
         index.write().unwrap();
         let tree2 = repo.find_tree(index.write_tree().unwrap()).unwrap();
         let parent = repo.find_commit(oid1).unwrap();

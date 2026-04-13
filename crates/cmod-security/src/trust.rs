@@ -99,8 +99,11 @@ impl TrustDb {
                 let mut y = 1970i64;
                 let mut remaining = days as i64;
                 loop {
-                    let days_in_year =
-                        if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+                    let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+                        366
+                    } else {
+                        365
+                    };
                     if remaining < days_in_year {
                         break;
                     }
@@ -123,7 +126,12 @@ impl TrustDb {
                 }
                 format!(
                     "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                    y, m + 1, remaining + 1, hours, mins, s
+                    y,
+                    m + 1,
+                    remaining + 1,
+                    hours,
+                    mins,
+                    s
                 )
             })
             .unwrap_or_default();
