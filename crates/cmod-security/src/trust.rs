@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use cmod_core::error::CmodError;
@@ -86,55 +86,7 @@ impl TrustDb {
             return false;
         }
 
-        let trusted_at = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| {
-                let secs = d.as_secs();
-                let days = secs / 86400;
-                let rem = secs % 86400;
-                let hours = rem / 3600;
-                let mins = (rem % 3600) / 60;
-                let s = rem % 60;
-                // Compute date from days since epoch (civil calendar)
-                let mut y = 1970i64;
-                let mut remaining = days as i64;
-                loop {
-                    let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-                        366
-                    } else {
-                        365
-                    };
-                    if remaining < days_in_year {
-                        break;
-                    }
-                    remaining -= days_in_year;
-                    y += 1;
-                }
-                let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-                let month_days: &[i64] = if leap {
-                    &[31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                } else {
-                    &[31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-                };
-                let mut m = 0usize;
-                for &md in month_days {
-                    if remaining < md {
-                        break;
-                    }
-                    remaining -= md;
-                    m += 1;
-                }
-                format!(
-                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                    y,
-                    m + 1,
-                    remaining + 1,
-                    hours,
-                    mins,
-                    s
-                )
-            })
-            .unwrap_or_default();
+        let trusted_at = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
         self.modules.insert(
             module_name.to_string(),

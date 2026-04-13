@@ -369,7 +369,7 @@ impl WorkerPool {
         let task_id = task.task_id.clone();
 
         // Extract the endpoint while holding the workers lock briefly.
-        let endpoint = {
+        let endpoint = match (|| -> Result<String, CmodError> {
             let workers = self
                 .workers
                 .lock()
@@ -378,7 +378,16 @@ impl WorkerPool {
                 .iter()
                 .find(|w| w.id == worker_id)
                 .ok_or_else(|| CmodError::Other(format!("worker '{}' not found", worker_id)))?;
-            worker.endpoint.clone()
+            Ok(worker.endpoint.clone())
+        })() {
+            Ok(ep) => ep,
+            Err(e) => {
+                // Release the caller's pre-reserved slot on early error
+                if slot_already_reserved {
+                    self.release_worker_slot(worker_id);
+                }
+                return Err(e);
+            }
         };
 
         // Retry with exponential backoff.
@@ -552,6 +561,23 @@ impl WorkerPool {
                     .count()
             })
             .unwrap_or(0)
+    }
+
+    /// Release a previously reserved worker slot.
+    ///
+    /// Use this to clean up after `select_and_reserve_worker` when the
+    /// subsequent submission is not going to happen (e.g., early error).
+    pub fn release_worker_slot(&self, worker_id: &str) {
+        if let Ok(mut workers) = self.workers.lock() {
+            if let Some(worker) = workers.iter_mut().find(|w| w.id == worker_id) {
+                worker.active_jobs = worker.active_jobs.saturating_sub(1);
+                if worker.active_jobs == 0 {
+                    worker.status = WorkerStatus::Ready;
+                } else if worker.active_jobs < worker.max_jobs {
+                    worker.status = WorkerStatus::Busy;
+                }
+            }
+        }
     }
 
     /// Health-check a single worker endpoint.

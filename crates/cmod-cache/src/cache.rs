@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use cmod_core::error::CmodError;
@@ -10,34 +10,26 @@ use crate::key::{hash_file, CacheKey};
 
 /// Validate that a string is safe to use as a path component.
 ///
-/// Rejects path traversal sequences and other dangerous patterns.
+/// Ensures the segment parses as exactly one `Component::Normal` entry,
+/// rejecting path traversal (`..`), root/prefix indicators (`C:`, `/`,
+/// `\\server\share`), current-dir (`.`), separators, and control characters.
 fn is_safe_path_component(s: &str) -> bool {
-    // Reject empty strings
     if s.is_empty() {
         return false;
     }
 
-    // Reject path traversal sequences
-    if s.contains("..") {
-        return false;
-    }
-
-    // Reject path separators
-    if s.contains('/') || s.contains('\\') {
-        return false;
-    }
-
-    // Reject absolute path indicators
-    if s.starts_with('/') || s.starts_with('\\') {
-        return false;
-    }
-
-    // Reject null bytes and other control characters
+    // Reject control characters (including null bytes)
     if s.chars().any(|c| c.is_control()) {
         return false;
     }
 
-    true
+    // Parse as a path and require exactly one Normal component
+    let path = Path::new(s);
+    let mut components = path.components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(name)), None) => name == std::ffi::OsStr::new(s),
+        _ => false,
+    }
 }
 
 /// Metadata stored alongside cached artifacts.

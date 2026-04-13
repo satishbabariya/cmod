@@ -293,6 +293,17 @@ pub fn content_hash_at_commit(repo: &Repository, oid: Oid) -> Result<String, Cmo
 mod tests {
     use super::*;
 
+    /// Ensure the local-URL escape hatch is disabled so rejection tests
+    /// exercise the real validation path regardless of CI settings.
+    fn clear_local_git_url_override() {
+        // SAFETY: tests using this helper are not run concurrently with
+        // code that reads the same env var (each test runs in its own thread
+        // but validate_git_url is purely synchronous).
+        unsafe {
+            std::env::remove_var(ALLOW_LOCAL_GIT_URLS_ENV);
+        }
+    }
+
     // --- validate_git_url tests ---
 
     #[test]
@@ -323,6 +334,7 @@ mod tests {
 
     #[test]
     fn test_reject_file_url() {
+        clear_local_git_url_override();
         let err = validate_git_url("file:///tmp/repo").unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("local file"));
@@ -330,6 +342,7 @@ mod tests {
 
     #[test]
     fn test_reject_absolute_path() {
+        clear_local_git_url_override();
         let err = validate_git_url("/tmp/repo").unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("local file"));
@@ -337,6 +350,7 @@ mod tests {
 
     #[test]
     fn test_reject_relative_path() {
+        clear_local_git_url_override();
         let err = validate_git_url("./local/repo").unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("local file"));
