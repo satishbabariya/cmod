@@ -718,48 +718,46 @@ impl LspServer {
                         }));
                     }
                 }
-                "cmod-syntax" => {
-                    if message.contains("semicolon") {
-                        let range = diag.get("range").cloned().unwrap_or(serde_json::json!({
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": 0, "character": 0 },
-                        }));
-                        let end_line = range
-                            .get("end")
-                            .and_then(|e| e.get("line"))
-                            .and_then(|l| l.as_u64())
-                            .unwrap_or(0);
-                        // Get the line content to find where to insert semicolon
-                        let insert_char = self
-                            .documents
-                            .lock()
-                            .ok()
-                            .and_then(|docs| docs.get(uri).cloned())
-                            .and_then(|content| {
-                                content
-                                    .lines()
-                                    .nth(end_line as usize)
-                                    .map(|l| l.trim_end().len())
-                            })
-                            .unwrap_or(0);
+                "cmod-syntax" if message.contains("semicolon") => {
+                    let range = diag.get("range").cloned().unwrap_or(serde_json::json!({
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 0 },
+                    }));
+                    let end_line = range
+                        .get("end")
+                        .and_then(|e| e.get("line"))
+                        .and_then(|l| l.as_u64())
+                        .unwrap_or(0);
+                    // Get the line content to find where to insert semicolon
+                    let insert_char = self
+                        .documents
+                        .lock()
+                        .ok()
+                        .and_then(|docs| docs.get(uri).cloned())
+                        .and_then(|content| {
+                            content
+                                .lines()
+                                .nth(end_line as usize)
+                                .map(|l| l.trim_end().len())
+                        })
+                        .unwrap_or(0);
 
-                        actions.push(serde_json::json!({
-                            "title": "Add missing semicolon",
-                            "kind": "quickfix",
-                            "diagnostics": [diag],
-                            "edit": {
-                                "changes": {
-                                    uri: [{
-                                        "range": {
-                                            "start": { "line": end_line, "character": insert_char },
-                                            "end": { "line": end_line, "character": insert_char },
-                                        },
-                                        "newText": ";",
-                                    }]
-                                }
+                    actions.push(serde_json::json!({
+                        "title": "Add missing semicolon",
+                        "kind": "quickfix",
+                        "diagnostics": [diag],
+                        "edit": {
+                            "changes": {
+                                uri: [{
+                                    "range": {
+                                        "start": { "line": end_line, "character": insert_char },
+                                        "end": { "line": end_line, "character": insert_char },
+                                    },
+                                    "newText": ";",
+                                }]
                             }
-                        }));
-                    }
+                        }
+                    }));
                 }
                 _ => {}
             }
