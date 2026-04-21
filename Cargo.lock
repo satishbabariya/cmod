@@ -305,6 +305,7 @@ dependencies = [
 name = "cmod-security"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "chrono",
  "cmod-cache",
  "cmod-core",
  "dirs",
