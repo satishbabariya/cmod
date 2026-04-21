@@ -94,6 +94,29 @@ impl ClangBackend {
         }
     }
 
+    /// Query the compiler for its version string (e.g. `"18.1.8"`).
+    ///
+    /// Used to seed the cache key so that PCMs produced by different Clang
+    /// majors don't collide in the on-disk cache (PCM format is not
+    /// compatible across versions).
+    pub fn detect_version(&self) -> String {
+        let out = std::process::Command::new(&self.clang_path)
+            .arg("--version")
+            .output();
+        let stdout = match out {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+            _ => return String::new(),
+        };
+        // First line is like: "Homebrew clang version 18.1.8" or
+        // "Apple clang version 21.0.0 (clang-2100.0.123.102)".
+        for token in stdout.split_whitespace() {
+            if token.chars().next().is_some_and(|c| c.is_ascii_digit()) && token.contains('.') {
+                return token.to_string();
+            }
+        }
+        String::new()
+    }
+
     /// Common flags used for all compilations.
     pub fn common_flags(&self) -> Vec<String> {
         let mut flags = vec![format!("-std=c++{}", self.cxx_standard)];

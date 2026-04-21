@@ -53,6 +53,8 @@ pub struct BuildRunner {
     extra_pcm_paths: HashMap<String, PathBuf>,
     /// Extra object files to link (e.g., from workspace dependencies).
     extra_obj_paths: Vec<PathBuf>,
+    /// Memoized `clang --version` result (populated lazily).
+    compiler_version_cache: std::sync::OnceLock<String>,
     /// Directories containing precompiled BMI packages to check before compiling.
     bmi_dirs: Vec<PathBuf>,
     /// Shell for colored, structured output.
@@ -92,10 +94,18 @@ impl BuildRunner {
             max_jobs: 0,
             extra_pcm_paths: HashMap::new(),
             extra_obj_paths: Vec::new(),
+            compiler_version_cache: std::sync::OnceLock::new(),
             bmi_dirs: Vec::new(),
             shell: None,
             worker_pool: None,
         }
+    }
+
+    /// Return the cached compiler version string, running `clang --version`
+    /// on the first call.
+    fn compiler_version(&self) -> &str {
+        self.compiler_version_cache
+            .get_or_init(|| self.backend.detect_version())
     }
 
     /// Set the maximum parallel jobs.
@@ -192,7 +202,7 @@ impl BuildRunner {
             } else {
                 compiler_name
             };
-            let compiler_version = "";
+            let compiler_version = self.compiler_version();
             let target = self.backend.target.as_deref().unwrap_or("");
 
             if let Some(variant) = cmod_cache::distribution::find_compatible_variant(
@@ -358,12 +368,13 @@ impl BuildRunner {
 
         let cxx_standard = self.backend.cxx_standard.clone();
         let stdlib = self.backend.stdlib.clone().unwrap_or_default();
+        let compiler_version = self.compiler_version().to_string();
 
         let inputs = CacheKeyInputs {
             source_hash,
             dependency_hashes: dep_hashes,
             compiler: "clang".to_string(),
-            compiler_version: String::new(),
+            compiler_version,
             cxx_standard,
             stdlib,
             target: plan.target.clone(),
@@ -488,8 +499,8 @@ impl BuildRunner {
                 cache_key: key.to_string(),
                 source_hash,
                 compiler: "clang".to_string(),
-                compiler_version: String::new(),
-                target: String::new(),
+                compiler_version: self.compiler_version().to_string(),
+                target: self.backend.target.clone().unwrap_or_default(),
                 created_at: String::new(),
                 artifacts: artifact_entries,
             };
