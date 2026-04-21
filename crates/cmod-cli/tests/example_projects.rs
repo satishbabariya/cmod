@@ -40,12 +40,33 @@ fn copy_example(name: &str) -> (tempfile::TempDir, PathBuf) {
     (tmp, project_path)
 }
 
-/// Recursively copy a directory tree.
+/// Recursively copy a directory tree, skipping generated artifacts that would
+/// contaminate the tempdir (stale PCMs from a different Clang version defeat
+/// the whole point of the test — see BUG-07 in TEST_REPORT.md).
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fn is_skipped(name: &std::ffi::OsStr) -> bool {
+        matches!(
+            name.to_str(),
+            Some(
+                "build"
+                    | "target"
+                    | ".cache"
+                    | ".git"
+                    | "vendor"
+                    | "compile_commands.json"
+                    | "CMakeLists.txt"
+            )
+        )
+    }
+
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        let name = entry.file_name();
+        if is_skipped(&name) {
+            continue;
+        }
         let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
+        let dst_path = dst.join(&name);
 
         if src_path.is_dir() {
             std::fs::create_dir_all(&dst_path)?;

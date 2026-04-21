@@ -347,8 +347,15 @@ fn build_path_dependencies(
             format!("path dependency: {} ({})", dep_name, dep_path.display()),
         );
 
-        // Load the dependency's config
-        let dep_config = Config::load(&dep_path)?;
+        // Load the dependency's config and propagate the active profile so
+        // release builds of the parent produce release path-dep artifacts.
+        let mut dep_config = Config::load(&dep_path)?;
+        dep_config.profile = config.profile;
+        dep_config.locked = config.locked;
+        dep_config.offline = config.offline;
+        if let Some(t) = &config.target {
+            dep_config.target = Some(t.clone());
+        }
 
         // Collect include directories from the dependency
         let inc_dirs = super::common::detect_include_dirs(&dep_path, &dep_config);

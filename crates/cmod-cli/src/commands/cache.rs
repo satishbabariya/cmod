@@ -74,23 +74,27 @@ pub fn clean(shell: &Shell) -> Result<(), CmodError> {
 }
 
 /// Run `cmod cache push` — push local cache entries to a remote cache.
-pub fn push(shell: &Shell) -> Result<(), CmodError> {
+///
+/// `remote_override` (from `--remote <URL>`) takes precedence over the
+/// manifest's `[cache].shared_url`.
+pub fn push(remote_override: Option<String>, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    let remote_url = config
-        .manifest
-        .cache
-        .as_ref()
-        .and_then(|c| c.shared_url.as_ref())
-        .ok_or_else(|| {
-            CmodError::Other(
-                "no shared cache URL configured; add [cache] shared_url to cmod.toml".to_string(),
-            )
-        })?;
+    let remote_url = remote_override.or_else(|| {
+        config
+            .manifest
+            .cache
+            .as_ref()
+            .and_then(|c| c.shared_url.clone())
+    }).ok_or_else(|| {
+        CmodError::Other(
+            "no shared cache URL configured; add [cache] shared_url to cmod.toml or pass --remote <URL>".to_string(),
+        )
+    })?;
 
     let remote =
-        cmod_cache::HttpRemoteCache::new(remote_url, cmod_cache::RemoteCacheMode::ReadWrite);
+        cmod_cache::HttpRemoteCache::new(&remote_url, cmod_cache::RemoteCacheMode::ReadWrite);
 
     let cache = ArtifactCache::new(config.cache_dir());
     let modules = cache.list_modules()?;
@@ -99,7 +103,7 @@ pub fn push(shell: &Shell) -> Result<(), CmodError> {
         "Pushing",
         format!("{} modules to remote cache...", modules.len()),
     );
-    shell.verbose("Remote", remote_url);
+    shell.verbose("Remote", &remote_url);
 
     let mut pushed = 0;
     for module in &modules {
@@ -134,25 +138,29 @@ pub fn push(shell: &Shell) -> Result<(), CmodError> {
 }
 
 /// Run `cmod cache pull` — pull cache entries from a remote cache.
-pub fn pull(shell: &Shell) -> Result<(), CmodError> {
+///
+/// `remote_override` (from `--remote <URL>`) takes precedence over the
+/// manifest's `[cache].shared_url`.
+pub fn pull(remote_override: Option<String>, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
-    let remote_url = config
-        .manifest
-        .cache
-        .as_ref()
-        .and_then(|c| c.shared_url.as_ref())
-        .ok_or_else(|| {
-            CmodError::Other(
-                "no shared cache URL configured; add [cache] shared_url to cmod.toml".to_string(),
-            )
-        })?;
+    let remote_url = remote_override.or_else(|| {
+        config
+            .manifest
+            .cache
+            .as_ref()
+            .and_then(|c| c.shared_url.clone())
+    }).ok_or_else(|| {
+        CmodError::Other(
+            "no shared cache URL configured; add [cache] shared_url to cmod.toml or pass --remote <URL>".to_string(),
+        )
+    })?;
 
     let remote =
-        cmod_cache::HttpRemoteCache::new(remote_url, cmod_cache::RemoteCacheMode::ReadOnly);
+        cmod_cache::HttpRemoteCache::new(&remote_url, cmod_cache::RemoteCacheMode::ReadOnly);
 
-    shell.verbose("Remote", remote_url);
+    shell.verbose("Remote", &remote_url);
 
     // Load the lockfile to get module names and hashes
     let lockfile = cmod_core::lockfile::Lockfile::load(&config.lockfile_path)

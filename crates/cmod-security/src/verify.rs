@@ -5,6 +5,7 @@ use git2::Repository;
 
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::LockedPackage;
+use cmod_core::types::sanitize_package_name_for_path;
 
 /// Signature verification status.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,7 +327,7 @@ pub fn verify_all_packages(
     let mut results = Vec::new();
 
     for pkg in packages {
-        let repo_path = deps_dir.join(&pkg.name);
+        let repo_path = deps_dir.join(sanitize_package_name_for_path(&pkg.name));
 
         match verify_locked_package(pkg, &repo_path, check_signatures) {
             Ok(result) => results.push(result),
