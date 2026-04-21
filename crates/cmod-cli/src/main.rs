@@ -456,9 +456,17 @@ enum CacheAction {
     /// Clear the local cache
     Clean,
     /// Push local cache entries to remote cache
-    Push,
+    Push {
+        /// Remote cache URL (overrides manifest [cache].shared_url)
+        #[arg(long = "remote", value_name = "URL")]
+        remote: Option<String>,
+    },
     /// Pull cache entries from remote cache
-    Pull,
+    Pull {
+        /// Remote cache URL (overrides manifest [cache].shared_url)
+        #[arg(long = "remote", value_name = "URL")]
+        remote: Option<String>,
+    },
     /// Run garbage collection (evict old/oversized entries)
     Gc,
     /// Export a cached module as a BMI package
@@ -586,8 +594,8 @@ fn main() {
         Commands::Cache { action } => match action {
             CacheAction::Status => commands::cache::status(&shell),
             CacheAction::Clean => commands::cache::clean(&shell),
-            CacheAction::Push => commands::cache::push(&shell),
-            CacheAction::Pull => commands::cache::pull(&shell),
+            CacheAction::Push { remote } => commands::cache::push(remote, &shell),
+            CacheAction::Pull { remote } => commands::cache::pull(remote, &shell),
             CacheAction::Gc => commands::cache::gc(&shell),
             CacheAction::Export {
                 module,
