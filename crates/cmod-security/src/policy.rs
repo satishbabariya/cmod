@@ -6,6 +6,7 @@
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::LockedPackage;
 use cmod_core::manifest::Security;
+use cmod_core::types::sanitize_package_name_for_path;
 
 use crate::trust::TrustDb;
 use crate::verify::{verify_locked_package, SignatureStatus};
@@ -136,7 +137,7 @@ impl SecurityPolicy {
                     SignatureRequirement::None => continue,
                 };
 
-                let repo_path = deps_dir.join(&pkg.name);
+                let repo_path = deps_dir.join(sanitize_package_name_for_path(&pkg.name));
                 if !repo_path.exists() {
                     // Can't check signature if repo not checked out
                     continue;
