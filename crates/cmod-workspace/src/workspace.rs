@@ -273,39 +273,71 @@ impl WorkspaceManager {
             .and_then(|ws| ws.version.as_deref())
     }
 
-    /// Add a new member to the workspace.
+    /// Add a member to the workspace.
+    ///
+    /// Behavior depends on what already exists at `<root>/<name>`:
+    ///
+    /// 1. **Dir exists with a `cmod.toml`** → register it (no scaffolding).
+    /// 2. **Dir exists without a `cmod.toml`** → reject (ambiguous; caller
+    ///    can delete the dir and retry, or add the manifest manually).
+    /// 3. **Dir does not exist** → scaffold `src/lib.cppm` + `cmod.toml`.
     pub fn add_member(&mut self, name: &str) -> Result<(), CmodError> {
-        let member_dir = self.root.join(name);
-        if member_dir.exists() {
+        // Early-reject names that would be unsafe to use as path components.
+        if name.is_empty() || name.contains("..") || name.starts_with('/') || name.starts_with('\\')
+        {
             return Err(CmodError::InvalidManifest {
-                reason: format!("directory '{}' already exists", name),
+                reason: format!("invalid member name '{}'", name),
             });
         }
 
-        // Create member directory structure
-        std::fs::create_dir_all(member_dir.join("src"))?;
+        if let Some(ws) = &self.root_manifest.workspace {
+            if ws.members.iter().any(|m| m == name) {
+                return Err(CmodError::InvalidManifest {
+                    reason: format!("'{}' is already a workspace member", name),
+                });
+            }
+        }
 
-        // Create member manifest
-        let member_manifest = cmod_core::manifest::default_manifest(name);
-        member_manifest.save(&member_dir.join("cmod.toml"))?;
+        let member_dir = self.root.join(name);
+        let manifest_path = member_dir.join("cmod.toml");
 
-        // Create a stub module interface
-        std::fs::write(
-            member_dir.join("src/lib.cppm"),
-            format!("export module local.{};\n", name),
-        )?;
+        let (member_manifest, scaffolded) = if member_dir.exists() {
+            if !member_dir.is_dir() {
+                return Err(CmodError::InvalidManifest {
+                    reason: format!("'{}' exists but is not a directory", name),
+                });
+            }
+            if !manifest_path.exists() {
+                return Err(CmodError::InvalidManifest {
+                    reason: format!(
+                        "'{}' exists but has no cmod.toml; add a manifest first or remove the directory",
+                        name
+                    ),
+                });
+            }
+            (cmod_core::manifest::Manifest::load(&manifest_path)?, false)
+        } else {
+            std::fs::create_dir_all(member_dir.join("src"))?;
+            let m = cmod_core::manifest::default_manifest(name);
+            m.save(&manifest_path)?;
+            std::fs::write(
+                member_dir.join("src/lib.cppm"),
+                format!("export module local.{};\n", name),
+            )?;
+            (m, true)
+        };
 
-        // Update root manifest to include the new member
+        let _ = scaffolded; // reserved for future `shell.verbose` messaging via the CLI layer
+
         if let Some(ws) = &mut self.root_manifest.workspace {
             ws.members.push(name.to_string());
         }
         self.root_manifest.save(&self.root.join("cmod.toml"))?;
 
-        // Add to members list
         self.members.push(WorkspaceMember {
             name: name.to_string(),
             path: member_dir,
-            manifest: cmod_core::manifest::default_manifest(name),
+            manifest: member_manifest,
         });
 
         Ok(())
