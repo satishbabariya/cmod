@@ -531,9 +531,8 @@ impl Resolver {
 
     /// Compute the local directory for a dependency's repo clone.
     fn dep_repo_dir(&self, name: &str) -> PathBuf {
-        // Sanitize the name for filesystem use
-        let sanitized = name.replace(['/', '\\'], "_");
-        self.deps_dir.join(sanitized)
+        self.deps_dir
+            .join(cmod_core::types::sanitize_package_name_for_path(name))
     }
 
     /// Add a single dependency to an existing manifest and re-resolve.

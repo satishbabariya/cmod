@@ -110,6 +110,36 @@ impl fmt::Display for ModuleId {
     }
 }
 
+/// Reject package names that could produce unsafe filesystem paths after
+/// sanitization (traversal sequences, nulls, etc). Slashes are allowed —
+/// callers must run the value through [`sanitize_package_name_for_path`]
+/// before using it as a path component.
+pub fn is_acceptable_package_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    if name.contains("..") {
+        return false;
+    }
+    if name.starts_with('.') || name.starts_with('/') || name.starts_with('\\') {
+        return false;
+    }
+    if name.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    true
+}
+
+/// Map a package name (e.g. `github.com/fmtlib/fmt`) to a safe single path
+/// component by replacing path separators with underscores.
+///
+/// This mirrors the encoding used by the resolver when writing
+/// `build/deps/<pkg>` directories. Must agree across all callers that
+/// reference a vendored or fetched dependency on disk.
+pub fn sanitize_package_name_for_path(name: &str) -> String {
+    name.replace(['/', '\\'], "_")
+}
+
 /// The kind of C++ module unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
