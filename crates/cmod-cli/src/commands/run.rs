@@ -59,8 +59,10 @@ pub fn run(
         return run_workspace_member(&config, release, package, args, shell);
     }
 
-    // Find the built binary
-    let build_dir = config.build_dir();
+    // Find the built binary — resolve the profile-specific dir directly so
+    // `--release` works even when the active `Config` profile defaults to Debug.
+    let profile_dir = if release { "release" } else { "debug" };
+    let build_dir = config.root.join("build").join(profile_dir);
     let binary_name = &config.manifest.package.name;
     let binary_path = find_binary(&build_dir, binary_name)?;
 
