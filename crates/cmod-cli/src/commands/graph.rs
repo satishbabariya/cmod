@@ -106,7 +106,24 @@ pub fn run(
     let sources = runner::discover_sources_multi(&src_dirs, &exclude)?;
 
     if sources.is_empty() {
-        shell.status("Graph", "no source files found");
+        if config.manifest.is_workspace() {
+            let members = cmod_workspace::WorkspaceManager::load(&config.root)
+                .map(|ws| {
+                    ws.members
+                        .iter()
+                        .map(|m| m.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            shell.warn(format!(
+                "workspace root has no sources; the graph is per-member — \
+                 cd into a member and run `cmod graph` there (members: {})",
+                if members.is_empty() { "none" } else { &members }
+            ));
+        } else {
+            shell.status("Graph", "no source files found");
+        }
         return Ok(());
     }
 
