@@ -275,7 +275,7 @@ fn discover_and_filter_tests(
 
     let filtered: Vec<_> = test_sources
         .into_iter()
-        .filter(|src| matches_test_patterns(src, &test_patterns, &exclude_patterns))
+        .filter(|src| matches_test_patterns(src, &config.root, &test_patterns, &exclude_patterns))
         .filter(|src| matches_cli_filter(src, &opts.name, &opts.filter))
         .collect();
 
@@ -285,17 +285,22 @@ fn discover_and_filter_tests(
 /// Check if a test source matches the configured patterns using glob.
 /// Patterns containing glob metacharacters (`*`, `?`, `[`) are treated as globs.
 /// Plain strings without metacharacters are treated as substring matches.
+/// Globs are matched against the filename, the project-root-relative path
+/// (so manifest patterns like `tests/**/*.cpp` work), and the absolute path.
 fn matches_test_patterns(
     source: &Path,
+    root: &Path,
     test_patterns: &[String],
     exclude_patterns: &[String],
 ) -> bool {
     let source_str = source.to_string_lossy();
+    let relative = source.strip_prefix(root).unwrap_or(source);
+    let relative_str = relative.to_string_lossy();
     let filename = source.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
     // Check exclude patterns first
     for pattern in exclude_patterns {
-        if pattern_matches(pattern, filename, &source_str) {
+        if pattern_matches(pattern, filename, &relative_str, &source_str) {
             return false;
         }
     }
@@ -308,15 +313,17 @@ fn matches_test_patterns(
     // Must match at least one include pattern
     test_patterns
         .iter()
-        .any(|pattern| pattern_matches(pattern, filename, &source_str))
+        .any(|pattern| pattern_matches(pattern, filename, &relative_str, &source_str))
 }
 
 /// Match a pattern against a filename/path. Uses glob if the pattern contains
 /// metacharacters (`*`, `?`, `[`), otherwise uses substring matching.
-fn pattern_matches(pattern: &str, filename: &str, source_str: &str) -> bool {
+fn pattern_matches(pattern: &str, filename: &str, relative_str: &str, source_str: &str) -> bool {
     if is_glob_pattern(pattern) {
         if let Ok(glob_pat) = glob::Pattern::new(pattern) {
-            return glob_pat.matches(filename) || glob_pat.matches(source_str);
+            return glob_pat.matches(filename)
+                || glob_pat.matches(relative_str)
+                || glob_pat.matches(source_str);
         }
     }
     // Substring fallback
@@ -1462,52 +1469,105 @@ mod tests {
 
     #[test]
     fn test_matches_test_patterns_glob() {
+        let root = Path::new("/project");
         let source = Path::new("/project/tests/test_math.cpp");
         assert!(matches_test_patterns(
             source,
+            root,
             &["test_*.cpp".to_string()],
             &[]
         ));
         assert!(!matches_test_patterns(
             source,
+            root,
             &["bench_*.cpp".to_string()],
             &[]
         ));
         // Glob exclude
         assert!(!matches_test_patterns(
             source,
+            root,
             &[],
             &["test_math*".to_string()]
         ));
     }
 
+    /// Regression test for #39: root-relative glob patterns like
+    /// `tests/**/*.cpp` (used by examples/with-tests) must match sources
+    /// discovered as absolute paths.
+    #[test]
+    fn test_matches_test_patterns_root_relative_glob() {
+        let root = Path::new("/project");
+        let patterns = &["tests/**/*.cpp".to_string()];
+        assert!(matches_test_patterns(
+            Path::new("/project/tests/test_basic.cpp"),
+            root,
+            patterns,
+            &[]
+        ));
+        assert!(matches_test_patterns(
+            Path::new("/project/tests/unit/test_deep.cpp"),
+            root,
+            patterns,
+            &[]
+        ));
+        assert!(!matches_test_patterns(
+            Path::new("/project/benches/bench.cpp"),
+            root,
+            patterns,
+            &[]
+        ));
+        // Root-relative exclude patterns must work the same way
+        assert!(!matches_test_patterns(
+            Path::new("/project/tests/fixtures/data.cpp"),
+            root,
+            &[],
+            &["tests/fixtures/**".to_string()]
+        ));
+    }
+
     #[test]
     fn test_matches_test_patterns_substring_fallback() {
+        let root = Path::new("/project");
         let source = Path::new("/project/tests/test_math.cpp");
         // Plain string without glob metacharacters uses substring matching
-        assert!(matches_test_patterns(source, &["math".to_string()], &[]));
+        assert!(matches_test_patterns(
+            source,
+            root,
+            &["math".to_string()],
+            &[]
+        ));
         assert!(!matches_test_patterns(
             source,
+            root,
             &["physics".to_string()],
             &[]
         ));
         // Glob wildcard also works
-        assert!(matches_test_patterns(source, &["*math*".to_string()], &[]));
+        assert!(matches_test_patterns(
+            source,
+            root,
+            &["*math*".to_string()],
+            &[]
+        ));
     }
 
     #[test]
     fn test_matches_test_patterns_empty() {
+        let root = Path::new("/project");
         let source = Path::new("/project/tests/test_basic.cpp");
         // Empty patterns match everything
-        assert!(matches_test_patterns(source, &[], &[]));
+        assert!(matches_test_patterns(source, root, &[], &[]));
     }
 
     #[test]
     fn test_matches_test_patterns_exclude_takes_precedence() {
+        let root = Path::new("/project");
         let source = Path::new("/project/tests/test_math.cpp");
         // Include matches but exclude also matches — should be excluded
         assert!(!matches_test_patterns(
             source,
+            root,
             &["test_*.cpp".to_string()],
             &["*math*".to_string()]
         ));
