@@ -466,14 +466,14 @@ cmod cache inspect <MODULE> <KEY>
 Export a cached module as a BMI package.
 
 ```
-cmod cache export <MODULE> <KEY> -o <OUTPUT>
+cmod cache export <MODULE> <KEY> <OUTPUT>
 ```
 
-| Argument/Option | Description |
-|-----------------|-------------|
+| Argument | Description |
+|----------|-------------|
 | `<MODULE>` | Module name |
 | `<KEY>` | Cache key (hex) |
-| `-o <OUTPUT>` | Output directory |
+| `<OUTPUT>` | Output directory |
 
 ### `cmod cache import`
 
