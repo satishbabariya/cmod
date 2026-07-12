@@ -16,17 +16,12 @@ impl ModuleId {
         let url = url.trim_end_matches('/').trim_end_matches(".git");
 
         // Strip protocol and normalize
-        let path_str = if let Some(rest) = url.strip_prefix("https://") {
-            rest.to_string()
-        } else if let Some(rest) = url.strip_prefix("http://") {
-            rest.to_string()
-        } else if let Some(rest) = url.strip_prefix("ssh://git@") {
-            rest.to_string()
-        } else if let Some(rest) = url.strip_prefix("git@") {
-            rest.replace(':', "/")
-        } else {
-            return None;
-        };
+        let path_str = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .or_else(|| url.strip_prefix("ssh://git@"))
+            .map(str::to_string)
+            .or_else(|| url.strip_prefix("git@").map(|rest| rest.replace(':', "/")))?;
 
         let path = path_str.replace(':', "/");
 
