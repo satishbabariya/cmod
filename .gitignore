@@ -41,3 +41,6 @@ editors/clion/.gradle/
 editors/clion/.idea/
 
 www/
+# Lockfiles generated when building example projects locally
+# (intentionally committed example lockfiles remain tracked)
+examples/**/cmod.lock
