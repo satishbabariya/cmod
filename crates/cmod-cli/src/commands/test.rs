@@ -1301,17 +1301,22 @@ fn print_human_results(summary: &TestSummary, shell: &Shell) {
     );
 }
 
-fn print_json_results(summary: &TestSummary) {
+/// Render the JSON report. `summary.failed` covers assertion and compile
+/// failures; timeouts are reported only in `timed_out` so counts never
+/// double-count across fields.
+fn render_json(summary: &TestSummary) -> serde_json::Value {
     let tests_json: Vec<serde_json::Value> = summary
         .results
         .iter()
         .map(|r| {
-            let (status_str, exit_code) = match &r.status {
-                TestStatus::Passed => ("passed", None),
-                TestStatus::Failed { exit_code } => ("failed", *exit_code),
-                TestStatus::TimedOut => ("timed_out", None),
-                TestStatus::CompileFailed { .. } => ("compile_failed", None),
-                TestStatus::Skipped => ("skipped", None),
+            let (status_str, exit_code, reason) = match &r.status {
+                TestStatus::Passed => ("passed", None, None),
+                TestStatus::Failed { exit_code } => ("failed", *exit_code, None),
+                TestStatus::TimedOut => ("timed_out", None, None),
+                TestStatus::CompileFailed { reason } => {
+                    ("compile_failed", None, Some(reason.clone()))
+                }
+                TestStatus::Skipped => ("skipped", None, None),
             };
 
             let mut obj = serde_json::json!({
@@ -1324,6 +1329,9 @@ fn print_json_results(summary: &TestSummary) {
             if let Some(code) = exit_code {
                 obj["exit_code"] = serde_json::json!(code);
             }
+            if let Some(reason) = reason {
+                obj["reason"] = serde_json::json!(reason);
+            }
             if !r.stderr.is_empty() {
                 obj["stderr"] = serde_json::json!(r.stderr);
             }
@@ -1335,96 +1343,119 @@ fn print_json_results(summary: &TestSummary) {
         })
         .collect();
 
-    let output = serde_json::json!({
+    serde_json::json!({
         "tests": tests_json,
         "summary": {
+            "total": summary.total(),
             "passed": summary.passed,
-            "failed": summary.failed + summary.timed_out,
-            "skipped": summary.skipped,
+            "failed": summary.failed,
             "timed_out": summary.timed_out,
+            "skipped": summary.skipped,
+            "success": summary.is_success(),
             "duration_ms": summary.total_duration.as_millis() as u64,
         }
-    });
+    })
+}
 
+fn print_json_results(summary: &TestSummary) {
     println!(
         "{}",
-        serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
+        serde_json::to_string_pretty(&render_json(summary)).unwrap_or_else(|_| "{}".to_string())
     );
 }
 
-fn print_junit_results(summary: &TestSummary) {
+/// Render the JUnit XML report. Assertion failures map to `<failure>`;
+/// abnormal terminations (timeout, compile failure) map to `<error>`, per
+/// JUnit convention. Suite-level count attributes are what Jenkins and
+/// GitLab parsers read.
+fn render_junit(summary: &TestSummary) -> String {
+    use std::fmt::Write as _;
+
     let total = summary.total();
-    let failures = summary.failed + summary.timed_out;
+    let failures = summary
+        .results
+        .iter()
+        .filter(|r| matches!(r.status, TestStatus::Failed { .. }))
+        .count();
+    let errors = summary
+        .results
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.status,
+                TestStatus::TimedOut | TestStatus::CompileFailed { .. }
+            )
+        })
+        .count();
+    let skipped = summary.skipped;
     let time = format!("{:.3}", summary.total_duration.as_secs_f64());
 
-    println!(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
-    println!(
-        r#"<testsuites tests="{}" failures="{}" time="{}">"#,
-        total, failures, time
+    let mut xml = String::new();
+    let _ = writeln!(xml, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
+    let _ = writeln!(
+        xml,
+        r#"<testsuites tests="{}" failures="{}" errors="{}" skipped="{}" time="{}">"#,
+        total, failures, errors, skipped, time
     );
-    println!(r#"  <testsuite name="cmod" tests="{}">"#, total);
+    let _ = writeln!(
+        xml,
+        r#"  <testsuite name="cmod" tests="{}" failures="{}" errors="{}" skipped="{}" time="{}">"#,
+        total, failures, errors, skipped, time
+    );
 
     for r in &summary.results {
         let test_time = format!("{:.3}", r.duration.as_secs_f64());
+        let open = format!(
+            r#"    <testcase classname="cmod" name="{}" time="{}""#,
+            escape_xml(&r.name),
+            test_time
+        );
         match &r.status {
             TestStatus::Passed => {
-                println!(
-                    r#"    <testcase name="{}" time="{}"/>"#,
-                    escape_xml(&r.name),
-                    test_time
-                );
+                let _ = writeln!(xml, "{}/>", open);
             }
             TestStatus::Failed { exit_code } => {
                 let msg = exit_code
                     .map(|c| format!("exit code {}", c))
                     .unwrap_or_else(|| "failed".to_string());
-                println!(
-                    r#"    <testcase name="{}" time="{}">"#,
-                    escape_xml(&r.name),
-                    test_time
-                );
-                println!(
+                let _ = writeln!(xml, "{}>", open);
+                let _ = writeln!(
+                    xml,
                     r#"      <failure message="{}">{}</failure>"#,
                     escape_xml(&msg),
                     escape_xml(&r.stderr)
                 );
-                println!("    </testcase>");
+                let _ = writeln!(xml, "    </testcase>");
             }
             TestStatus::TimedOut => {
-                println!(
-                    r#"    <testcase name="{}" time="{}">"#,
-                    escape_xml(&r.name),
-                    test_time
-                );
-                println!(r#"      <failure message="timed out"/>"#);
-                println!("    </testcase>");
+                let _ = writeln!(xml, "{}>", open);
+                let _ = writeln!(xml, r#"      <error message="timed out"/>"#);
+                let _ = writeln!(xml, "    </testcase>");
             }
             TestStatus::CompileFailed { reason } => {
-                println!(
-                    r#"    <testcase name="{}" time="{}">"#,
-                    escape_xml(&r.name),
-                    test_time
-                );
-                println!(
-                    r#"      <failure message="compilation failed">{}</failure>"#,
+                let _ = writeln!(xml, "{}>", open);
+                let _ = writeln!(
+                    xml,
+                    r#"      <error message="compilation failed">{}</error>"#,
                     escape_xml(reason)
                 );
-                println!("    </testcase>");
+                let _ = writeln!(xml, "    </testcase>");
             }
             TestStatus::Skipped => {
-                println!(
-                    r#"    <testcase name="{}" time="{}">"#,
-                    escape_xml(&r.name),
-                    test_time
-                );
-                println!("      <skipped/>");
-                println!("    </testcase>");
+                let _ = writeln!(xml, "{}>", open);
+                let _ = writeln!(xml, "      <skipped/>");
+                let _ = writeln!(xml, "    </testcase>");
             }
         }
     }
 
-    println!("  </testsuite>");
-    println!("</testsuites>");
+    let _ = writeln!(xml, "  </testsuite>");
+    let _ = writeln!(xml, "</testsuites>");
+    xml
+}
+
+fn print_junit_results(summary: &TestSummary) {
+    print!("{}", render_junit(summary));
 }
 
 fn print_tap_results(summary: &TestSummary) {
@@ -1451,8 +1482,14 @@ fn print_tap_results(summary: &TestSummary) {
     }
 }
 
+/// Escape XML special characters and strip characters that are invalid in
+/// XML 1.0 (e.g. ANSI escape bytes from compiler output). Tab, newline,
+/// and carriage return are preserved.
 fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
+    s.chars()
+        .filter(|&c| c == '\t' || c == '\n' || c == '\r' || c >= '\u{20}')
+        .collect::<String>()
+        .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
@@ -1597,6 +1634,104 @@ mod tests {
             &Some("physics".to_string()),
             &None
         ));
+    }
+
+    // --- structured output rendering (#43) ---
+
+    fn make_result(name: &str, status: TestStatus, ms: u64) -> TestResult {
+        TestResult {
+            name: name.to_string(),
+            status,
+            duration: Duration::from_millis(ms),
+            stdout: String::new(),
+            stderr: String::new(),
+            source: PathBuf::from(format!("tests/{}.cpp", name)),
+        }
+    }
+
+    fn mixed_summary() -> TestSummary {
+        let mut s = TestSummary::new();
+        for r in [
+            make_result("t_pass", TestStatus::Passed, 10),
+            make_result("t_fail", TestStatus::Failed { exit_code: Some(2) }, 20),
+            make_result("t_timeout", TestStatus::TimedOut, 30),
+            make_result(
+                "t_nocompile",
+                TestStatus::CompileFailed {
+                    reason: "missing semicolon".to_string(),
+                },
+                0,
+            ),
+            make_result("t_skip", TestStatus::Skipped, 0),
+        ] {
+            update_summary(&mut s, r);
+        }
+        s.total_duration = Duration::from_millis(60);
+        s
+    }
+
+    #[test]
+    fn test_render_json_summary_counts_do_not_double_count() {
+        let v = render_json(&mixed_summary());
+        let s = &v["summary"];
+        assert_eq!(s["total"], 5);
+        assert_eq!(s["passed"], 1);
+        // failed = assertion + compile failures; timed_out reported separately
+        assert_eq!(s["failed"], 2);
+        assert_eq!(s["timed_out"], 1);
+        assert_eq!(s["skipped"], 1);
+        assert_eq!(s["success"], false);
+        assert_eq!(s["duration_ms"], 60);
+    }
+
+    #[test]
+    fn test_render_json_includes_compile_failure_reason() {
+        let v = render_json(&mixed_summary());
+        let tests = v["tests"].as_array().unwrap();
+        let nocompile = tests
+            .iter()
+            .find(|t| t["name"] == "t_nocompile")
+            .expect("t_nocompile entry");
+        assert_eq!(nocompile["status"], "compile_failed");
+        assert_eq!(nocompile["reason"], "missing semicolon");
+        let fail = tests.iter().find(|t| t["name"] == "t_fail").unwrap();
+        assert_eq!(fail["exit_code"], 2);
+    }
+
+    #[test]
+    fn test_render_junit_suite_attributes() {
+        let xml = render_junit(&mixed_summary());
+        // Per-suite attributes required by Jenkins/GitLab parsers
+        assert!(
+            xml.contains(r#"<testsuite name="cmod" tests="5" failures="1" errors="2" skipped="1""#),
+            "testsuite attrs missing: {}",
+            xml
+        );
+        assert!(xml.contains(r#"<testsuites tests="5" failures="1" errors="2" skipped="1""#));
+    }
+
+    #[test]
+    fn test_render_junit_error_vs_failure_elements() {
+        let xml = render_junit(&mixed_summary());
+        // Assertion failure → <failure>; abnormal termination → <error>
+        assert!(xml.contains(r#"<failure message="exit code 2""#));
+        assert!(xml.contains(r#"<error message="timed out""#));
+        assert!(xml.contains(r#"<error message="compilation failed">missing semicolon</error>"#));
+        assert!(xml.contains("<skipped/>"));
+    }
+
+    #[test]
+    fn test_render_junit_testcase_classname() {
+        let xml = render_junit(&mixed_summary());
+        assert!(xml.contains(r#"<testcase classname="cmod" name="t_pass""#));
+    }
+
+    #[test]
+    fn test_escape_xml_strips_control_chars() {
+        // ANSI color codes in clang output must not produce invalid XML
+        assert_eq!(escape_xml("a\x1b[31mred\x1b[0mb"), "a[31mred[0mb");
+        // Tab and newline are valid XML whitespace and must survive
+        assert_eq!(escape_xml("a\tb\nc"), "a\tb\nc");
     }
 
     #[test]

@@ -330,34 +330,49 @@ Running 3 tests...
 
 ### `json`
 
-Machine-readable JSON. Each test is an object in the `tests` array:
+Machine-readable JSON. Each test is an object in the `tests` array; per-test
+`status` is one of `passed`, `failed`, `timed_out`, `compile_failed`, or
+`skipped`. Failed tests carry `exit_code`, compile failures carry `reason`,
+and non-empty `stdout`/`stderr` are included verbatim.
+
+In the `summary`, `failed` counts assertion and compile failures; timeouts
+are reported only in `timed_out`, so the counts sum to `total` without
+double-counting. `success` is the same condition that drives the exit code.
 
 ```json
 {
-  "suite": "my-project",
   "tests": [
-    {"name": "test_basic", "status": "pass", "duration_ms": 20},
-    {"name": "test_math", "status": "pass", "duration_ms": 10},
-    {"name": "test_edge_cases", "status": "fail", "duration_ms": 30, "output": "assertion failed..."}
+    {"name": "test_basic", "status": "passed", "duration_ms": 20, "file": "tests/test_basic.cpp"},
+    {"name": "test_math", "status": "passed", "duration_ms": 10, "file": "tests/test_math.cpp"},
+    {"name": "test_edge_cases", "status": "failed", "duration_ms": 30, "file": "tests/test_edge_cases.cpp", "exit_code": 1, "stderr": "assertion failed..."}
   ],
-  "passed": 2,
-  "failed": 1,
-  "duration_ms": 60
+  "summary": {
+    "total": 3,
+    "passed": 2,
+    "failed": 1,
+    "timed_out": 0,
+    "skipped": 0,
+    "success": false,
+    "duration_ms": 60
+  }
 }
 ```
 
 ### `junit`
 
-JUnit XML format, compatible with most CI systems:
+JUnit XML format, compatible with most CI systems (Jenkins, GitLab, and
+similar parsers read the per-suite `failures`/`errors`/`skipped`/`time`
+attributes). Assertion failures map to `<failure>`; abnormal terminations
+(timeouts, compile failures) map to `<error>`.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuites tests="3" failures="1" time="0.06">
-  <testsuite name="my-project" tests="3" failures="1" time="0.06">
-    <testcase name="test_basic" time="0.02"/>
-    <testcase name="test_math" time="0.01"/>
-    <testcase name="test_edge_cases" time="0.03">
-      <failure message="assertion failed: factorial(0) == 1"/>
+<testsuites tests="3" failures="1" errors="0" skipped="0" time="0.060">
+  <testsuite name="cmod" tests="3" failures="1" errors="0" skipped="0" time="0.060">
+    <testcase classname="cmod" name="test_basic" time="0.020"/>
+    <testcase classname="cmod" name="test_math" time="0.010"/>
+    <testcase classname="cmod" name="test_edge_cases" time="0.030">
+      <failure message="exit code 1">assertion failed: factorial(0) == 1</failure>
     </testcase>
   </testsuite>
 </testsuites>
@@ -368,7 +383,7 @@ JUnit XML format, compatible with most CI systems:
 Test Anything Protocol (TAP) format:
 
 ```tap
-TAP version 13
+TAP version 14
 1..3
 ok 1 - test_basic (0.02s)
 ok 2 - test_math (0.01s)
