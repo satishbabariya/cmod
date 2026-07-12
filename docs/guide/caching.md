@@ -83,7 +83,7 @@ cmod cache inspect <MODULE> <KEY>
 Export a cached module as a BMI package:
 
 ```bash
-cmod cache export <MODULE> <KEY> -o /path/to/output
+cmod cache export <MODULE> <KEY> /path/to/output
 ```
 
 ### Import a BMI package

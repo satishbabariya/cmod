@@ -1218,6 +1218,7 @@ fn test_cache_export_import() {
     run_cmod(tmp.path(), &["init", "--name", "cache_exp"]);
 
     // cache export without a real cache entry should fail gracefully
+    // (all-positional: MODULE KEY OUTPUT — see #40)
     let output = run_cmod(
         tmp.path(),
         &[
@@ -1225,13 +1226,26 @@ fn test_cache_export_import() {
             "export",
             "nonexistent",
             "somekey",
-            "--output",
             tmp.path().join("export").to_str().unwrap(),
         ],
     );
     assert!(
         !output.status.success(),
         "expected cache export to fail for nonexistent module"
+    );
+
+    // the old flag form must now be rejected by clap
+    let output = run_cmod(
+        tmp.path(),
+        &["cache", "export", "nonexistent", "somekey", "--output", "x"],
+    );
+    assert!(
+        !output.status.success(),
+        "expected --output flag to be rejected after positional migration"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--output"),
+        "clap error should mention the unexpected --output flag"
     );
 
     // cache import without a package should fail gracefully

@@ -476,7 +476,6 @@ enum CacheAction {
         /// Cache key of the entry to export
         key: String,
         /// Output directory
-        #[arg(short, long)]
         output: String,
     },
     /// Import a BMI package into the local cache
