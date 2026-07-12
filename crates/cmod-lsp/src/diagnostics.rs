@@ -322,18 +322,16 @@ fn parse_clang_diagnostic_line(line: &str) -> Option<ClangDiagnostic> {
 
     let rest = parts[3].trim();
     // rest should be "severity: message"
-    let (severity, message) = if let Some(idx) = rest.find(':') {
-        let sev = rest[..idx].trim().to_string();
-        let msg = rest[idx + 1..].trim().to_string();
-        // Validate severity is a known keyword
-        if matches!(sev.as_str(), "error" | "warning" | "note" | "fatal error") {
-            (sev, msg)
-        } else {
-            return None;
-        }
-    } else {
+    let idx = rest.find(':')?;
+    let severity = rest[..idx].trim().to_string();
+    let message = rest[idx + 1..].trim().to_string();
+    // Validate severity is a known keyword
+    if !matches!(
+        severity.as_str(),
+        "error" | "warning" | "note" | "fatal error"
+    ) {
         return None;
-    };
+    }
 
     Some(ClangDiagnostic {
         file,
