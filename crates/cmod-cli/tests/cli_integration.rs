@@ -838,6 +838,31 @@ fn test_workspace_list() {
 }
 
 #[test]
+fn test_graph_at_workspace_root_message() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--workspace", "--name", "wsgraph"]);
+    run_cmod(tmp.path(), &["workspace", "add", "core", "--scaffold"]);
+
+    let output = run_cmod(tmp.path(), &["graph"]);
+    assert!(
+        output.status.success(),
+        "graph at workspace root should not fail: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("workspace root has no sources"),
+        "should explain the workspace-root situation, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("core"),
+        "should list member names to guide the user, got: {}",
+        stderr
+    );
+}
+
+#[test]
 fn test_workspace_add_scaffold() {
     let tmp = TempDir::new().unwrap();
     run_cmod(tmp.path(), &["init", "--workspace", "--name", "wsscaffold"]);
