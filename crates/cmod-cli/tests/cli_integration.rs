@@ -838,6 +838,33 @@ fn test_workspace_list() {
 }
 
 #[test]
+fn test_workspace_add_scaffold() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--workspace", "--name", "wsscaffold"]);
+
+    // --scaffold creates a fresh member
+    let output = run_cmod(tmp.path(), &["workspace", "add", "newmember", "--scaffold"]);
+    assert!(
+        output.status.success(),
+        "workspace add --scaffold should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(tmp.path().join("newmember/cmod.toml").exists());
+
+    // --scaffold on an existing directory must fail with a helpful message
+    std::fs::create_dir_all(tmp.path().join("taken")).unwrap();
+    let output = run_cmod(tmp.path(), &["workspace", "add", "taken", "--scaffold"]);
+    assert!(
+        !output.status.success(),
+        "workspace add --scaffold over an existing dir should fail"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("already exists"),
+        "error should mention the directory already exists"
+    );
+}
+
+#[test]
 fn test_resolve_with_target_flag() {
     let tmp = TempDir::new().unwrap();
     run_cmod(tmp.path(), &["init", "--name", "targettest"]);

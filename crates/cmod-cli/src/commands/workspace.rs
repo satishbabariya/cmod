@@ -52,8 +52,8 @@ pub fn list(shell: &Shell) -> Result<(), CmodError> {
     Ok(())
 }
 
-/// Run `cmod workspace add <name>` — add a new member to the workspace.
-pub fn add(name: &str, shell: &Shell) -> Result<(), CmodError> {
+/// Run `cmod workspace add <name> [--scaffold]` — add a member to the workspace.
+pub fn add(name: &str, scaffold: bool, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
 
@@ -67,7 +67,7 @@ pub fn add(name: &str, shell: &Shell) -> Result<(), CmodError> {
 
     shell.verbose("Adding", format!("member '{}' to workspace", name));
 
-    ws.add_member(name)?;
+    ws.add_member(name, scaffold)?;
 
     shell.status("Added", format!("member '{}' to workspace", name));
     shell.verbose("Created", format!("{}/src/lib.cppm", name));
