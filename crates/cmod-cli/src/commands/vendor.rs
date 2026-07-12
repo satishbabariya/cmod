@@ -99,31 +99,45 @@ fn vendor_git_dep(
         copy_dir_recursive(&checkout, dest)?;
     } else if let Some(ref repo_url) = pkg.repo {
         shell.verbose("Cloning", format!("{} for vendor...", pkg.name));
-        let repo = git2::Repository::clone(repo_url, dest).map_err(|e| CmodError::GitError {
-            reason: format!("failed to clone {}: {}", repo_url, e),
-        })?;
+        let repo = open_or_clone(repo_url, dest)?;
 
         if let Some(ref commit_hash) = pkg.commit {
             let oid = git2::Oid::from_str(commit_hash).map_err(|e| CmodError::GitError {
                 reason: format!("invalid commit hash: {}", e),
             })?;
-            let commit = repo.find_commit(oid).map_err(|e| CmodError::GitError {
-                reason: format!("commit not found: {}", e),
-            })?;
-            repo.checkout_tree(commit.as_object(), None)
-                .map_err(|e| CmodError::GitError {
-                    reason: format!("checkout failed: {}", e),
-                })?;
-            repo.set_head_detached(oid)
-                .map_err(|e| CmodError::GitError {
-                    reason: format!("detach head failed: {}", e),
-                })?;
+            cmod_resolver::git::checkout_commit(&repo, oid)?;
         }
     } else {
         shell.warn(format!("no source for {}, skipping", pkg.name));
     }
 
     Ok(())
+}
+
+/// Open an existing vendored clone or clone fresh.
+///
+/// A previous `vendor --sync` may have left a non-empty directory here, and
+/// git2 refuses to clone into one (#38). Reuse the directory when it is a
+/// valid repo (fetching so a newly locked commit is available); otherwise
+/// clear it and clone from scratch. Fetch failures are tolerated so offline
+/// re-syncs still work when the locked commit is already present.
+fn open_or_clone(url: &str, dest: &Path) -> Result<git2::Repository, CmodError> {
+    if dest.join(".git").exists() {
+        let repo = git2::Repository::open(dest).map_err(|e| CmodError::GitError {
+            reason: format!("failed to open vendored repo at {}: {}", dest.display(), e),
+        })?;
+        if let Ok(mut remote) = repo.find_remote("origin") {
+            let _ = remote.fetch(&[] as &[&str], None, None);
+        }
+        return Ok(repo);
+    }
+
+    if dest.exists() {
+        std::fs::remove_dir_all(dest)?;
+    }
+    git2::Repository::clone(url, dest).map_err(|e| CmodError::GitError {
+        reason: format!("failed to clone {}: {}", url, e),
+    })
 }
 
 /// Vendor a path-sourced dependency by symlinking or copying.
@@ -213,7 +227,102 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), CmodError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cmod_core::lockfile::LockedPackage;
+    use cmod_core::shell::Verbosity;
     use tempfile::TempDir;
+
+    /// Create a git repo with one committed file; return the commit hash.
+    fn init_fixture_repo(dir: &Path) -> String {
+        std::fs::create_dir_all(dir).unwrap();
+        let repo = git2::Repository::init(dir).unwrap();
+        std::fs::write(dir.join("lib.cppm"), "export module fixture;").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("lib.cppm")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@example.com").unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        oid.to_string()
+    }
+
+    fn make_locked_pkg(name: &str, repo_url: &str, commit: &str) -> LockedPackage {
+        LockedPackage {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            source: Some("git".to_string()),
+            repo: Some(repo_url.to_string()),
+            commit: Some(commit.to_string()),
+            hash: None,
+            toolchain: None,
+            targets: Default::default(),
+            deps: vec![],
+            features: vec![],
+        }
+    }
+
+    fn setup_project(tmp: &TempDir) -> Config {
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("cmod.toml"),
+            "[package]\nname = \"test_project\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        Config::load(&project).unwrap()
+    }
+
+    fn quiet_shell() -> Shell {
+        Shell::from_write(Box::new(std::io::sink()), Verbosity::Quiet)
+    }
+
+    /// Regression test for #38: a second `vendor --sync` must not fail when
+    /// the destination directory already exists with stale (non-repo) content.
+    #[test]
+    fn test_vendor_git_dep_over_existing_non_repo_dest() {
+        let tmp = TempDir::new().unwrap();
+        let upstream = tmp.path().join("upstream");
+        let commit = init_fixture_repo(&upstream);
+        let config = setup_project(&tmp);
+
+        // Simulate leftovers from a previous vendor run: non-empty, not a repo.
+        let dest = config.root.join("vendor").join("dep");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("stale.txt"), "old").unwrap();
+
+        let pkg = make_locked_pkg("dep", upstream.to_str().unwrap(), &commit);
+        vendor_git_dep(&config, &pkg, &dest, &quiet_shell()).unwrap();
+
+        assert!(dest.join("lib.cppm").exists());
+        assert!(!dest.join("stale.txt").exists());
+    }
+
+    /// Regression test for #38: re-syncing over a previously vendored clone
+    /// must reuse the repo and hard-reset to the locked commit.
+    #[test]
+    fn test_vendor_git_dep_over_existing_clone() {
+        let tmp = TempDir::new().unwrap();
+        let upstream = tmp.path().join("upstream");
+        let commit = init_fixture_repo(&upstream);
+        let config = setup_project(&tmp);
+
+        let dest = config.root.join("vendor").join("dep");
+        let pkg = make_locked_pkg("dep", upstream.to_str().unwrap(), &commit);
+        let shell = quiet_shell();
+
+        // First vendor clones; second must succeed over the existing clone,
+        // discarding local modifications (hard reset to the locked commit).
+        vendor_git_dep(&config, &pkg, &dest, &shell).unwrap();
+        std::fs::write(dest.join("lib.cppm"), "local modification").unwrap();
+        vendor_git_dep(&config, &pkg, &dest, &shell).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("lib.cppm")).unwrap(),
+            "export module fixture;"
+        );
+    }
 
     #[test]
     fn test_copy_dir_recursive() {
