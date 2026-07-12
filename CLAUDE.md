@@ -4,7 +4,7 @@
 
 **cmod** is a Cargo-inspired, Git-native package and build tool for modern C++20+ modules. It provides dependency resolution, build orchestration, workspace management, and caching — all without a central package registry.
 
-**Status:** Rust implementation (Phase 0-5 complete). The Cargo workspace compiles and has 780+ passing tests. The 21 RFCs and design documents under `docs/` remain the canonical specification.
+**Status:** Rust implementation (Phase 0-5 complete), released as v0.1.0-alpha.2. The Cargo workspace has 8 crates and 828 passing tests. The 21 RFCs and design documents under `docs/` remain the canonical specification.
 
 **Implementation language:** Rust (with LLVM/Clang C++ APIs for build hooks).
 
@@ -20,104 +20,86 @@ cmod/
 ├── CONTRIBUTING.md                        # Contributor guide
 ├── SECURITY.md                            # Security policy
 ├── CHANGELOG.md                           # Release notes
+├── RELEASE.md                             # Release process
+├── install.sh                             # Binary install script
 ├── rust-toolchain.toml                    # Pinned Rust toolchain
 ├── rustfmt.toml                           # Formatter config
 ├── clippy.toml                            # Linter config
-├── .gitignore                             # Ignore rules
-├── .github/                               # GitHub configuration
-│   ├── workflows/
-│   │   ├── ci.yml                         # CI: fmt, clippy, test, msrv
-│   │   └── release.yml                    # Binary release on tag push
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── bug_report.yml
-│   │   └── feature_request.yml
-│   └── pull_request_template.md
-├── crates/                                # Rust implementation
+├── .github/                               # CI (ci.yml), releases (release.yml), issue templates
+├── crates/                                # Rust implementation (8 crates)
 │   ├── cmod-cli/                          # CLI binary (cmod command)
+│   │   ├── src/
+│   │   │   ├── main.rs                    # Entry point, clap parsing, subcommand dispatch
+│   │   │   └── commands/                  # One file per subcommand, plus:
+│   │   │       ├── common.rs              # Shared helpers: dep clone, topo sort, artifact collection
+│   │   │       ├── build.rs               # cmod build + plan + emit-cmake + lifecycle hooks
+│   │   │       ├── migrate.rs             # cmod migrate (from CMake)
+│   │   │       ├── plugin.rs              # cmod plugin
+│   │   │       ├── plugin_sandbox.rs      # Plugin sandbox enforcement
+│   │   │       └── ...                    # init, add, remove, resolve, test, run, clean, update,
+│   │   │                                  #   deps, cache, verify, graph, audit, status, explain,
+│   │   │                                  #   toolchain, vendor, lint, fmt, search, workspace,
+│   │   │                                  #   sbom, publish, compile_commands, tidy, check, util
+│   │   └── tests/                         # Integration tests: cli_integration, e2e_validation,
+│   │                                      #   example_projects, real_projects
+│   ├── cmod-core/                         # Core types and config (no internal deps)
 │   │   └── src/
-│   │       ├── main.rs                    # Entry point, clap argument parsing
-│   │       └── commands/                  # Subcommand implementations
-│   │           ├── init.rs                # cmod init
-│   │           ├── add.rs                 # cmod add
-│   │           ├── remove.rs              # cmod remove
-│   │           ├── resolve.rs             # cmod resolve
-│   │           ├── build.rs               # cmod build
-│   │           ├── test.rs                # cmod test
-│   │           ├── run.rs                 # cmod run
-│   │           ├── clean.rs               # cmod clean
-│   │           ├── update.rs              # cmod update
-│   │           ├── deps.rs                # cmod deps
-│   │           ├── cache.rs               # cmod cache
-│   │           ├── verify.rs              # cmod verify
-│   │           ├── graph.rs               # cmod graph
-│   │           ├── audit.rs               # cmod audit
-│   │           ├── status.rs              # cmod status
-│   │           ├── explain.rs             # cmod explain
-│   │           ├── toolchain.rs           # cmod toolchain
-│   │           ├── vendor.rs              # cmod vendor
-│   │           ├── lint.rs                # cmod lint
-│   │           ├── fmt.rs                 # cmod fmt
-│   │           ├── search.rs              # cmod search
-│   │           ├── workspace.rs           # cmod workspace
-│   │           ├── sbom.rs                # cmod sbom
-│   │           ├── publish.rs             # cmod publish
-│   │           ├── compile_commands.rs    # cmod compile-commands
-│   │           ├── tidy.rs                # cmod tidy
-│   │           ├── check.rs              # cmod check
-│   │           └── plugin.rs              # cmod plugin
-│   ├── cmod-core/                         # Core types and config
-│   │   └── src/
-│   │       ├── lib.rs
 │   │       ├── config.rs                  # Global session context (Config)
 │   │       ├── error.rs                   # CmodError enum + exit codes
-│   │       ├── lockfile.rs                # cmod.lock parsing/writing
-│   │       ├── manifest.rs                # cmod.toml parsing/writing
-│   │       └── types.rs                   # ModuleId, BuildType, Profile, etc.
+│   │       ├── lockfile.rs                # cmod.lock parsing/writing + integrity hash
+│   │       ├── manifest.rs                # cmod.toml parsing/writing + cfg() evaluator
+│   │       ├── shell.rs                   # Colored status output (Shell, Verbosity)
+│   │       └── types.rs                   # ModuleId, BuildType, Profile, ToolchainSpec, etc.
 │   ├── cmod-resolver/                     # Dependency resolution
 │   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── git.rs                     # Git operations (clone, fetch, tags)
+│   │       ├── conditional.rs             # Transitive feature propagation, cfg() deps
+│   │       ├── features.rs                # Feature resolution + cycle detection
+│   │       ├── git.rs                     # Git operations (clone, fetch, tags, content hash)
+│   │       ├── registry.rs                # Git-hosted search index + publish governance
 │   │       ├── resolver.rs                # Resolution algorithm + lockfile generation
 │   │       └── version.rs                 # Semver constraint parsing + solving
 │   ├── cmod-build/                        # Build orchestration
 │   │   └── src/
-│   │       ├── lib.rs
 │   │       ├── compiler.rs                # CompilerBackend trait + ClangBackend
-│   │       ├── graph.rs                   # ModuleGraph DAG + topological sort
-│   │       ├── plan.rs                    # BuildPlan IR generation
-│   │       └── runner.rs                  # Build execution + source discovery
+│   │       ├── distributed.rs             # Remote worker pool for distributed builds
+│   │       ├── graph.rs                   # ModuleGraph DAG + topological/critical-path sort
+│   │       ├── incremental.rs             # BuildState + rebuild detection (powers cmod explain)
+│   │       ├── plan.rs                    # BuildPlan IR + compile_commands generation
+│   │       └── runner.rs                  # Parallel build execution + source discovery/classification
 │   ├── cmod-cache/                        # Artifact caching
 │   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── cache.rs                   # ArtifactCache (store/get/evict/clean)
-│   │       └── key.rs                     # CacheKey computation (SHA-256)
+│   │       ├── bmi.rs                     # BMI package export/import + compatibility keys
+│   │       ├── cache.rs                   # ArtifactCache (store/get/evict, zstd, TTL/size eviction)
+│   │       ├── distribution.rs            # BMI variant index + HTTP distributor
+│   │       ├── key.rs                     # CacheKey computation (SHA-256, incl. compiler version)
+│   │       └── remote.rs                  # RemoteCache trait + HTTP client
 │   ├── cmod-workspace/                    # Workspace management
 │   │   └── src/
-│   │       ├── lib.rs
-│   │       └── workspace.rs               # WorkspaceManager (load/validate/add member)
-│   └── cmod-security/                     # Supply-chain integrity
+│   │       └── workspace.rs               # WorkspaceManager (globs, unified deps, build order)
+│   ├── cmod-security/                     # Supply-chain integrity
+│   │   └── src/
+│   │       ├── audit.rs                   # Dependency audit (unpinned commits, branch refs)
+│   │       ├── hash.rs                    # Checkout/content/tree hash verification
+│   │       ├── policy.rs                  # [security] policy enforcement
+│   │       ├── sbom.rs                    # CycloneDX SBOM generation
+│   │       ├── signing.rs                 # PGP/SSH/Sigstore artifact + BMI signing
+│   │       ├── trust.rs                   # TOFU trust model + key revocation
+│   │       └── verify.rs                  # Commit + signature verification
+│   └── cmod-lsp/                          # LSP server (cmod lsp)
 │       └── src/
-│           ├── lib.rs
-│           ├── trust.rs                   # TOFU trust model
-│           ├── verify.rs                  # Hash/signature verification
-│           └── policy.rs                  # Security policy enforcement
-├── examples/                              # Example C++ projects
-│   ├── README.md                          # Index of all examples
-│   ├── hello/                             # Minimal binary, no deps
-│   ├── library/                           # Static lib with module partitions
-│   ├── with-deps/                         # Git dependencies (fmt + json)
-│   ├── workspace/                         # Multi-member monorepo
-│   └── path-deps/                         # Local path dependencies
-├── docs/                                  # Design specifications
-│   ├── cmod_readme_vision.md
-│   ├── cmod_architecture_diagram.md
-│   ├── cmod_cli_ux_command_specification.md
-│   ├── cmod_reference_implementation_skeleton.md
-│   ├── cmod_implementation_roadmap.md
-│   ├── cmod_vs_existing_tools.md
-│   ├── why_cmod_exists_pitch_doc.md
-│   └── rfc/                               # 21 RFCs (see RFC Tiers below)
-└── tests/                                 # Integration tests
+│           ├── completion.rs              # Import/module-declaration completions
+│           ├── diagnostics.rs             # Manifest/source diagnostics + Clang output parsing
+│           └── server.rs                  # JSON-RPC server + custom cmod/* methods
+├── editors/                               # Editor integrations (vscode/, clion/, shared/)
+├── examples/                              # 13 example C++ projects (see examples/README.md):
+│                                          #   hello, library, with-deps, workspace, path-deps,
+│                                          #   header-only, include-dirs, ixx-modules, multi-binary,
+│                                          #   nested-deps, plugin, shared-lib, with-tests
+├── blog/                                  # Blog posts
+└── docs/                                  # Design specifications
+    ├── guide/                             # User guide
+    ├── rfc/                               # 21 RFCs (see RFC Tiers below)
+    └── *.md                               # Vision, architecture, CLI spec, roadmap, comparisons
 ```
 
 ## Build & Test Commands
@@ -157,13 +139,14 @@ Key data flows:
 
 | Crate | Key Types | Responsibility |
 |---|---|---|
-| `cmod-core` | `Config`, `Manifest`, `Lockfile`, `CmodError`, `ModuleId` | Config loading, TOML parsing, error model, core types |
-| `cmod-cli` | `Cli`, `Commands` | clap-based CLI, subcommand dispatch |
-| `cmod-resolver` | `Resolver`, `ResolvedDep` | Git fetch, semver solving, lockfile generation |
-| `cmod-build` | `ModuleGraph`, `BuildPlan`, `BuildRunner`, `ClangBackend` | DAG construction, Clang invocation, build execution |
-| `cmod-cache` | `ArtifactCache`, `CacheKey` | Content-addressed caching, SHA-256 keys |
+| `cmod-core` | `Config`, `Manifest`, `Lockfile`, `CmodError`, `ModuleId`, `Shell` | Config loading, TOML parsing, error model, core types, terminal output |
+| `cmod-cli` | `Cli`, `Commands` | clap-based CLI, subcommand dispatch, integration tests |
+| `cmod-resolver` | `Resolver`, `ResolvedDep`, `RegistryClient` | Git fetch, semver solving, features, lockfile generation |
+| `cmod-build` | `ModuleGraph`, `BuildPlan`, `BuildRunner`, `ClangBackend`, `BuildState`, `WorkerPool` | DAG construction, Clang invocation, parallel/incremental/distributed builds |
+| `cmod-cache` | `ArtifactCache`, `CacheKey`, `RemoteCache`, `BmiPackage` | Content-addressed caching, remote cache, BMI distribution |
 | `cmod-workspace` | `WorkspaceManager`, `WorkspaceMember` | Monorepo loading, unified deps, member management |
-| `cmod-security` | `TrustStore`, `Verifier`, `SecurityPolicy` | TOFU trust, hash/signature verification, policy enforcement |
+| `cmod-security` | `TrustDb`, `SecurityPolicy`, `SigningConfig` | TOFU trust, hash/signature verification, signing, audit, SBOM |
+| `cmod-lsp` | `LspServer`, `CompletionProvider`, `DiagnosticsEngine` | LSP over stdio: completions, diagnostics, custom `cmod/*` methods |
 
 ## CLI Commands
 
@@ -206,7 +189,7 @@ Key data flows:
 
 | Command | Description |
 |---|---|
-| `cmod cache status\|clean\|gc\|push\|pull` | Manage the build cache |
+| `cmod cache status\|clean\|gc\|push\|pull\|export\|import\|inspect\|status-json` | Manage the build cache |
 | `cmod verify [--signatures]` | Verify integrity and security |
 | `cmod audit` | Audit dependencies for security issues |
 | `cmod sbom [--output <file>]` | Generate a Software Bill of Materials |
@@ -221,10 +204,12 @@ Key data flows:
 | `cmod check` | Validate module naming and structure |
 | `cmod toolchain show\|check` | Manage the active toolchain |
 | `cmod plugin list\|run` | Manage plugins |
+| `cmod migrate cmake` | Migrate a CMake project to cmod |
+| `cmod lsp` | Start the LSP server (stdio) for editor integration |
 
 ### Global Flags
 
-`--locked`, `--offline`, `--verbose`, `--target <triple>`, `--features <list>`, `--no-default-features`, `--no-cache`, `--untrusted`
+`--locked`, `--offline`, `--verbose`, `--quiet`, `--target <triple>`, `--features <list>`, `--no-default-features`, `--no-cache`, `--untrusted`
 
 ### Exit Codes
 
@@ -272,7 +257,7 @@ RFCs are organized by priority tier. When contributing, respect this ordering:
 - The implementation is in Rust, organized as a Cargo workspace under `crates/`.
 - Follow Cargo-idiomatic Rust conventions (snake_case, standard module layout).
 - Each crate has a focused responsibility — do not merge or split crates without updating this doc.
-- All cross-crate dependencies flow downward: `cli → {resolver, build, cache, workspace, security} → core`.
+- All cross-crate dependencies flow downward: `cli → {resolver, build, cache, workspace, security, lsp} → core`.
 - `cmod-core` has no internal crate dependencies and is the foundation.
 - Run `cargo test` after making changes. All tests must pass.
 - Run `cargo check` before committing to catch compilation errors early.
