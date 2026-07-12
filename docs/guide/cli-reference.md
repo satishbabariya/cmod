@@ -557,11 +557,20 @@ cmod workspace list
 
 ### `cmod workspace add`
 
-Add a new member to the workspace.
+Add a member to the workspace.
 
 ```
-cmod workspace add <NAME>
+cmod workspace add <NAME> [--scaffold]
 ```
+
+Without flags, behavior is inferred: an existing directory with a
+`cmod.toml` is registered as-is; a missing directory is scaffolded with a
+starter `cmod.toml` and `src/lib.cppm`; an existing directory without a
+manifest is rejected.
+
+| Option | Description |
+|--------|-------------|
+| `--scaffold` | Require creating a new member; error if the directory already exists. Use in scripts to make intent explicit. |
 
 ### `cmod workspace remove`
 

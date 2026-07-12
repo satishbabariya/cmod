@@ -275,13 +275,16 @@ impl WorkspaceManager {
 
     /// Add a member to the workspace.
     ///
-    /// Behavior depends on what already exists at `<root>/<name>`:
+    /// With `must_scaffold`, the caller explicitly asserts a new member is
+    /// being created: the target directory must not exist at all.
+    ///
+    /// Without it, behavior is inferred from what exists at `<root>/<name>`:
     ///
     /// 1. **Dir exists with a `cmod.toml`** → register it (no scaffolding).
     /// 2. **Dir exists without a `cmod.toml`** → reject (ambiguous; caller
     ///    can delete the dir and retry, or add the manifest manually).
     /// 3. **Dir does not exist** → scaffold `src/lib.cppm` + `cmod.toml`.
-    pub fn add_member(&mut self, name: &str) -> Result<(), CmodError> {
+    pub fn add_member(&mut self, name: &str, must_scaffold: bool) -> Result<(), CmodError> {
         // Early-reject names that would be unsafe to use as path components.
         if name.is_empty() || name.contains("..") || name.starts_with('/') || name.starts_with('\\')
         {
@@ -300,6 +303,16 @@ impl WorkspaceManager {
 
         let member_dir = self.root.join(name);
         let manifest_path = member_dir.join("cmod.toml");
+
+        if must_scaffold && member_dir.exists() {
+            return Err(CmodError::InvalidManifest {
+                reason: format!(
+                    "cannot scaffold '{}': directory already exists; \
+                     omit --scaffold to register an existing member",
+                    name
+                ),
+            });
+        }
 
         let (member_manifest, scaffolded) = if member_dir.exists() {
             if !member_dir.is_dir() {
@@ -761,5 +774,61 @@ lib = { path = "./lib" }
         let tmp = TempDir::new().unwrap();
         let result = expand_member_patterns(tmp.path(), &["nonexistent".to_string()]).unwrap();
         assert!(result.is_empty());
+    }
+
+    // --- add_member scaffold intent (#41) ---
+
+    #[test]
+    fn test_add_member_scaffold_creates_new() {
+        let tmp = setup_workspace();
+        let mut ws = WorkspaceManager::load(tmp.path()).unwrap();
+
+        ws.add_member("newlib", true).unwrap();
+
+        assert!(tmp.path().join("newlib/cmod.toml").exists());
+        assert!(tmp.path().join("newlib/src/lib.cppm").exists());
+        assert!(ws.members.iter().any(|m| m.name == "newlib"));
+    }
+
+    #[test]
+    fn test_add_member_scaffold_rejects_existing_dir() {
+        let tmp = setup_workspace();
+        let mut ws = WorkspaceManager::load(tmp.path()).unwrap();
+
+        // Existing directory (even with a manifest) must be rejected when
+        // the caller explicitly asked to scaffold a new member.
+        let existing = tmp.path().join("preexisting");
+        std::fs::create_dir_all(existing.join("src")).unwrap();
+        cmod_core::manifest::default_manifest("preexisting")
+            .save(&existing.join("cmod.toml"))
+            .unwrap();
+
+        let err = ws.add_member("preexisting", true).unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "error should explain the directory already exists, got: {}",
+            err
+        );
+        // Nothing was registered
+        assert!(!ws.members.iter().any(|m| m.name == "preexisting"));
+    }
+
+    #[test]
+    fn test_add_member_without_scaffold_keeps_inference() {
+        let tmp = setup_workspace();
+        let mut ws = WorkspaceManager::load(tmp.path()).unwrap();
+
+        // Existing member dir with manifest → registered, not re-scaffolded
+        let existing = tmp.path().join("existing");
+        std::fs::create_dir_all(existing.join("src")).unwrap();
+        cmod_core::manifest::default_manifest("existing")
+            .save(&existing.join("cmod.toml"))
+            .unwrap();
+        ws.add_member("existing", false).unwrap();
+        assert!(ws.members.iter().any(|m| m.name == "existing"));
+
+        // Missing dir → scaffolded (unchanged legacy inference)
+        ws.add_member("fresh", false).unwrap();
+        assert!(tmp.path().join("fresh/cmod.toml").exists());
     }
 }

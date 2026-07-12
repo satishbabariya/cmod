@@ -408,6 +408,9 @@ enum WorkspaceAction {
     Add {
         /// Name of the new member
         name: String,
+        /// Require scaffolding a new member (error if the directory exists)
+        #[arg(long)]
+        scaffold: bool,
     },
     /// Remove a member from the workspace
     Remove {
@@ -637,7 +640,9 @@ fn main() {
         Commands::Clean => commands::clean::run(&shell),
         Commands::Workspace { action } => match action {
             WorkspaceAction::List => commands::workspace::list(&shell),
-            WorkspaceAction::Add { name } => commands::workspace::add(&name, &shell),
+            WorkspaceAction::Add { name, scaffold } => {
+                commands::workspace::add(&name, scaffold, &shell)
+            }
             WorkspaceAction::Remove { name } => commands::workspace::remove(&name, &shell),
         },
         Commands::Sbom { output } => commands::sbom::run(output, &shell),
