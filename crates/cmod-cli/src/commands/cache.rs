@@ -106,6 +106,7 @@ pub fn push(remote_override: Option<String>, shell: &Shell) -> Result<(), CmodEr
     shell.verbose("Remote", &remote_url);
 
     let mut pushed = 0;
+    let mut failed = 0;
     for module in &modules {
         shell.verbose("Pushing", module);
         let module_dir = config.cache_dir().join(module);
@@ -126,14 +127,29 @@ pub fn push(remote_override: Option<String>, shell: &Shell) -> Result<(), CmodEr
                     let key = cmod_cache::CacheKey::from_hex(parts[0])
                         .unwrap_or(cmod_cache::CacheKey::from_hex("unknown").unwrap());
                     let artifact_name = parts[1..].join("/");
-                    let _ = remote.put(module, &key, &artifact_name, entry.path());
-                    pushed += 1;
+                    match remote.put(module, &key, &artifact_name, entry.path()) {
+                        Ok(()) => pushed += 1,
+                        Err(e) => {
+                            failed += 1;
+                            shell.verbose("Failed", format!("{}/{}: {}", module, artifact_name, e));
+                        }
+                    }
                 }
             }
         }
     }
 
+    if failed > 0 {
+        shell.warn(format!("{} artifact upload(s) failed", failed));
+    }
     shell.status("Pushed", format!("{} artifacts", pushed));
+
+    if pushed == 0 && failed > 0 {
+        return Err(CmodError::Other(format!(
+            "all {} artifact upload(s) failed; check the remote cache URL and permissions",
+            failed
+        )));
+    }
     Ok(())
 }
 
