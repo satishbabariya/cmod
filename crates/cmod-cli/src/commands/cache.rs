@@ -120,13 +120,18 @@ pub fn push(remote_override: Option<String>, shell: &Shell) -> Result<(), CmodEr
                     .path()
                     .strip_prefix(&module_dir)
                     .unwrap_or(entry.path());
-                let rel_str = relative.to_string_lossy().to_string();
-                let parts: Vec<&str> = rel_str.split('/').collect();
+                // Split with Path::components, not '/': Windows paths use '\'
+                // and string-splitting silently pushed zero artifacts there.
+                let mut comps = relative
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned());
+                let key_hex = comps.next().unwrap_or_default();
+                let artifact_parts: Vec<String> = comps.collect();
 
-                if parts.len() >= 2 {
-                    let key = cmod_cache::CacheKey::from_hex(parts[0])
+                if !key_hex.is_empty() && !artifact_parts.is_empty() {
+                    let key = cmod_cache::CacheKey::from_hex(&key_hex)
                         .unwrap_or(cmod_cache::CacheKey::from_hex("unknown").unwrap());
-                    let artifact_name = parts[1..].join("/");
+                    let artifact_name = artifact_parts.join("/");
                     match remote.put(module, &key, &artifact_name, entry.path()) {
                         Ok(()) => pushed += 1,
                         Err(e) => {
