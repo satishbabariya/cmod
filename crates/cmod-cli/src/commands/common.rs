@@ -29,6 +29,29 @@ impl DepArtifacts {
     }
 }
 
+/// Build an HTTP remote-cache client honoring the manifest's `[cache]`
+/// settings: `auth_token_env` (bearer token read from the environment),
+/// `timeout`, and `retries`.
+pub fn remote_cache_client(
+    config: &Config,
+    url: &str,
+    mode: cmod_cache::RemoteCacheMode,
+) -> cmod_cache::HttpRemoteCache {
+    let cache_cfg = config.manifest.cache.as_ref();
+    let token = cache_cfg
+        .and_then(|c| c.auth_token_env.as_deref())
+        .and_then(|name| std::env::var(name).ok());
+
+    let mut client = cmod_cache::HttpRemoteCache::new(url, mode).with_auth_token(token);
+    if let Some(secs) = cache_cfg.and_then(|c| c.timeout) {
+        client = client.with_timeout(std::time::Duration::from_secs(secs));
+    }
+    if let Some(retries) = cache_cfg.and_then(|c| c.retries) {
+        client = client.with_retries(retries);
+    }
+    client
+}
+
 /// Find a dependency on disk, checking `vendor/` first, then `build/deps/`.
 ///
 /// The vendor directory uses real path separators (e.g., `vendor/github.com/user/repo`),
