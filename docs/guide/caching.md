@@ -94,7 +94,10 @@ cmod cache import /path/to/package
 
 ## Remote Caching
 
-Share build artifacts across team members and CI systems.
+Share build artifacts across team members and CI systems. Any HTTP server
+implementing a three-verb protocol works as the backend — see
+[Hosting a Remote Cache Server](remote-cache.md) for the protocol spec and
+tested nginx/Caddy recipes.
 
 ### Configuration
 
