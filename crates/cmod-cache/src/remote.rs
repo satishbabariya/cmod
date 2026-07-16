@@ -230,7 +230,7 @@ impl RemoteCache for HttpRemoteCache {
                             return Ok(false);
                         }
 
-                        std::fs::write(dest, &data)?;
+                        write_artifact_atomic(dest, &data)?;
                         Ok(true)
                     } else if status == 404 {
                         Ok(false)
@@ -291,6 +291,21 @@ impl RemoteCache for HttpRemoteCache {
     }
 }
 
+/// Write downloaded artifact bytes atomically: write to a `.part` sibling,
+/// then rename over the destination. An interrupted download can never leave
+/// a truncated file that later reads as a valid cache artifact.
+fn write_artifact_atomic(dest: &Path, data: &[u8]) -> Result<(), CmodError> {
+    let mut tmp = dest.as_os_str().to_owned();
+    tmp.push(".part");
+    let tmp = std::path::PathBuf::from(tmp);
+
+    let result = std::fs::write(&tmp, data).and_then(|_| std::fs::rename(&tmp, dest));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(CmodError::from)
+}
+
 /// Configuration for remote cache (parsed from manifest `[cache]` section).
 #[derive(Debug, Clone)]
 pub struct RemoteCacheConfig {
@@ -326,6 +341,24 @@ impl Default for RemoteCacheConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_write_artifact_atomic_replaces_and_cleans_up() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dest = tmp.path().join("artifact.o");
+        std::fs::write(&dest, b"old").unwrap();
+
+        write_artifact_atomic(&dest, b"new bytes").unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new bytes");
+        // No .part temp file may remain next to the destination
+        let leftovers = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+            .count();
+        assert_eq!(leftovers, 0);
+    }
 
     #[test]
     fn test_remote_cache_mode_from_str() {

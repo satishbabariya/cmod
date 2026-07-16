@@ -1264,6 +1264,74 @@ fn test_graph_critical_path_flag() {
     );
 }
 
+/// Regression test for #45: `[cache] auth_token_env` must be honored by
+/// `cache push` — the bearer token from the environment goes on the wire.
+#[test]
+fn test_cache_push_sends_bearer_token() {
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "authpush"]);
+
+    // Handcrafted cache entry + [cache] config with auth_token_env.
+    let cache_dir = tmp.path().join("localcache");
+    let key = "b".repeat(64);
+    let entry = cache_dir.join("local.authpush").join(&key);
+    fs::create_dir_all(&entry).unwrap();
+    fs::write(entry.join("artifact.o"), b"bytes").unwrap();
+    let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
+    fs::write(
+        tmp.path().join("cmod.toml"),
+        format!(
+            "{}\n[cache]\nlocal_path = \"localcache\"\nauth_token_env = \"TEST_CACHE_TOKEN\"\n",
+            manifest
+        ),
+    )
+    .unwrap();
+
+    // Listener that records the Authorization header and accepts the upload.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen_auth: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = Arc::clone(&seen_auth);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            for line in req.lines() {
+                if line.to_ascii_lowercase().starts_with("authorization:") {
+                    seen_clone.lock().unwrap().push(line.trim().to_string());
+                }
+            }
+            let _ = stream.write_all(
+                b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cmod"))
+        .args(["cache", "push", "--remote", &format!("http://{}", addr)])
+        .current_dir(tmp.path())
+        .env("TEST_CACHE_TOKEN", "sekrit-token-123")
+        .output()
+        .expect("failed to run cmod");
+
+    assert!(
+        output.status.success(),
+        "push should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let auth = seen_auth.lock().unwrap();
+    assert!(
+        auth.iter().any(|h| h.contains("Bearer sekrit-token-123")),
+        "expected Authorization: Bearer header on the upload, saw: {:?}",
+        *auth
+    );
+}
+
 /// Regression test: `cache push` must report upload failures instead of
 /// counting every artifact as pushed (found while validating #44 against a
 /// read-only server).

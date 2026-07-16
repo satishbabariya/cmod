@@ -3,7 +3,7 @@ use std::sync::Arc;
 use cmod_build::compiler::ClangBackend;
 use cmod_build::graph::{ModuleGraph, ModuleNode};
 use cmod_build::runner::{self, BuildRunner, BuildStats};
-use cmod_cache::{ArtifactCache, HttpRemoteCache, RemoteCacheMode};
+use cmod_cache::{ArtifactCache, RemoteCacheMode};
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
@@ -157,14 +157,17 @@ pub fn run(
     result
 }
 
-/// Create a remote cache instance from a URL, if provided.
+/// Create a remote cache instance from a URL, if provided, honoring the
+/// manifest's `[cache]` auth/timeout/retry settings.
 fn make_remote_cache(
+    config: &Config,
     url: &Option<String>,
     shell: &Shell,
 ) -> Option<Box<dyn cmod_cache::RemoteCache>> {
     let url = url.as_ref()?;
     shell.verbose("Remote cache", url);
-    Some(Box::new(HttpRemoteCache::new(
+    Some(Box::new(super::common::remote_cache_client(
+        config,
         url,
         RemoteCacheMode::ReadWrite,
     )))
@@ -254,7 +257,7 @@ fn build_module(
         .with_extra_obj_paths(dep_artifacts.objs)
         .with_shell(Arc::new(Shell::new(shell.verbosity())));
 
-    if let Some(remote) = make_remote_cache(remote_url, shell) {
+    if let Some(remote) = make_remote_cache(config, remote_url, shell) {
         runner = runner.with_remote_cache(remote);
     }
 
@@ -587,7 +590,7 @@ fn build_vendored_dependencies(
             .with_extra_obj_paths(extra_objs)
             .with_shell(Arc::new(Shell::new(shell.verbosity())));
 
-        if let Some(remote) = make_remote_cache(remote_url, shell) {
+        if let Some(remote) = make_remote_cache(config, remote_url, shell) {
             runner = runner.with_remote_cache(remote);
         }
 
@@ -833,7 +836,7 @@ fn build_workspace(
             .with_extra_pcm_paths(extra_pcms)
             .with_extra_obj_paths(extra_objs)
             .with_shell(Arc::new(Shell::new(shell.verbosity())));
-        if let Some(remote) = make_remote_cache(remote_url, shell) {
+        if let Some(remote) = make_remote_cache(config, remote_url, shell) {
             runner_instance = runner_instance.with_remote_cache(remote);
         }
         match runner_instance.build_with_stats(

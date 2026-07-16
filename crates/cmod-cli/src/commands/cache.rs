@@ -93,8 +93,11 @@ pub fn push(remote_override: Option<String>, shell: &Shell) -> Result<(), CmodEr
         )
     })?;
 
-    let remote =
-        cmod_cache::HttpRemoteCache::new(&remote_url, cmod_cache::RemoteCacheMode::ReadWrite);
+    let remote = super::common::remote_cache_client(
+        &config,
+        &remote_url,
+        cmod_cache::RemoteCacheMode::ReadWrite,
+    );
 
     let cache = ArtifactCache::new(config.cache_dir());
     let modules = cache.list_modules()?;
@@ -178,8 +181,11 @@ pub fn pull(remote_override: Option<String>, shell: &Shell) -> Result<(), CmodEr
         )
     })?;
 
-    let remote =
-        cmod_cache::HttpRemoteCache::new(&remote_url, cmod_cache::RemoteCacheMode::ReadOnly);
+    let remote = super::common::remote_cache_client(
+        &config,
+        &remote_url,
+        cmod_cache::RemoteCacheMode::ReadOnly,
+    );
 
     shell.verbose("Remote", &remote_url);
 
