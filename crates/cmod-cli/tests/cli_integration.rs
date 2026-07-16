@@ -889,6 +889,60 @@ fn test_workspace_add_scaffold() {
     );
 }
 
+/// Cross-compilation smoke tests (#54): `--target` with a non-host triple
+/// must flow through plan generation and into emitted compiler flags.
+/// No cross toolchain is required — nothing is compiled.
+#[test]
+fn test_cross_target_compile_commands_flags() {
+    let cross_triple = if cfg!(target_arch = "aarch64") {
+        "x86_64-unknown-linux-gnu"
+    } else {
+        "aarch64-unknown-linux-gnu"
+    };
+
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "crosscc"]);
+
+    let output = run_cmod(tmp.path(), &["compile-commands", "--target", cross_triple]);
+    assert!(
+        output.status.success(),
+        "compile-commands --target failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json = fs::read_to_string(tmp.path().join("compile_commands.json")).unwrap();
+    assert!(
+        json.contains(&format!("--target={}", cross_triple)),
+        "expected --target={} in compile_commands.json",
+        cross_triple
+    );
+}
+
+#[test]
+fn test_cross_target_plan_generation() {
+    let cross_triple = if cfg!(target_arch = "aarch64") {
+        "x86_64-unknown-linux-gnu"
+    } else {
+        "aarch64-unknown-linux-gnu"
+    };
+
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "crossplan"]);
+
+    let output = run_cmod(tmp.path(), &["plan", "--target", cross_triple]);
+    assert!(
+        output.status.success(),
+        "plan --target failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.trim_start().starts_with('['),
+        "plan should emit a JSON node array, got: {}",
+        &stdout[..stdout.len().min(120)]
+    );
+}
+
 #[test]
 fn test_resolve_with_target_flag() {
     let tmp = TempDir::new().unwrap();

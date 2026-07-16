@@ -110,3 +110,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.80
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all
+
+  cross-target:
+    name: Cross-target smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Plan-level cross-compilation checks: --target with a non-host triple
+      # must flow into the build plan and emitted compiler flags (#54).
+      # No cross toolchain is installed — nothing is compiled.
+      - run: cargo test --test cli_integration test_cross_target -- --nocapture
