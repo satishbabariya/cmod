@@ -56,6 +56,14 @@ pub trait CompilerBackend: Send + Sync {
     /// Deterministic description of every configuration input that affects
     /// codegen. Hashed into incremental-build state and cache keys.
     fn fingerprint(&self) -> String;
+
+    /// File extension of this compiler's BMI artifacts (without the dot).
+    /// Clang emits `.pcm`; MSVC emits `.ifc`; GCC emits CMI files under a
+    /// module-mapper directory. `BuildPlan` currently hardcodes `pcm` paths —
+    /// wiring this in is part of full non-Clang backend support (#48).
+    fn bmi_extension(&self) -> &'static str {
+        "pcm"
+    }
 }
 
 /// LTO mode for link-time optimization.
@@ -107,7 +115,7 @@ pub fn make_backend(
         other => Err(CmodError::BuildFailed {
             reason: format!(
                 "the {} backend is not yet implemented; set [toolchain] compiler = \"clang\" \
-                 (or remove the line) — see issue #47",
+                 (or remove the line) — see issues #47/#48",
                 other
             ),
         }),
@@ -548,6 +556,144 @@ fn parse_p1689_imports(output: &str) -> Result<Vec<String>, CmodError> {
 }
 
 /// Find an executable on PATH, falling back to the name itself.
+/// MSVC compiler backend — **skeleton only** (#48).
+///
+/// Validates the `CompilerBackend` trait shape against MSVC's model. Flag
+/// mapping is real (`/std:c++NN`, `/EHsc`, `/interface`, `/ifcOutput`,
+/// `/reference name=path.ifc`); the compile/link/scan entry points return a
+/// clear skeleton error until the full implementation lands.
+///
+/// Shape findings recorded for the full implementation:
+/// - BMIs are `.ifc`, not `.pcm` — see [`CompilerBackend::bmi_extension`];
+///   `BuildPlan` path generation must consult it.
+/// - Dependency scanning has no `clang-scan-deps` equivalent; MSVC uses
+///   `cl /scanDependencies` emitting the same P1689 JSON format.
+/// - Interface units conventionally use `.ixx`, already accepted by source
+///   discovery.
+pub struct MsvcBackend {
+    /// Path to cl.exe.
+    pub cl_path: PathBuf,
+    config: BackendConfig,
+}
+
+impl MsvcBackend {
+    /// Create an MSVC backend from a full [`BackendConfig`].
+    pub fn from_config(config: &BackendConfig) -> Self {
+        MsvcBackend {
+            cl_path: std::env::var_os("CXX")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| find_executable("cl")),
+            config: config.clone(),
+        }
+    }
+
+    fn not_implemented(&self, what: &str) -> CmodError {
+        CmodError::BuildFailed {
+            reason: format!(
+                "MSVC backend is a skeleton; {} is not yet implemented (see issue #48)",
+                what
+            ),
+        }
+    }
+}
+
+impl CompilerBackend for MsvcBackend {
+    fn scan_deps(&self, _source: &Path) -> Result<Vec<String>, CmodError> {
+        // Full implementation: `cl /scanDependencies` (P1689 JSON output).
+        Err(self.not_implemented("dependency scanning"))
+    }
+
+    fn compile_interface(
+        &self,
+        _source: &Path,
+        _pcm_output: &Path,
+        _obj_output: &Path,
+        _dep_pcms: &[(&str, &Path)],
+    ) -> Result<(), CmodError> {
+        // Full implementation: `cl /c /interface /ifcOutput <out.ifc>` with
+        // `/reference <name>=<path.ifc>` per dependency.
+        Err(self.not_implemented("interface compilation"))
+    }
+
+    fn compile_implementation(
+        &self,
+        _source: &Path,
+        _obj_output: &Path,
+        _dep_pcms: &[(&str, &Path)],
+    ) -> Result<(), CmodError> {
+        Err(self.not_implemented("implementation compilation"))
+    }
+
+    fn link(
+        &self,
+        _objects: &[&Path],
+        _output: &Path,
+        _artifact: &Artifact,
+    ) -> Result<(), CmodError> {
+        // Full implementation: `link.exe` / `lib.exe` per artifact kind.
+        Err(self.not_implemented("linking"))
+    }
+
+    fn kind(&self) -> cmod_core::types::Compiler {
+        cmod_core::types::Compiler::Msvc
+    }
+
+    fn compiler_path(&self) -> &Path {
+        &self.cl_path
+    }
+
+    fn version(&self) -> String {
+        // cl.exe prints its version banner to stderr with no arguments.
+        let out = Command::new(&self.cl_path).output();
+        let banner = match out {
+            Ok(o) => String::from_utf8_lossy(&o.stderr).into_owned(),
+            _ => return String::new(),
+        };
+        banner
+            .split_whitespace()
+            .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()) && t.contains('.'))
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn cxx_standard(&self) -> &str {
+        &self.config.cxx_standard
+    }
+
+    fn target(&self) -> Option<&str> {
+        self.config.target.as_deref()
+    }
+
+    fn common_flags(&self) -> Vec<String> {
+        let mut flags = vec![
+            format!("/std:c++{}", self.config.cxx_standard),
+            "/EHsc".to_string(),
+            "/nologo".to_string(),
+        ];
+        match self.config.profile {
+            Profile::Debug => flags.push("/Od".to_string()),
+            Profile::Release => flags.push("/O2".to_string()),
+        }
+        flags.extend(self.config.extra_flags.clone());
+        flags
+    }
+
+    fn fingerprint(&self) -> String {
+        format!(
+            "msvc|std={}|target={}|profile={:?}|opt={:?}|flags={}",
+            self.config.cxx_standard,
+            self.config.target.as_deref().unwrap_or(""),
+            self.config.profile,
+            self.config.optimization,
+            self.config.extra_flags.join(" "),
+        )
+    }
+
+    fn bmi_extension(&self) -> &'static str {
+        "ifc"
+    }
+}
+
 fn find_executable(name: &str) -> PathBuf {
     which(name).unwrap_or_else(|| PathBuf::from(name))
 }
@@ -569,6 +715,80 @@ fn which(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- MSVC skeleton: trait-shape validation (#48) ---
+
+    #[test]
+    fn test_msvc_backend_kind_and_flags() {
+        let cfg = BackendConfig {
+            cxx_standard: "20".to_string(),
+            extra_flags: vec!["/DFOO=1".to_string()],
+            ..Default::default()
+        };
+        let backend = MsvcBackend::from_config(&cfg);
+        assert_eq!(backend.kind(), cmod_core::types::Compiler::Msvc);
+        let flags = CompilerBackend::common_flags(&backend);
+        assert!(flags.contains(&"/std:c++20".to_string()));
+        assert!(flags.contains(&"/EHsc".to_string()));
+        assert!(flags.contains(&"/DFOO=1".to_string()));
+    }
+
+    #[test]
+    fn test_msvc_backend_bmi_extension() {
+        let cfg = BackendConfig::default();
+        // MSVC produces .ifc BMIs; clang produces .pcm
+        assert_eq!(MsvcBackend::from_config(&cfg).bmi_extension(), "ifc");
+        assert_eq!(
+            ClangBackend::new("20", Profile::Debug).bmi_extension(),
+            "pcm"
+        );
+    }
+
+    #[test]
+    fn test_msvc_backend_compile_is_not_implemented() {
+        let cfg = BackendConfig::default();
+        let backend = MsvcBackend::from_config(&cfg);
+        let err = backend
+            .compile_interface(
+                Path::new("a.ixx"),
+                Path::new("a.ifc"),
+                Path::new("a.obj"),
+                &[],
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("skeleton"),
+            "compile must fail with a skeleton notice, got: {}",
+            err
+        );
+        assert!(backend.scan_deps(Path::new("a.ixx")).is_err());
+        assert!(backend
+            .link(
+                &[],
+                Path::new("out.exe"),
+                &Artifact::Executable {
+                    path: PathBuf::from("out.exe")
+                }
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn test_msvc_fingerprint_deterministic_and_distinct_from_clang() {
+        let cfg = BackendConfig {
+            cxx_standard: "20".to_string(),
+            ..Default::default()
+        };
+        let msvc = MsvcBackend::from_config(&cfg);
+        let msvc2 = MsvcBackend::from_config(&cfg);
+        assert_eq!(msvc.fingerprint(), msvc2.fingerprint());
+        let clang = ClangBackend::from_config(&cfg);
+        assert_ne!(
+            msvc.fingerprint(),
+            CompilerBackend::fingerprint(&clang),
+            "fingerprints must differ across compiler families"
+        );
+    }
 
     // --- backend factory and trait-object groundwork (#47) ---
 
