@@ -32,8 +32,8 @@
 
 ### Prerequisites
 
-- **Rust 1.74+** — [rustup.rs](https://rustup.rs/)
-- **LLVM/Clang 17+** — for C++ module compilation
+- **Rust 1.80+** — [rustup.rs](https://rustup.rs/)
+- **LLVM/Clang 17+** — for C++ module compilation (see [compiler detection](docs/guide/toolchains.md#compiler-detection) for how cmod finds it, and the macOS note if Apple clang is your default)
 
 ### Install (pre-built binary)
 

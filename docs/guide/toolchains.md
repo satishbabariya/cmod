@@ -46,6 +46,45 @@ stdlib = "libc++"      # LLVM's libc++ (common on macOS, recommended with Clang)
 
 The standard library choice affects ABI compatibility and cache keys.
 
+## Compiler Detection
+
+cmod resolves which binaries to invoke in a fixed order — there is no
+config-file search or automatic Homebrew probing:
+
+| Binary | 1. Environment variable | 2. `PATH` lookup | 3. Fallback |
+|--------|------------------------|------------------|-------------|
+| C++ compiler | `CXX` | first `clang++` on `PATH` | literal `clang++` (OS lookup at spawn) |
+| Dependency scanner | `SCAN_DEPS` | first `clang-scan-deps` on `PATH` | literal `clang-scan-deps` |
+
+The environment variables take absolute precedence and accept full paths:
+
+```bash
+CXX=/opt/homebrew/opt/llvm@18/bin/clang++ \
+SCAN_DEPS=/opt/homebrew/opt/llvm@18/bin/clang-scan-deps \
+cmod build
+```
+
+`cmod toolchain show` prints the resolved configuration (compiler, standard,
+target); `cmod toolchain check` verifies the detected compiler executes.
+
+### macOS note
+
+Apple's Xcode `clang++` (what a bare `clang++` resolves to) does not support
+C++20 modules the way cmod drives them — builds fail with errors like
+`unknown type name 'module'`. Install LLVM via Homebrew and make it win one
+of the two detection steps:
+
+```bash
+brew install llvm@18
+
+# Option A: put it first on PATH (affects everything in the shell)
+export PATH="/opt/homebrew/opt/llvm@18/bin:$PATH"
+
+# Option B: pin just cmod's binaries (per-project .envrc works well)
+export CXX=/opt/homebrew/opt/llvm@18/bin/clang++
+export SCAN_DEPS=/opt/homebrew/opt/llvm@18/bin/clang-scan-deps
+```
+
 ## Toolchain Commands
 
 ### Show active toolchain
