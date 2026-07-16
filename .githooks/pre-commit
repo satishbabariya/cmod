@@ -1,0 +1,12 @@
+#!/bin/sh
+# cmod pre-commit hook: fast formatting gate.
+# Enable with:  git config core.hooksPath .githooks
+set -e
+
+echo "pre-commit: cargo fmt --all --check"
+if ! cargo fmt --all --check; then
+    echo ""
+    echo "pre-commit: formatting check failed — run 'cargo fmt --all' and re-stage."
+    echo "            (bypass once with 'git commit --no-verify')"
+    exit 1
+fi

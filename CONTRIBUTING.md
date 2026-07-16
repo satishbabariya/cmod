@@ -15,7 +15,12 @@ git clone https://github.com/satishbabariya/cmod.git
 cd cmod
 cargo build
 cargo test
+git config core.hooksPath .githooks   # enable the fmt/clippy git hooks (recommended)
 ```
+
+The hooks mirror CI's gates: `pre-commit` runs `cargo fmt --all --check`
+(fast), `pre-push` runs `cargo clippy --all-targets -- -D warnings`. Bypass a
+single run with `--no-verify` if you must; CI still enforces both.
 
 ## Development Commands
 
