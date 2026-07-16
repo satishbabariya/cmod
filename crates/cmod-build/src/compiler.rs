@@ -6,8 +6,8 @@ use cmod_core::types::{Artifact, OptimizationLevel, Profile};
 
 /// Abstraction over a C++ compiler backend.
 ///
-/// The reference implementation targets Clang/LLVM. GCC and MSVC backends
-/// are planned for future tiers.
+/// Implemented by [`ClangBackend`] (reference) and [`GccBackend`];
+/// [`MsvcBackend`] is a skeleton pending full implementation (#77).
 pub trait CompilerBackend: Send + Sync {
     /// Scan a source file for module dependencies.
     ///
@@ -58,9 +58,8 @@ pub trait CompilerBackend: Send + Sync {
     fn fingerprint(&self) -> String;
 
     /// File extension of this compiler's BMI artifacts (without the dot).
-    /// Clang emits `.pcm`; MSVC emits `.ifc`; GCC emits CMI files under a
-    /// module-mapper directory. `BuildPlan` currently hardcodes `pcm` paths —
-    /// wiring this in is part of full non-Clang backend support (#48).
+    /// Clang emits `.pcm`, MSVC `.ifc`, GCC `.gcm`. `BuildPlan::from_graph`
+    /// consumes this to shape interface/partition output paths.
     fn bmi_extension(&self) -> &'static str {
         "pcm"
     }
@@ -104,18 +103,19 @@ pub struct BackendConfig {
 
 /// Construct a compiler backend for the requested compiler family.
 ///
-/// Clang is fully supported. GCC and MSVC return a clear error until their
-/// backends land (#47 groundwork / #48 skeleton).
+/// Clang and GCC are supported; MSVC returns a clear error until its
+/// backend graduates from the #48 skeleton.
 pub fn make_backend(
     kind: cmod_core::types::Compiler,
     config: &BackendConfig,
 ) -> Result<Box<dyn CompilerBackend>, CmodError> {
     match kind {
         cmod_core::types::Compiler::Clang => Ok(Box::new(ClangBackend::from_config(config))),
+        cmod_core::types::Compiler::Gcc => Ok(Box::new(GccBackend::from_config(config))),
         other => Err(CmodError::BuildFailed {
             reason: format!(
                 "the {} backend is not yet implemented; set [toolchain] compiler = \"clang\" \
-                 (or remove the line) — see issues #47/#48",
+                 (or remove the line) — see issue #48",
                 other
             ),
         }),
@@ -556,6 +556,314 @@ fn parse_p1689_imports(output: &str) -> Result<Vec<String>, CmodError> {
 }
 
 /// Find an executable on PATH, falling back to the name itself.
+/// GCC compiler backend (GCC 14+).
+///
+/// Drives GCC's `-fmodules-ts` module model. CMIs (`.gcm`) are placed at the
+/// plan's BMI paths via a module-mapper file written next to the primary
+/// output; dependency scanning uses `g++ -fdeps-format=p1689r5`, whose JSON
+/// output feeds the same P1689 parser as `clang-scan-deps`.
+///
+/// Configuration notes:
+/// - `[toolchain] stdlib` is ignored — GCC drives libstdc++ only.
+/// - `target` is ignored for flag purposes — GCC cross-compiles via prefixed
+///   toolchains (set `CXX=aarch64-linux-gnu-g++`), not a `--target` flag.
+/// - LTO maps to `-flto` for both modes (ThinLTO is a Clang concept).
+pub struct GccBackend {
+    /// Path to the g++ executable.
+    pub gxx_path: PathBuf,
+    config: BackendConfig,
+}
+
+impl GccBackend {
+    /// Create a GCC backend from a full [`BackendConfig`].
+    pub fn from_config(config: &BackendConfig) -> Self {
+        GccBackend {
+            gxx_path: std::env::var_os("CXX")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| find_executable("g++")),
+            config: config.clone(),
+        }
+    }
+
+    /// Write a module-mapper file next to `primary_output` and return its path.
+    fn write_mapper<S: AsRef<str>>(
+        &self,
+        primary_output: &Path,
+        entries: &[(S, PathBuf)],
+    ) -> Result<PathBuf, CmodError> {
+        let mut mapper_path = primary_output.as_os_str().to_owned();
+        mapper_path.push(".map");
+        let mapper_path = PathBuf::from(mapper_path);
+        if let Some(parent) = mapper_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&mapper_path, gcc_module_mapper(entries))?;
+        Ok(mapper_path)
+    }
+
+    fn run_compile(&self, cmd: &mut Command, what: &Path) -> Result<(), CmodError> {
+        let status = cmd.status().map_err(|e| CmodError::BuildFailed {
+            reason: format!("failed to run g++ at {}: {}", self.gxx_path.display(), e),
+        })?;
+        if !status.success() {
+            return Err(CmodError::BuildFailed {
+                reason: format!("g++ failed to compile: {}", what.display()),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Render module-mapper file content: one `<module-name> <cmi-path>` line
+/// per entry.
+fn gcc_module_mapper<S: AsRef<str>>(entries: &[(S, PathBuf)]) -> String {
+    let mut out = String::new();
+    for (name, path) in entries {
+        out.push_str(name.as_ref());
+        out.push(' ');
+        out.push_str(&path.display().to_string());
+        out.push('\n');
+    }
+    out
+}
+
+impl CompilerBackend for GccBackend {
+    fn scan_deps(&self, source: &Path) -> Result<Vec<String>, CmodError> {
+        let deps_file = std::env::temp_dir().join(format!(
+            "cmod-gcc-deps-{}-{}.json",
+            std::process::id(),
+            source.file_stem().and_then(|s| s.to_str()).unwrap_or("src")
+        ));
+
+        let output = Command::new(&self.gxx_path)
+            .args(self.config_flags())
+            .arg("-fdeps-format=p1689r5")
+            .arg(format!("-fdeps-file={}", deps_file.display()))
+            .arg("-fdeps-target=scan.o")
+            .arg("-E")
+            .arg("-x")
+            .arg("c++")
+            .arg(source)
+            .output()
+            .map_err(|e| CmodError::ModuleScanFailed {
+                reason: format!("failed to run g++ at {}: {}", self.gxx_path.display(), e),
+            })?;
+
+        if !output.status.success() {
+            let _ = std::fs::remove_file(&deps_file);
+            return Err(CmodError::ModuleScanFailed {
+                reason: format!(
+                    "g++ dependency scan failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            });
+        }
+
+        let json =
+            std::fs::read_to_string(&deps_file).map_err(|e| CmodError::ModuleScanFailed {
+                reason: format!("failed to read g++ deps file: {}", e),
+            })?;
+        let _ = std::fs::remove_file(&deps_file);
+        parse_p1689_imports(&json)
+    }
+
+    fn compile_interface(
+        &self,
+        source: &Path,
+        pcm_output: &Path,
+        obj_output: &Path,
+        dep_pcms: &[(&str, &Path)],
+    ) -> Result<(), CmodError> {
+        // GCC emits the CMI and the object in one pass; the mapper routes the
+        // CMI to the plan's path and resolves imported modules' CMIs.
+        // The mapper keys on module names as written in source. Map the
+        // sanitized file stem and, when recoverable, the real declared module
+        // name — GCC accepts multiple mapper lines pointing at the same CMI.
+        let module_stem = pcm_output
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("module")
+            .to_string();
+        let mut entries: Vec<(String, PathBuf)> = vec![(module_stem, pcm_output.to_path_buf())];
+        entries.extend(
+            dep_pcms
+                .iter()
+                .map(|(n, p)| (n.to_string(), p.to_path_buf())),
+        );
+        if let Ok(content) = std::fs::read_to_string(source) {
+            if let Ok(Some(real_name)) = crate::runner::extract_module_name_from_content(&content) {
+                entries.push((real_name, pcm_output.to_path_buf()));
+            }
+        }
+
+        let mapper = self.write_mapper(pcm_output, &entries)?;
+
+        let mut cmd = Command::new(&self.gxx_path);
+        cmd.args(self.config_flags())
+            .arg(format!("-fmodule-mapper={}", mapper.display()))
+            .arg("-x")
+            .arg("c++")
+            .arg("-c")
+            .arg("-o")
+            .arg(obj_output)
+            .arg(source);
+        self.run_compile(&mut cmd, source)
+    }
+
+    fn compile_implementation(
+        &self,
+        source: &Path,
+        obj_output: &Path,
+        dep_pcms: &[(&str, &Path)],
+    ) -> Result<(), CmodError> {
+        let entries: Vec<(String, PathBuf)> = dep_pcms
+            .iter()
+            .map(|(n, p)| (n.to_string(), p.to_path_buf()))
+            .collect();
+        let mapper = self.write_mapper(obj_output, &entries)?;
+
+        let mut cmd = Command::new(&self.gxx_path);
+        cmd.args(self.config_flags())
+            .arg(format!("-fmodule-mapper={}", mapper.display()))
+            .arg("-c")
+            .arg("-o")
+            .arg(obj_output)
+            .arg(source);
+        self.run_compile(&mut cmd, source)
+    }
+
+    fn link(&self, objects: &[&Path], output: &Path, artifact: &Artifact) -> Result<(), CmodError> {
+        match artifact {
+            Artifact::StaticLib { .. } => {
+                let obj_only: Vec<&&Path> = objects
+                    .iter()
+                    .filter(|p| p.extension().and_then(|e| e.to_str()) != Some("a"))
+                    .collect();
+                if obj_only.is_empty() {
+                    return Ok(());
+                }
+                let _ = std::fs::remove_file(output);
+                let status = Command::new("ar")
+                    .arg("rcs")
+                    .arg(output)
+                    .args(obj_only)
+                    .status()
+                    .map_err(|e| CmodError::BuildFailed {
+                        reason: format!("failed to run ar: {}", e),
+                    })?;
+                if !status.success() {
+                    return Err(CmodError::BuildFailed {
+                        reason: "ar failed to create static library".to_string(),
+                    });
+                }
+                Ok(())
+            }
+            other => {
+                let mut cmd = Command::new(&self.gxx_path);
+                cmd.args(self.config_flags());
+                if matches!(other, Artifact::SharedLib { .. }) {
+                    cmd.arg("-shared");
+                }
+                cmd.arg("-o").arg(output);
+                for obj in objects {
+                    cmd.arg(obj);
+                }
+                let status = cmd.status().map_err(|e| CmodError::BuildFailed {
+                    reason: format!("linker failed: {}", e),
+                })?;
+                if !status.success() {
+                    return Err(CmodError::BuildFailed {
+                        reason: "linking failed".to_string(),
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn kind(&self) -> cmod_core::types::Compiler {
+        cmod_core::types::Compiler::Gcc
+    }
+
+    fn compiler_path(&self) -> &Path {
+        &self.gxx_path
+    }
+
+    fn version(&self) -> String {
+        let out = Command::new(&self.gxx_path).arg("--version").output();
+        let stdout = match out {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+            _ => return String::new(),
+        };
+        stdout
+            .split_whitespace()
+            .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()) && t.contains('.'))
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn cxx_standard(&self) -> &str {
+        &self.config.cxx_standard
+    }
+
+    fn target(&self) -> Option<&str> {
+        self.config.target.as_deref()
+    }
+
+    fn common_flags(&self) -> Vec<String> {
+        self.config_flags()
+    }
+
+    fn fingerprint(&self) -> String {
+        format!(
+            "gcc|std={}|sysroot={}|profile={:?}|lto={}|opt={:?}|flags={}",
+            self.config.cxx_standard,
+            self.config
+                .sysroot
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            self.config.profile,
+            self.config.lto,
+            self.config.optimization,
+            self.config.extra_flags.join(" "),
+        )
+    }
+
+    fn bmi_extension(&self) -> &'static str {
+        "gcm"
+    }
+}
+
+impl GccBackend {
+    /// Flags shared by every g++ invocation.
+    fn config_flags(&self) -> Vec<String> {
+        let mut flags = vec![
+            format!("-std=c++{}", self.config.cxx_standard),
+            "-fmodules-ts".to_string(),
+        ];
+        // stdlib and target deliberately ignored — see type-level docs.
+        if let Some(ref sysroot) = self.config.sysroot {
+            flags.push(format!("--sysroot={}", sysroot.display()));
+        }
+        match self.config.optimization {
+            Some(OptimizationLevel::Debug) => flags.extend(["-g".into(), "-O0".into()]),
+            Some(OptimizationLevel::Release) => flags.extend(["-O2".into(), "-DNDEBUG".into()]),
+            Some(OptimizationLevel::Size) => flags.extend(["-Os".into(), "-DNDEBUG".into()]),
+            Some(OptimizationLevel::Speed) => flags.extend(["-O3".into(), "-DNDEBUG".into()]),
+            None => match self.config.profile {
+                Profile::Debug => flags.extend(["-g".into(), "-O0".into()]),
+                Profile::Release => flags.extend(["-O2".into(), "-DNDEBUG".into()]),
+            },
+        }
+        if self.config.lto {
+            flags.push("-flto".to_string());
+        }
+        flags.extend(self.config.extra_flags.clone());
+        flags
+    }
+}
+
 /// MSVC compiler backend — **skeleton only** (#48).
 ///
 /// Validates the `CompilerBackend` trait shape against MSVC's model. Flag
@@ -804,15 +1112,65 @@ mod tests {
     }
 
     #[test]
-    fn test_make_backend_gcc_not_implemented() {
-        let cfg = BackendConfig::default();
-        let Err(err) = make_backend(cmod_core::types::Compiler::Gcc, &cfg) else {
-            panic!("gcc backend must not construct yet");
+    fn test_make_backend_gcc_constructs() {
+        let cfg = BackendConfig {
+            cxx_standard: "20".to_string(),
+            ..Default::default()
         };
+        let backend = make_backend(cmod_core::types::Compiler::Gcc, &cfg).unwrap();
+        assert_eq!(backend.kind(), cmod_core::types::Compiler::Gcc);
+        assert_eq!(backend.bmi_extension(), "gcm");
+    }
+
+    #[test]
+    fn test_gcc_backend_flags() {
+        let cfg = BackendConfig {
+            cxx_standard: "20".to_string(),
+            stdlib: Some("libc++".to_string()), // GCC drives libstdc++ only — must be ignored
+            extra_flags: vec!["-DBAR=2".to_string()],
+            ..Default::default()
+        };
+        let backend = GccBackend::from_config(&cfg);
+        let flags = CompilerBackend::common_flags(&backend);
+        assert!(flags.contains(&"-std=c++20".to_string()));
+        assert!(flags.contains(&"-fmodules-ts".to_string()));
+        assert!(flags.contains(&"-DBAR=2".to_string()));
         assert!(
-            err.to_string().contains("not yet implemented"),
-            "gcc should error clearly, got: {}",
-            err
+            !flags.iter().any(|f| f.contains("stdlib")),
+            "gcc must not receive -stdlib, got: {:?}",
+            flags
+        );
+    }
+
+    #[test]
+    fn test_gcc_module_mapper_content() {
+        let entries = [
+            ("local.app", PathBuf::from("/b/pcm/local_app.gcm")),
+            ("local.dep", PathBuf::from("/b/pcm/local_dep.gcm")),
+        ];
+        let mapper = gcc_module_mapper(&entries);
+        assert_eq!(
+            mapper,
+            "local.app /b/pcm/local_app.gcm\nlocal.dep /b/pcm/local_dep.gcm\n"
+        );
+    }
+
+    #[test]
+    fn test_gcc_fingerprint_deterministic_and_distinct() {
+        let cfg = BackendConfig {
+            cxx_standard: "20".to_string(),
+            ..Default::default()
+        };
+        let a = GccBackend::from_config(&cfg);
+        let b = GccBackend::from_config(&cfg);
+        assert_eq!(
+            CompilerBackend::fingerprint(&a),
+            CompilerBackend::fingerprint(&b)
+        );
+        let clang = ClangBackend::from_config(&cfg);
+        assert_ne!(
+            CompilerBackend::fingerprint(&a),
+            CompilerBackend::fingerprint(&clang)
         );
     }
 

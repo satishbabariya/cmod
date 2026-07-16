@@ -1318,21 +1318,22 @@ fn test_graph_critical_path_flag() {
     );
 }
 
-/// Regression test for #47: `[toolchain] compiler = "gcc"` must produce a
-/// clear not-implemented error instead of silently building with clang.
+/// Regression test for #47/#48: unimplemented compiler families must produce
+/// a clear not-implemented error instead of silently building with clang.
+/// (GCC graduated to a real backend in #76 — msvc remains the skeleton.)
 #[test]
-fn test_build_with_gcc_compiler_errors_clearly() {
+fn test_build_with_msvc_compiler_errors_clearly() {
     let tmp = TempDir::new().unwrap();
-    run_cmod(tmp.path(), &["init", "--name", "gccwanted"]);
+    run_cmod(tmp.path(), &["init", "--name", "msvcwanted"]);
     let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
     fs::write(
         tmp.path().join("cmod.toml"),
-        manifest.replace("compiler = \"clang\"", "compiler = \"gcc\""),
+        manifest.replace("compiler = \"clang\"", "compiler = \"msvc\""),
     )
     .unwrap();
 
     let output = run_cmod(tmp.path(), &["build"]);
-    assert!(!output.status.success(), "gcc build must not succeed yet");
+    assert!(!output.status.success(), "msvc build must not succeed yet");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("not yet implemented"),
