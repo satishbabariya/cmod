@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use cmod_build::compiler::ClangBackend;
+use cmod_build::compiler::{make_backend, BackendConfig};
 use cmod_build::graph::{ModuleGraph, ModuleNode};
 use cmod_build::plan::BuildPlan;
 use cmod_build::runner;
@@ -38,7 +38,7 @@ pub fn run(shell: &Shell, target_override: Option<String>) -> Result<(), CmodErr
         .and_then(|b| b.build_type)
         .unwrap_or_default();
 
-    let (mut backend, target) = setup_compiler(&config);
+    let (mut backend_cfg, compiler_kind, target) = setup_compiler(&config);
 
     // Add dependency artifacts if lockfile exists (without building)
     if let Ok(lockfile) = cmod_core::lockfile::Lockfile::load(&config.lockfile_path) {
@@ -46,16 +46,21 @@ pub fn run(shell: &Shell, target_override: Option<String>) -> Result<(), CmodErr
 
         // Add dep PCMs as -fmodule-file= flags
         for (mod_name, pcm_path) in &dep_artifacts.pcms {
-            backend
-                .extra_flags
-                .push(format!("-fmodule-file={}={}", mod_name, pcm_path.display()));
+            backend_cfg.extra_flags.push(format!(
+                "-fmodule-file={}={}",
+                mod_name,
+                pcm_path.display()
+            ));
         }
 
         // Add dep include directories
         for inc_dir in &dep_artifacts.include_dirs {
-            backend.extra_flags.push(format!("-I{}", inc_dir.display()));
+            backend_cfg
+                .extra_flags
+                .push(format!("-I{}", inc_dir.display()));
         }
     }
+    let backend = make_backend(compiler_kind, &backend_cfg)?;
 
     let plan = BuildPlan::from_graph(
         &graph,
@@ -66,7 +71,7 @@ pub fn run(shell: &Shell, target_override: Option<String>) -> Result<(), CmodErr
         Some(&config.manifest.package.name),
     )?;
 
-    let commands = plan.compile_commands(&backend, &config.root);
+    let commands = plan.compile_commands(backend.as_ref(), &config.root);
     let json = serde_json::to_string_pretty(&commands).map_err(|e| CmodError::BuildFailed {
         reason: format!("failed to serialize compile_commands.json: {}", e),
     })?;
@@ -146,8 +151,8 @@ fn extract_imports_from_source(path: &std::path::Path) -> Result<Vec<String>, Cm
     Ok(imports)
 }
 
-/// Set up the Clang compiler backend from config (same logic as build.rs).
-fn setup_compiler(config: &Config) -> (ClangBackend, String) {
+/// Assemble the compiler configuration from the manifest (same logic as build.rs).
+fn setup_compiler(config: &Config) -> (BackendConfig, cmod_core::types::Compiler, String) {
     let cxx_standard = config
         .manifest
         .toolchain
@@ -155,15 +160,22 @@ fn setup_compiler(config: &Config) -> (ClangBackend, String) {
         .and_then(|tc| tc.cxx_standard.clone())
         .unwrap_or_else(|| "20".to_string());
 
-    let mut backend = ClangBackend::new(&cxx_standard, config.profile);
+    let compiler_kind = config
+        .manifest
+        .toolchain
+        .as_ref()
+        .and_then(|tc| tc.compiler.clone())
+        .unwrap_or(cmod_core::types::Compiler::Clang);
+
+    let mut backend_cfg = BackendConfig {
+        cxx_standard,
+        profile: config.profile,
+        ..Default::default()
+    };
 
     if let Some(ref tc) = config.manifest.toolchain {
-        if let Some(ref stdlib) = tc.stdlib {
-            backend.stdlib = Some(stdlib.clone());
-        }
-        if let Some(ref sysroot) = tc.sysroot {
-            backend.sysroot = Some(sysroot.clone());
-        }
+        backend_cfg.stdlib = tc.stdlib.clone();
+        backend_cfg.sysroot = tc.sysroot.clone();
     }
 
     // Add include directories from [build] section
@@ -171,9 +183,9 @@ fn setup_compiler(config: &Config) -> (ClangBackend, String) {
         let root = &config.root;
         for dir in &build.include_dirs {
             let abs = root.join(dir);
-            backend.extra_flags.push(format!("-I{}", abs.display()));
+            backend_cfg.extra_flags.push(format!("-I{}", abs.display()));
         }
-        backend.extra_flags.extend(build.extra_flags.clone());
+        backend_cfg.extra_flags.extend(build.extra_flags.clone());
     }
 
     let target = config
@@ -188,9 +200,9 @@ fn setup_compiler(config: &Config) -> (ClangBackend, String) {
         })
         .unwrap_or_else(default_target);
 
-    backend.target = Some(target.clone());
+    backend_cfg.target = Some(target.clone());
 
-    (backend, target)
+    (backend_cfg, compiler_kind, target)
 }
 
 /// Detect the default target triple for the current platform.

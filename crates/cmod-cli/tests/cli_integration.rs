@@ -1264,6 +1264,29 @@ fn test_graph_critical_path_flag() {
     );
 }
 
+/// Regression test for #47: `[toolchain] compiler = "gcc"` must produce a
+/// clear not-implemented error instead of silently building with clang.
+#[test]
+fn test_build_with_gcc_compiler_errors_clearly() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "gccwanted"]);
+    let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
+    fs::write(
+        tmp.path().join("cmod.toml"),
+        manifest.replace("compiler = \"clang\"", "compiler = \"gcc\""),
+    )
+    .unwrap();
+
+    let output = run_cmod(tmp.path(), &["build"]);
+    assert!(!output.status.success(), "gcc build must not succeed yet");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not yet implemented"),
+        "expected a clear not-implemented error, got: {}",
+        stderr
+    );
+}
+
 /// Regression test for #45: `[cache] auth_token_env` must be honored by
 /// `cache push` — the bearer token from the environment goes on the wire.
 #[test]
