@@ -53,6 +53,7 @@ impl BuildPlan {
         profile: Profile,
         build_type: BuildType,
         package_name: Option<&str>,
+        bmi_ext: &str,
     ) -> Result<Self, CmodError> {
         let order = graph.topological_order()?;
         let mut nodes = Vec::new();
@@ -72,7 +73,8 @@ impl BuildPlan {
             match graph_node.kind {
                 cmod_core::types::ModuleUnitKind::InterfaceUnit
                 | cmod_core::types::ModuleUnitKind::PartitionUnit => {
-                    let pcm_path = pcm_dir.join(format!("{}.pcm", sanitize_name(module_name)));
+                    let pcm_path =
+                        pcm_dir.join(format!("{}.{}", sanitize_name(module_name), bmi_ext));
                     let obj_path = obj_dir.join(format!("{}.o", sanitize_name(module_name)));
 
                     // Dependencies are the PCM build nodes for imported modules
@@ -339,6 +341,40 @@ mod tests {
     use cmod_core::types::ModuleUnitKind;
 
     #[test]
+    fn test_build_plan_bmi_extension_flows_into_outputs() {
+        // #75: a non-Clang backend's BMI extension must shape plan outputs.
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            id: "m".to_string(),
+            name: "m".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/m.ixx"),
+            package: "test".to_string(),
+            imports: vec![],
+            partition_of: None,
+        });
+
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-pc-windows-msvc",
+            Profile::Debug,
+            BuildType::Binary,
+            None,
+            "ifc",
+        )
+        .unwrap();
+
+        let bmi = plan.pcm_paths().get("m").cloned().expect("bmi path");
+        assert_eq!(bmi.extension().and_then(|e| e.to_str()), Some("ifc"));
+        // Objects keep their extension regardless of BMI format
+        assert!(plan
+            .object_paths()
+            .iter()
+            .all(|o| o.extension().and_then(|e| e.to_str()) == Some("o")));
+    }
+
+    #[test]
     fn test_build_plan_single_module() {
         let mut graph = ModuleGraph::new();
         graph.add_node(ModuleNode {
@@ -358,6 +394,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -396,6 +433,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -430,6 +468,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -465,6 +504,7 @@ mod tests {
             Profile::Release,
             BuildType::StaticLib,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -501,6 +541,7 @@ mod tests {
             Profile::Debug,
             BuildType::SharedLib,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -542,6 +583,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -577,6 +619,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -614,6 +657,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -658,6 +702,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -712,6 +757,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -761,6 +807,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -796,6 +843,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -828,6 +876,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 
@@ -862,6 +911,7 @@ mod tests {
             Profile::Release,
             BuildType::StaticLib,
             Some("my-library"),
+            "pcm",
         )
         .unwrap();
 
@@ -904,6 +954,7 @@ mod tests {
             Profile::Debug,
             BuildType::Binary,
             None,
+            "pcm",
         )
         .unwrap();
 

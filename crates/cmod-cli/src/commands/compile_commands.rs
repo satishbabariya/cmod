@@ -69,6 +69,7 @@ pub fn run(shell: &Shell, target_override: Option<String>) -> Result<(), CmodErr
         config.profile,
         build_type,
         Some(&config.manifest.package.name),
+        backend.bmi_extension(),
     )?;
 
     let commands = plan.compile_commands(backend.as_ref(), &config.root);
