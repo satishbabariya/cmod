@@ -283,8 +283,15 @@ impl BuildRunner {
         graph.validate()?;
 
         // Generate the build plan
-        let plan =
-            BuildPlan::from_graph(graph, build_dir, target, profile, build_type, package_name)?;
+        let plan = BuildPlan::from_graph(
+            graph,
+            build_dir,
+            target,
+            profile,
+            build_type,
+            package_name,
+            self.backend.bmi_extension(),
+        )?;
 
         // Ensure output directories exist
         fs::create_dir_all(build_dir.join("pcm"))?;
@@ -306,8 +313,15 @@ impl BuildRunner {
         package_name: Option<&str>,
     ) -> Result<(PathBuf, BuildStats), CmodError> {
         graph.validate()?;
-        let plan =
-            BuildPlan::from_graph(graph, build_dir, target, profile, build_type, package_name)?;
+        let plan = BuildPlan::from_graph(
+            graph,
+            build_dir,
+            target,
+            profile,
+            build_type,
+            package_name,
+            self.backend.bmi_extension(),
+        )?;
         fs::create_dir_all(build_dir.join("pcm"))?;
         fs::create_dir_all(build_dir.join("obj"))?;
         self.execute_plan(&plan)

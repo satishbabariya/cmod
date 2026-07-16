@@ -245,6 +245,7 @@ fn build_module(
 
     // Execute the build
     let build_dir = config.build_dir();
+
     let build_type = config
         .manifest
         .build
@@ -1508,6 +1509,10 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
         .unwrap_or_else(default_target);
 
     let build_dir = config.build_dir();
+    // Resolve the configured backend so plan output reflects its BMI naming
+    // (and gcc/msvc fail fast, consistent with `cmod build`).
+    let (plan_backend_cfg, plan_compiler_kind, _) = setup_compiler(&config, &[]);
+    let plan_backend = cmod_build::compiler::make_backend(plan_compiler_kind, &plan_backend_cfg)?;
     let build_type = config
         .manifest
         .build
@@ -1570,6 +1575,7 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
                     config.profile,
                     dep_build_type,
                     Some(&dep_config.manifest.package.name),
+                    plan_backend.bmi_extension(),
                 ) {
                     all_plan_nodes.extend(dep_plan.nodes);
                 }
@@ -1586,6 +1592,7 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
         config.profile,
         build_type,
         Some(&config.manifest.package.name),
+        plan_backend.bmi_extension(),
     )?;
     all_plan_nodes.extend(plan.nodes);
 
