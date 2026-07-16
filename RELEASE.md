@@ -1,86 +1,62 @@
-# cmod v0.1.0-alpha.2
+# cmod v0.1.0-alpha.3
 
-**Audit-cleanup release.** Fixes 7 bugs surfaced by a full command-surface test pass (documented in `docs/TEST_REPORT.md`), hardens the cache key against Clang upgrades, and adds an ad-hoc `--remote` flag to `cmod cache push/pull`. No new features of scale — this is a stability release over `v0.1.0-alpha.1`.
+**Offline & distribution polish, plus compiler-backend groundwork.** Closes out the entire v0.1.0-alpha.3 milestone — all 15 planned items and all 3 stretch goals (#36): the remaining alpha.2 audit defects, the remote-cache story hardened end-to-end and documented, the compiler backend abstraction that GCC/MSVC support will build on, and 11 Dependabot security alerts resolved.
 
 ---
 
 ## Upgrade notes
 
-Two behaviour changes to be aware of — both are expected, neither requires user action:
+Four behaviour changes to be aware of:
 
-- **One-time cache miss on first build.** `ClangBackend::detect_version()` now feeds `clang --version` into the cache key, so existing cache entries are orphaned. The next `cmod build` will rebuild from scratch once, then hit the cache as normal. Run `cmod cache clean` if you want to reclaim the orphaned space immediately.
-- **First release build after upgrade recompiles path dependencies.** `cmod build --release` now correctly rebuilds path deps under the release profile (previously it linked the debug artefacts). If your project has many path deps, that first release build will be slower; subsequent builds are cached.
+- **`cmod cache export` is now all-positional.** `cmod cache export <MODULE> <KEY> <OUTPUT>` — the `-o/--output` flag is rejected. Update scripts accordingly; the error is loud, not silent.
+- **One-time cache miss on first build.** Cache keys now derive from the full compiler-configuration fingerprint (adding LTO mode, optimization level, and sysroot — previously missing, which could reuse stale artifacts). Existing entries are orphaned; the first build recompiles once. `cmod cache clean` reclaims the space if you care.
+- **`cmod test --format json/junit` schemas corrected.** JSON `summary` gains `total`/`success` and no longer double-counts timeouts in `failed`; JUnit gains the suite-level count attributes CI parsers actually read, and maps timeouts/compile failures to `<error>`. CI consumers parsing the old shapes need a one-time update — the old JUnit output could even be invalid XML when compiler output contained ANSI escapes.
+- **`[toolchain] compiler = "gcc"` (or `"msvc"`) now errors** with a clear not-implemented message instead of silently building with clang. Remove the line or set `"clang"`.
 
-Nothing else in the manifest, lockfile, or CLI surface changed incompatibly.
+Also: **MSRV is now Rust 1.80** (was 1.74), required by the openssl security fix. This affects building cmod from source only.
 
-## Bug fixes
+## Highlights
 
-| Bug | Severity | What changed |
-|---|---|---|
-| **BUG-01** | high | `cmod vendor` now encodes Git-URL dep names into filesystem-safe dirs (`vendor/github.com_fmtlib_fmt/`) instead of rejecting them as "path traversal" |
-| **BUG-02** | high | `cmod verify --signatures` now opens repos at the sanitized path the resolver actually writes to |
-| **BUG-03** | high | `cmod workspace add <dir>` registers an existing member if it has a `cmod.toml`, scaffolds if missing, rejects orphans — no more blanket "directory already exists" |
-| **BUG-04** | medium | `cmod run --release` now locates the binary in `build/release/` |
-| **BUG-05** | medium | Release builds now propagate profile / locked / offline / target settings into path-dep sub-builds |
-| **BUG-06** | low | `cmod cache push/pull` now accept `--remote <URL>` as a per-invocation override of `[cache].shared_url` |
-| **BUG-07** | low | Test harness no longer contaminates tempdirs with developer-built `build/` artefacts, so `cargo test --test example_projects` is stable across Clang versions |
+### Remote cache, actually usable
 
-## New CLI surface
+- `[cache] auth_token_env`, `timeout`, and `retries` were documented but dead — never applied to any HTTP client. Now wired end-to-end (build, push, pull).
+- `cmod cache push` no longer lies: upload failures are counted and reported, and a fully-failed push exits nonzero. On Windows it previously uploaded **zero artifacts** due to path-separator splitting — fixed.
+- Downloads are atomic (`.part` + rename), so an interrupted transfer can't poison the local cache.
+- New guide: `docs/guide/remote-cache.md` — the three-verb protocol spec plus hosting recipes validated against real servers (nginx read-write, Caddy read-only, stdlib-Python dev server).
 
-```text
-$ cmod cache push --help
-Push local cache entries to remote cache
+### Compiler backend groundwork
 
-Options:
-      --remote <URL>   Remote cache URL (overrides manifest [cache].shared_url)
-```
+- Construction goes through `make_backend(Compiler, &BackendConfig)`; the build pipeline holds `dyn CompilerBackend` and never sees a concrete type. A GCC backend is now one trait impl + one factory arm away.
+- `MsvcBackend` skeleton validates the trait shape against MSVC's model (`.ifc` BMIs via the new `bmi_extension()`, `cl /scanDependencies` P1689 compatibility) with real flag mapping.
+- `compile_commands.json` records the resolved compiler path instead of literal `clang++`.
 
-## Under the hood
+### Fixed defects (carried from the alpha.2 audit)
 
-- `cmod_core::types` gains two shared helpers — `is_acceptable_package_name` (validation) and `sanitize_package_name_for_path` (filesystem encoding). The resolver, vendor, verify, and policy crates all route through them, so on-disk dep directory naming has a single source of truth.
-- `BuildRunner` memoizes the compiler version via `OnceLock` to avoid re-running `clang --version` for every source file.
-- `ArtifactMetadata` now records `compiler_version` and `target` instead of empty strings.
+| Issue | What changed |
+|---|---|
+| #38 | `cmod vendor --sync` re-runs reuse the existing clone (fetch + hard-reset) instead of failing on a non-empty directory |
+| #39 | `[test] test_patterns` root-relative globs (`tests/**/*.cpp`) now match — affected projects stop reporting "No tests found" |
+| #40 | `cache inspect` / `cache export` argument shapes are consistent (all-positional) |
 
-## Installation
+### Developer experience
 
-### Pre-built binaries
+- `cmod workspace add --scaffold` asserts creation intent for scripts (default inference unchanged).
+- `cmod graph` at a workspace root explains that graphs are per-member and lists the members.
+- Git hooks (`.githooks/`): fmt on commit, clippy on push — `git config core.hooksPath .githooks`.
+- CI gains a cross-target smoke job; CONTRIBUTING documents the commit conventions, CI matrix, and this release process.
 
-```bash
-# Latest
-curl -sSf https://raw.githubusercontent.com/satishbabariya/cmod/main/install.sh | sh
+### Security
 
-# Pin to this version
-curl -sSf https://raw.githubusercontent.com/satishbabariya/cmod/main/install.sh | sh -s -- --version v0.1.0-alpha.2
-```
+- All 11 open Dependabot alerts resolved: `openssl` → 0.10.80 (5 high-severity fixes incl. AES key-wrap OOB writes), `rustls-webpki` → 0.103.13 (CRL panic DoS, name-constraint bypasses).
 
-### From source
+## Decision docs shipped
 
-```bash
-git clone https://github.com/satishbabariya/cmod.git
-cd cmod && git checkout v0.1.0-alpha.2
-cargo install --path crates/cmod-cli
-```
+- **crates.io publishing** (`docs/plan-crates-io-publishing.md`): don't publish — `cmod`/`cmod-core` are owned by an unrelated active project; git deps serve consumers until 1.0 planning.
+- **Search registry** (`docs/plan-search-registry.md`): the code side already exists; the phased plan bootstraps the index repo, then PR-based submissions.
+- **VS Code extension** (`editors/vscode/PUBLISHING.md`): packaging + publish automation is complete and verified; first marketplace publish awaits publisher-account setup.
 
-### Download
+## Stats
 
-| Platform | Architecture | Archive |
-|----------|-------------|---------|
-| Linux | x86_64 (glibc) | `cmod-v0.1.0-alpha.2-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux | aarch64 (glibc) | `cmod-v0.1.0-alpha.2-aarch64-unknown-linux-gnu.tar.gz` |
-| Linux | x86_64 (musl, static) | `cmod-v0.1.0-alpha.2-x86_64-unknown-linux-musl.tar.gz` |
-| macOS | x86_64 (Intel) | `cmod-v0.1.0-alpha.2-x86_64-apple-darwin.tar.gz` |
-| macOS | aarch64 (Apple Silicon) | `cmod-v0.1.0-alpha.2-aarch64-apple-darwin.tar.gz` |
-| Windows | x86_64 | `cmod-v0.1.0-alpha.2-x86_64-pc-windows-msvc.zip` |
-| Windows | aarch64 | `cmod-v0.1.0-alpha.2-aarch64-pc-windows-msvc.zip` |
-
-SHA-256 checksums are provided as `checksums-v0.1.0-alpha.2.sha256`.
-
-### Runtime requirements
-
-- **LLVM/Clang 17+** on `PATH`. On macOS, `brew install llvm@18` is recommended — Apple's bundled `/usr/bin/clang++` mis-handles the C++20 global module fragment.
-- **Git 2.25+** for fetching dependencies.
-
-## Feedback
-
-- Issues: https://github.com/satishbabariya/cmod/issues
-- Full changelog: https://github.com/satishbabariya/cmod/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
+- 18 PRs merged over the milestone (#37, #55–#72)
+- 857 tests passing (was 828 at alpha.2)
+- 8 crates, MSRV 1.80, clippy 1.97 clean
