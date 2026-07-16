@@ -4,8 +4,8 @@ Thank you for your interest in contributing to cmod! This guide will help you ge
 
 ## Prerequisites
 
-- **Rust 1.74+** — install via [rustup](https://rustup.rs/)
-- **LLVM/Clang 17+** — required for C++ module compilation
+- **Rust 1.80+** — install via [rustup](https://rustup.rs/)
+- **LLVM/Clang 17+** — required for C++ module compilation; cmod resolves the compiler via `CXX` → `clang++` on `PATH` (see [compiler detection](docs/guide/toolchains.md#compiler-detection))
 - **Git** — for dependency resolution and version control
 
 ## Getting Started
