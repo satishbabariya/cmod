@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-07-16
+
+Offline & distribution polish, plus compiler-backend groundwork. Closes out the full v0.1.0-alpha.3 milestone (#36): all 15 planned items plus the three stretch goals.
+
+### Fixed
+
+- **`cmod vendor --sync` re-runs succeed** — the second sync no longer fails with "exists and is not an empty directory"; existing clones are reused (fetch + hard reset to the locked commit) and stale non-repo leftovers are cleared. (#55, fixes #38)
+- **Test discovery matches root-relative glob patterns** — `[test] test_patterns = ["tests/**/*.cpp"]` never matched because discovered sources are absolute paths; globs now also match against the project-root-relative path, so configured projects stop reporting "No tests found". (#56, fixes #39)
+- **`cmod cache push` reports upload failures** — errors were silently swallowed and every artifact counted as pushed; failures are now counted, warned, and push exits nonzero when nothing uploads. (#61)
+- **`cmod cache push` works on Windows** — path splitting on `/` meant zero artifacts were ever uploaded from Windows; now splits with `Path::components`. (#61)
+- **`[cache]` settings are honored end-to-end** — `auth_token_env`, `timeout`, and `retries` were documented and parsed but never applied; all remote-cache clients (build, push, pull) now route through a shared constructor that wires them. (#63, fixes #45)
+- **Friendlier `cmod graph` at a workspace root** — explains graphs are per-member and lists member names instead of "no source files found". (#59, fixes #42)
+
+### Changed
+
+- **`cmod cache export` is all-positional** — `cmod cache export <MODULE> <KEY> <OUTPUT>`; the `-o/--output` flag is no longer accepted (consistency with `cache inspect`). **Breaking CLI change.** (#57, fixes #40)
+- **`cmod test --format json/junit` output corrected for CI consumers** — JSON: `summary` gains `total` and `success`, `failed` no longer double-counts timeouts, compile failures include their reason. JUnit: suite-level `failures`/`errors`/`skipped`/`time` attributes (read by Jenkins/GitLab), timeouts and compile failures map to `<error>`, testcases gain `classname`, and XML-invalid control characters (ANSI escapes) are stripped. **Schema change for existing consumers.** (#60, fixes #43)
+- **`[toolchain] compiler = "gcc"` / `"msvc"` now fail fast** with a clear not-implemented error — previously the setting was silently ignored and clang was used. (#66)
+- **Cache keys derive from a full backend fingerprint** — LTO mode, optimization level, and sysroot were previously missing from cache keys, so toggling them could reuse stale artifacts. **One-time cache miss on first build after upgrade.** (#66)
+- **Remote-cache downloads are atomic** — artifacts download to a `.part` sibling and rename into place, so interrupted transfers can't poison the cache. (#63)
+- **MSRV raised to Rust 1.80** (required by the openssl security fix). (#37)
+
+### Added
+
+- **`cmod workspace add --scaffold`** — asserts creation intent: errors if the member directory already exists, making scripted workspace management auditable. Default inference behavior is unchanged. (#58, fixes #41)
+- **Compiler backend abstraction** — `BackendConfig` + `make_backend()` factory; `BuildRunner` and `compile_commands` work against `dyn CompilerBackend`, so GCC/MSVC backends slot in without touching the pipeline. `compile_commands.json` now records the resolved compiler path. (#66, closes #47)
+- **`MsvcBackend` skeleton** — real MSVC flag mapping and trait-shape validation (`.ifc` BMI naming via new `bmi_extension()`, `cl /scanDependencies` P1689 note); compilation deliberately stubbed. (#67, closes #48)
+- **Git hooks** — `.githooks/` with fmt on pre-commit and clippy on pre-push; enable with `git config core.hooksPath .githooks`. (#68, closes #50)
+- **Cross-target smoke tests in CI** — `--target` with a non-host triple is exercised through plan generation and emitted flags on every CI leg plus a dedicated job. (#70, closes #54)
+
+### Docs
+
+- **Remote-cache server guide** (`docs/guide/remote-cache.md`) — the HEAD/GET/PUT protocol spec plus recipes validated against real servers in Docker: nginx read-write, Caddy read-only, and a stdlib-Python dev server. (#61, closes #44)
+- **Compiler detection** (`docs/guide/toolchains.md`) — the verified `CXX`/`SCAN_DEPS` → PATH → literal resolution order and the macOS Apple-clang note; README/CONTRIBUTING point at it. (#64, closes #49)
+- **crates.io publishing decision doc** — recommendation: don't publish; `cmod`/`cmod-core` are already taken by an unrelated active project. (#65, closes #46)
+- **Search registry design doc** — the client/index/governance code already exists; the phased plan covers bootstrapping the index repo, PR-based submissions, and scale. (#71, closes #53)
+- **VS Code extension publishing runbook** (`editors/vscode/PUBLISHING.md`) — the release workflow was fully built but never run; documents the owner setup (marketplace publisher, PAT secrets) and tag-driven flow. (#72, refs #52)
+- **CONTRIBUTING refresh** — commit conventions, CI job matrix, release process, 8-crate layout. (#69, closes #51)
+
+### Dependencies
+
+- **Resolved all 11 open Dependabot alerts**: `openssl` 0.10.75 → 0.10.80 (8 alerts incl. 5 high), `rustls-webpki` 0.103.10 → 0.103.13 (3 alerts incl. CRL panic DoS). (#37)
+
+### Internal
+
+- clippy 1.97 clean across three new lints that had turned main's CI red. (#37, #61)
+- `cmod test` output rendering extracted into unit-testable `render_json`/`render_junit`. (#60)
+
 ## [0.1.0-alpha.2] - 2026-04-21
 
 ### Fixed
