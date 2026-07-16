@@ -111,6 +111,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all
 
+  gcc-backend:
+    name: GCC backend (ubuntu, g++-14)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install g++-14
+        run: sudo apt-get update && sudo apt-get install -y g++-14
+      - name: Build cmod
+        run: cargo build -p cmod-cli
+      - name: End-to-end module build with GCC
+        run: |
+          set -x
+          mkdir /tmp/gccproj && cd /tmp/gccproj
+          $GITHUB_WORKSPACE/target/debug/cmod init --name gccdemo
+          sed -i 's/compiler = "clang"/compiler = "gcc"/' cmod.toml
+          CXX=g++-14 $GITHUB_WORKSPACE/target/debug/cmod build --verbose
+          ls build/debug/pcm/
+          test -f build/debug/pcm/local_gccdemo.gcm
+          ./build/debug/gccdemo
+          CXX=g++-14 $GITHUB_WORKSPACE/target/debug/cmod test
+
   cross-target:
     name: Cross-target smoke
     runs-on: ubuntu-latest
