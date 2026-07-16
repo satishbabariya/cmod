@@ -1,0 +1,16 @@
+#!/bin/sh
+# cmod pre-push hook: lint gate matching the Clippy CI job.
+# Enable with:  git config core.hooksPath .githooks
+#
+# Runs on push (not commit) because a full clippy pass takes a minute —
+# and the incidents this guards against (red clippy on main, PR #31 and
+# #37) both reached the repo via push.
+set -e
+
+echo "pre-push: cargo clippy --all-targets -- -D warnings"
+if ! cargo clippy --all-targets -- -D warnings; then
+    echo ""
+    echo "pre-push: clippy failed — fix the lints above before pushing."
+    echo "          (bypass once with 'git push --no-verify')"
+    exit 1
+fi
