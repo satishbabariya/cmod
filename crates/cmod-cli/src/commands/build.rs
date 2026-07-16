@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cmod_build::compiler::ClangBackend;
+use cmod_build::compiler::BackendConfig;
 use cmod_build::graph::{ModuleGraph, ModuleNode};
 use cmod_build::runner::{self, BuildRunner, BuildStats};
 use cmod_cache::{ArtifactCache, RemoteCacheMode};
@@ -8,7 +8,7 @@ use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::lockfile::Lockfile;
 use cmod_core::shell::{Shell, Verbosity};
-use cmod_core::types::Profile;
+use cmod_core::types::{Compiler, Profile};
 use cmod_resolver::Resolver;
 use cmod_workspace::WorkspaceManager;
 
@@ -230,12 +230,15 @@ fn build_module(
     }
 
     // Set up the compiler backend (with feature flags as -D defines)
-    let (mut backend, target) = setup_compiler(config, activated_features);
+    let (mut backend_cfg, compiler_kind, target) = setup_compiler(config, activated_features);
 
     // Add dependency include directories as -I flags
     for inc_dir in &dep_artifacts.include_dirs {
-        backend.extra_flags.push(format!("-I{}", inc_dir.display()));
+        backend_cfg
+            .extra_flags
+            .push(format!("-I{}", inc_dir.display()));
     }
+    let backend = cmod_build::compiler::make_backend(compiler_kind, &backend_cfg)?;
 
     // Set up cache
     let cache = ArtifactCache::new(config.cache_dir());
@@ -541,19 +544,24 @@ fn build_vendored_dependencies(
         graph.validate()?;
 
         // Set up compiler from the dependency's own toolchain config
-        let (mut backend, target) = setup_compiler(&dep_config, &[]);
+        let (mut backend_cfg, compiler_kind, target) = setup_compiler(&dep_config, &[]);
 
         // Add auto-detected include dirs to the dep's own compiler flags
         for inc_dir in &inc_dirs {
-            backend.extra_flags.push(format!("-I{}", inc_dir.display()));
+            backend_cfg
+                .extra_flags
+                .push(format!("-I{}", inc_dir.display()));
         }
 
         // Also add include dirs from already-processed deps (transitive)
         for inc_dir in &artifacts.include_dirs {
             if !inc_dirs.contains(inc_dir) {
-                backend.extra_flags.push(format!("-I{}", inc_dir.display()));
+                backend_cfg
+                    .extra_flags
+                    .push(format!("-I{}", inc_dir.display()));
             }
         }
+        let backend = cmod_build::compiler::make_backend(compiler_kind, &backend_cfg)?;
 
         // Set up cache
         let cache = ArtifactCache::new(dep_config.cache_dir());
@@ -752,29 +760,31 @@ fn build_workspace(
 
         let graph = build_module_graph(&sources, &member.name)?;
         graph.validate()?;
-        let (mut backend, target) = setup_compiler(config, &[]);
+        let (mut backend_cfg, compiler_kind, target) = setup_compiler(config, &[]);
 
         // Add member-specific include dirs and extra flags from [build] section
         if let Some(ref build) = member.manifest.build {
             for dir in &build.include_dirs {
                 let abs = member.path.join(dir);
-                backend.extra_flags.push(format!("-I{}", abs.display()));
+                backend_cfg.extra_flags.push(format!("-I{}", abs.display()));
             }
-            backend.extra_flags.extend(build.extra_flags.clone());
+            backend_cfg.extra_flags.extend(build.extra_flags.clone());
         }
 
         // Auto-detect include/ directory for this member
         let member_include = member.path.join("include");
         if member_include.is_dir() {
             let flag = format!("-I{}", member_include.display());
-            if !backend.extra_flags.contains(&flag) {
-                backend.extra_flags.push(flag);
+            if !backend_cfg.extra_flags.contains(&flag) {
+                backend_cfg.extra_flags.push(flag);
             }
         }
 
         // Add git dependency include dirs to the compiler
         for inc_dir in &git_dep_artifacts.include_dirs {
-            backend.extra_flags.push(format!("-I{}", inc_dir.display()));
+            backend_cfg
+                .extra_flags
+                .push(format!("-I{}", inc_dir.display()));
         }
 
         let cache = ArtifactCache::new(config.cache_dir());
@@ -805,8 +815,8 @@ fn build_workspace(
             if let Some(dep_incs) = member_include_dirs.get(dep_name) {
                 for inc_dir in dep_incs {
                     let flag = format!("-I{}", inc_dir.display());
-                    if !backend.extra_flags.contains(&flag) {
-                        backend.extra_flags.push(flag);
+                    if !backend_cfg.extra_flags.contains(&flag) {
+                        backend_cfg.extra_flags.push(flag);
                     }
                 }
             }
@@ -829,6 +839,7 @@ fn build_workspace(
             );
         }
 
+        let backend = cmod_build::compiler::make_backend(compiler_kind, &backend_cfg)?;
         let mut runner_instance = BuildRunner::new(backend, Some(cache))
             .with_jobs(jobs)
             .with_force(force)
@@ -1057,7 +1068,10 @@ fn parse_p1689_imports(json_str: &str) -> Result<Vec<String>, CmodError> {
 }
 
 /// Set up the Clang compiler backend from config.
-fn setup_compiler(config: &Config, activated_features: &[String]) -> (ClangBackend, String) {
+fn setup_compiler(
+    config: &Config,
+    activated_features: &[String],
+) -> (BackendConfig, Compiler, String) {
     let cxx_standard = config
         .manifest
         .toolchain
@@ -1065,24 +1079,31 @@ fn setup_compiler(config: &Config, activated_features: &[String]) -> (ClangBacke
         .and_then(|tc| tc.cxx_standard.clone())
         .unwrap_or_else(|| "20".to_string());
 
-    let mut backend = ClangBackend::new(&cxx_standard, config.profile);
+    let compiler_kind = config
+        .manifest
+        .toolchain
+        .as_ref()
+        .and_then(|tc| tc.compiler.clone())
+        .unwrap_or(Compiler::Clang);
+
+    let mut backend_cfg = BackendConfig {
+        cxx_standard,
+        profile: config.profile,
+        ..Default::default()
+    };
 
     if let Some(ref tc) = config.manifest.toolchain {
-        if let Some(ref stdlib) = tc.stdlib {
-            backend.stdlib = Some(stdlib.clone());
-        }
-        if let Some(ref sysroot) = tc.sysroot {
-            backend.sysroot = Some(sysroot.clone());
-        }
+        backend_cfg.stdlib = tc.stdlib.clone();
+        backend_cfg.sysroot = tc.sysroot.clone();
     }
 
     // Apply build section settings from manifest
     if let Some(ref build) = config.manifest.build {
         if build.lto == Some(true) {
-            backend.lto = true;
+            backend_cfg.lto = true;
         }
         if let Some(opt) = build.optimization {
-            backend.optimization = Some(opt);
+            backend_cfg.optimization = Some(opt);
         }
     }
 
@@ -1098,7 +1119,7 @@ fn setup_compiler(config: &Config, activated_features: &[String]) -> (ClangBacke
         })
         .unwrap_or_else(default_target);
 
-    backend.target = Some(target.clone());
+    backend_cfg.target = Some(target.clone());
 
     // Add feature flags as compiler defines
     for feature in activated_features {
@@ -1106,7 +1127,7 @@ fn setup_compiler(config: &Config, activated_features: &[String]) -> (ClangBacke
             "-DCMOD_FEATURE_{}=1",
             feature.to_uppercase().replace('-', "_")
         );
-        backend.extra_flags.push(flag);
+        backend_cfg.extra_flags.push(flag);
     }
 
     // Add include directories from [build] section
@@ -1114,21 +1135,21 @@ fn setup_compiler(config: &Config, activated_features: &[String]) -> (ClangBacke
         let root = &config.root;
         for dir in &build.include_dirs {
             let abs = root.join(dir);
-            backend.extra_flags.push(format!("-I{}", abs.display()));
+            backend_cfg.extra_flags.push(format!("-I{}", abs.display()));
         }
-        backend.extra_flags.extend(build.extra_flags.clone());
+        backend_cfg.extra_flags.extend(build.extra_flags.clone());
     }
 
     // Auto-detect include/ directory (convention)
     let include_dir = config.root.join("include");
     if include_dir.is_dir() {
         let flag = format!("-I{}", include_dir.display());
-        if !backend.extra_flags.contains(&flag) {
-            backend.extra_flags.push(flag);
+        if !backend_cfg.extra_flags.contains(&flag) {
+            backend_cfg.extra_flags.push(flag);
         }
     }
 
-    (backend, target)
+    (backend_cfg, compiler_kind, target)
 }
 
 /// Resolve which features are activated for the build.

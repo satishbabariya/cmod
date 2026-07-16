@@ -8,7 +8,7 @@ use cmod_core::types::{Artifact, OptimizationLevel, Profile};
 ///
 /// The reference implementation targets Clang/LLVM. GCC and MSVC backends
 /// are planned for future tiers.
-pub trait CompilerBackend {
+pub trait CompilerBackend: Send + Sync {
     /// Scan a source file for module dependencies.
     ///
     /// Returns a list of module names that the source imports.
@@ -34,6 +34,28 @@ pub trait CompilerBackend {
 
     /// Link object files into a final artifact.
     fn link(&self, objects: &[&Path], output: &Path, artifact: &Artifact) -> Result<(), CmodError>;
+
+    /// Which compiler family this backend drives.
+    fn kind(&self) -> cmod_core::types::Compiler;
+
+    /// Path to the compiler executable (for compile_commands.json).
+    fn compiler_path(&self) -> &Path;
+
+    /// Detected compiler version string (e.g. `"18.1.8"`). Seeds cache keys.
+    fn version(&self) -> String;
+
+    /// The configured C++ standard (e.g. `"20"`).
+    fn cxx_standard(&self) -> &str;
+
+    /// The configured target triple, if any.
+    fn target(&self) -> Option<&str>;
+
+    /// Flags common to all compilations (compile_commands.json, diagnostics).
+    fn common_flags(&self) -> Vec<String>;
+
+    /// Deterministic description of every configuration input that affects
+    /// codegen. Hashed into incremental-build state and cache keys.
+    fn fingerprint(&self) -> String;
 }
 
 /// LTO mode for link-time optimization.
@@ -44,6 +66,52 @@ pub enum LtoMode {
     Thin,
     /// Full LTO — slower but maximum optimization.
     Full,
+}
+
+/// Compiler-agnostic configuration for constructing a backend.
+///
+/// Carries every knob that affects codegen so backends can be built through
+/// [`make_backend`] without poking concrete fields afterwards.
+#[derive(Debug, Clone, Default)]
+pub struct BackendConfig {
+    /// C++ standard (e.g., "20", "23").
+    pub cxx_standard: String,
+    /// Build profile.
+    pub profile: Profile,
+    /// Standard library (e.g., "libc++", "libstdc++").
+    pub stdlib: Option<String>,
+    /// Sysroot path for cross-compilation.
+    pub sysroot: Option<PathBuf>,
+    /// Target triple.
+    pub target: Option<String>,
+    /// Additional flags (includes, defines, user extra_flags).
+    pub extra_flags: Vec<String>,
+    /// Enable LTO.
+    pub lto: bool,
+    /// LTO mode.
+    pub lto_mode: LtoMode,
+    /// Explicit optimization level (overrides profile-based defaults).
+    pub optimization: Option<OptimizationLevel>,
+}
+
+/// Construct a compiler backend for the requested compiler family.
+///
+/// Clang is fully supported. GCC and MSVC return a clear error until their
+/// backends land (#47 groundwork / #48 skeleton).
+pub fn make_backend(
+    kind: cmod_core::types::Compiler,
+    config: &BackendConfig,
+) -> Result<Box<dyn CompilerBackend>, CmodError> {
+    match kind {
+        cmod_core::types::Compiler::Clang => Ok(Box::new(ClangBackend::from_config(config))),
+        other => Err(CmodError::BuildFailed {
+            reason: format!(
+                "the {} backend is not yet implemented; set [toolchain] compiler = \"clang\" \
+                 (or remove the line) — see issue #47",
+                other
+            ),
+        }),
+    }
 }
 
 /// Clang/LLVM compiler backend.
@@ -92,6 +160,19 @@ impl ClangBackend {
             lto_mode: LtoMode::default(),
             optimization: None,
         }
+    }
+
+    /// Create a Clang backend from a full [`BackendConfig`].
+    pub fn from_config(config: &BackendConfig) -> Self {
+        let mut backend = ClangBackend::new(&config.cxx_standard, config.profile);
+        backend.stdlib = config.stdlib.clone();
+        backend.sysroot = config.sysroot.clone();
+        backend.target = config.target.clone();
+        backend.extra_flags = config.extra_flags.clone();
+        backend.lto = config.lto;
+        backend.lto_mode = config.lto_mode;
+        backend.optimization = config.optimization;
+        backend
     }
 
     /// Query the compiler for its version string (e.g. `"18.1.8"`).
@@ -330,6 +411,48 @@ impl CompilerBackend for ClangBackend {
         Ok(())
     }
 
+    fn kind(&self) -> cmod_core::types::Compiler {
+        cmod_core::types::Compiler::Clang
+    }
+
+    fn compiler_path(&self) -> &Path {
+        &self.clang_path
+    }
+
+    fn version(&self) -> String {
+        self.detect_version()
+    }
+
+    fn cxx_standard(&self) -> &str {
+        &self.cxx_standard
+    }
+
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
+    fn common_flags(&self) -> Vec<String> {
+        ClangBackend::common_flags(self)
+    }
+
+    fn fingerprint(&self) -> String {
+        format!(
+            "clang|std={}|stdlib={}|target={}|sysroot={}|profile={:?}|lto={}:{:?}|opt={:?}|flags={}",
+            self.cxx_standard,
+            self.stdlib.as_deref().unwrap_or(""),
+            self.target.as_deref().unwrap_or(""),
+            self.sysroot
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            self.profile,
+            self.lto,
+            self.lto_mode,
+            self.optimization,
+            self.extra_flags.join(" "),
+        )
+    }
+
     fn link(&self, objects: &[&Path], output: &Path, artifact: &Artifact) -> Result<(), CmodError> {
         let mut cmd = Command::new(&self.clang_path);
         cmd.args(self.common_flags());
@@ -446,6 +569,83 @@ fn which(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- backend factory and trait-object groundwork (#47) ---
+
+    #[test]
+    fn test_make_backend_clang() {
+        let cfg = BackendConfig {
+            cxx_standard: "20".to_string(),
+            ..Default::default()
+        };
+        let backend = make_backend(cmod_core::types::Compiler::Clang, &cfg).unwrap();
+        assert_eq!(backend.kind(), cmod_core::types::Compiler::Clang);
+        assert_eq!(backend.cxx_standard(), "20");
+    }
+
+    #[test]
+    fn test_make_backend_gcc_not_implemented() {
+        let cfg = BackendConfig::default();
+        let Err(err) = make_backend(cmod_core::types::Compiler::Gcc, &cfg) else {
+            panic!("gcc backend must not construct yet");
+        };
+        assert!(
+            err.to_string().contains("not yet implemented"),
+            "gcc should error clearly, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_make_backend_msvc_not_implemented() {
+        let cfg = BackendConfig::default();
+        let Err(err) = make_backend(cmod_core::types::Compiler::Msvc, &cfg) else {
+            panic!("msvc backend must not construct yet");
+        };
+        assert!(err.to_string().contains("not yet implemented"));
+    }
+
+    #[test]
+    fn test_backend_config_carries_all_knobs() {
+        let cfg = BackendConfig {
+            cxx_standard: "23".to_string(),
+            profile: Profile::Release,
+            stdlib: Some("libc++".to_string()),
+            sysroot: Some(PathBuf::from("/sdk")),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            extra_flags: vec!["-DFOO=1".to_string()],
+            lto: true,
+            lto_mode: LtoMode::Thin,
+            optimization: None,
+        };
+        let backend = make_backend(cmod_core::types::Compiler::Clang, &cfg).unwrap();
+        let flags = backend.common_flags();
+        assert!(flags.contains(&"-std=c++23".to_string()));
+        assert!(flags.contains(&"-stdlib=libc++".to_string()));
+        assert!(flags.contains(&"-DFOO=1".to_string()));
+        assert!(flags.iter().any(|f| f.contains("x86_64-unknown-linux")));
+    }
+
+    #[test]
+    fn test_fingerprint_changes_with_config() {
+        let base = BackendConfig {
+            cxx_standard: "20".to_string(),
+            ..Default::default()
+        };
+        let a = make_backend(cmod_core::types::Compiler::Clang, &base).unwrap();
+        let b = make_backend(
+            cmod_core::types::Compiler::Clang,
+            &BackendConfig {
+                cxx_standard: "23".to_string(),
+                ..base.clone()
+            },
+        )
+        .unwrap();
+        assert_ne!(a.fingerprint(), b.fingerprint());
+        // Deterministic for identical config
+        let a2 = make_backend(cmod_core::types::Compiler::Clang, &base).unwrap();
+        assert_eq!(a.fingerprint(), a2.fingerprint());
+    }
 
     #[test]
     fn test_parse_p1689_imports() {

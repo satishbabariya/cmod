@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use cmod_core::error::CmodError;
 use cmod_core::types::{BuildType, NodeKind, Profile};
 
-use crate::compiler::ClangBackend;
+use crate::compiler::CompilerBackend;
 use crate::graph::ModuleGraph;
 
 /// A single step in the build plan.
@@ -240,7 +240,7 @@ impl BuildPlan {
     /// or object node) and includes the full clang++ invocation arguments.
     pub fn compile_commands(
         &self,
-        backend: &ClangBackend,
+        backend: &dyn CompilerBackend,
         project_root: &Path,
     ) -> Vec<CompileCommand> {
         let pcm_paths = self.pcm_paths();
@@ -256,7 +256,7 @@ impl BuildPlan {
                 continue;
             }
 
-            let mut arguments = vec!["clang++".to_string()];
+            let mut arguments = vec![backend.compiler_path().display().to_string()];
             arguments.extend(backend.common_flags());
 
             // Add dependency PCM references
@@ -764,7 +764,7 @@ mod tests {
         )
         .unwrap();
 
-        let backend = ClangBackend::new("20", Profile::Debug);
+        let backend = crate::compiler::ClangBackend::new("20", Profile::Debug);
         let commands = plan.compile_commands(&backend, Path::new("/project"));
 
         // Should have 2 entries (interface + implementation), not the link node
@@ -799,7 +799,7 @@ mod tests {
         )
         .unwrap();
 
-        let backend = ClangBackend::new("20", Profile::Debug);
+        let backend = crate::compiler::ClangBackend::new("20", Profile::Debug);
         let commands = plan.compile_commands(&backend, Path::new("/project"));
 
         let json = serde_json::to_string_pretty(&commands).unwrap();
@@ -834,7 +834,7 @@ mod tests {
         // plan has 2 nodes: object + link
         assert_eq!(plan.nodes.len(), 2);
 
-        let backend = ClangBackend::new("20", Profile::Debug);
+        let backend = crate::compiler::ClangBackend::new("20", Profile::Debug);
         let commands = plan.compile_commands(&backend, Path::new("/project"));
 
         // Should only have 1 entry (the object node, not the link)
@@ -907,7 +907,7 @@ mod tests {
         )
         .unwrap();
 
-        let backend = ClangBackend::new("20", Profile::Debug);
+        let backend = crate::compiler::ClangBackend::new("20", Profile::Debug);
         let commands = plan.compile_commands(&backend, Path::new("/project"));
 
         assert_eq!(commands.len(), 2);

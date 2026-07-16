@@ -13,7 +13,7 @@ use cmod_core::error::CmodError;
 use cmod_core::shell::Shell;
 use cmod_core::types::{Artifact, BuildType, NodeKind, Profile};
 
-use crate::compiler::{ClangBackend, CompilerBackend};
+use crate::compiler::CompilerBackend;
 use crate::graph::ModuleGraph;
 use crate::incremental::BuildState;
 use crate::plan::{BuildNode, BuildPlan};
@@ -39,7 +39,7 @@ pub struct BuildStats {
 
 /// Build runner that executes a build plan.
 pub struct BuildRunner {
-    backend: ClangBackend,
+    backend: Box<dyn CompilerBackend>,
     cache: Option<ArtifactCache>,
     remote_cache: Option<Box<dyn cmod_cache::RemoteCache>>,
     /// When true, skip cache lookups and always recompile.
@@ -84,7 +84,7 @@ impl NodeOutcome {
 }
 
 impl BuildRunner {
-    pub fn new(backend: ClangBackend, cache: Option<ArtifactCache>) -> Self {
+    pub fn new(backend: Box<dyn CompilerBackend>, cache: Option<ArtifactCache>) -> Self {
         BuildRunner {
             backend,
             cache,
@@ -105,7 +105,7 @@ impl BuildRunner {
     /// on the first call.
     fn compiler_version(&self) -> &str {
         self.compiler_version_cache
-            .get_or_init(|| self.backend.detect_version())
+            .get_or_init(|| self.backend.version())
     }
 
     /// Set the maximum parallel jobs.
@@ -187,30 +187,16 @@ impl BuildRunner {
                 continue;
             }
 
-            // Derive compiler info from the backend fields.
-            // ClangBackend doesn't expose dedicated accessor methods, so we
-            // use the executable name and field values directly.
-            let compiler_name = self
-                .backend
-                .clang_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("clang++");
-            // Normalize "clang++" to "clang" for BMI index matching.
-            let compiler = if compiler_name.contains("clang") {
-                "clang"
-            } else {
-                compiler_name
-            };
+            let compiler = self.backend.kind().to_string();
             let compiler_version = self.compiler_version();
-            let target = self.backend.target.as_deref().unwrap_or("");
+            let target = self.backend.target().unwrap_or("");
 
             if let Some(variant) = cmod_cache::distribution::find_compatible_variant(
                 &index,
-                compiler,
+                &compiler,
                 compiler_version,
                 target,
-                &self.backend.cxx_standard,
+                self.backend.cxx_standard(),
             ) {
                 let variant_dir = bmi_dir.join(&variant.directory);
                 if variant_dir.exists() {
@@ -264,28 +250,11 @@ impl BuildRunner {
         }
     }
 
-    /// Compute a hash representing the current compiler flags.
+    /// Compute a hash representing the current compiler configuration.
     fn flags_hash(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(self.backend.cxx_standard.as_bytes());
-        if let Some(ref stdlib) = self.backend.stdlib {
-            hasher.update(stdlib.as_bytes());
-        }
-        if let Some(ref target) = self.backend.target {
-            hasher.update(target.as_bytes());
-        }
-        for flag in &self.backend.extra_flags {
-            hasher.update(flag.as_bytes());
-        }
-        if let Some(ref sysroot) = self.backend.sysroot {
-            hasher.update(sysroot.to_string_lossy().as_bytes());
-        }
-        let profile_str = match self.backend.profile {
-            Profile::Debug => "debug",
-            Profile::Release => "release",
-        };
-        hasher.update(profile_str.as_bytes());
+        hasher.update(self.backend.fingerprint().as_bytes());
         format!("{:x}", hasher.finalize())
     }
 
@@ -366,19 +335,20 @@ impl BuildRunner {
             }
         }
 
-        let cxx_standard = self.backend.cxx_standard.clone();
-        let stdlib = self.backend.stdlib.clone().unwrap_or_default();
         let compiler_version = self.compiler_version().to_string();
 
+        // The backend fingerprint covers stdlib, sysroot, LTO, optimization,
+        // and extra flags — everything configuration-derived that affects
+        // codegen — so those no longer need individual fields here.
         let inputs = CacheKeyInputs {
             source_hash,
             dependency_hashes: dep_hashes,
-            compiler: "clang".to_string(),
+            compiler: self.backend.kind().to_string(),
             compiler_version,
-            cxx_standard,
-            stdlib,
+            cxx_standard: self.backend.cxx_standard().to_string(),
+            stdlib: String::new(),
             target: plan.target.clone(),
-            flags: self.backend.extra_flags.clone(),
+            flags: vec![self.backend.fingerprint()],
         };
 
         Some((module_id.clone(), CacheKey::compute(&inputs)))
@@ -498,9 +468,13 @@ impl BuildRunner {
                 module_name: module_id.to_string(),
                 cache_key: key.to_string(),
                 source_hash,
-                compiler: "clang".to_string(),
+                compiler: self.backend.kind().to_string(),
                 compiler_version: self.compiler_version().to_string(),
-                target: self.backend.target.clone().unwrap_or_default(),
+                target: self
+                    .backend
+                    .target()
+                    .map(str::to_string)
+                    .unwrap_or_default(),
                 created_at: String::new(),
                 artifacts: artifact_entries,
             };
@@ -1752,7 +1726,7 @@ mod tests {
     #[test]
     fn test_effective_jobs_auto() {
         let backend = crate::compiler::ClangBackend::new("20", cmod_core::types::Profile::Debug);
-        let runner = BuildRunner::new(backend, None);
+        let runner = BuildRunner::new(Box::new(backend), None);
         // auto-detect should be at least 1
         assert!(runner.effective_jobs() >= 1);
     }
@@ -1760,7 +1734,7 @@ mod tests {
     #[test]
     fn test_effective_jobs_explicit() {
         let backend = crate::compiler::ClangBackend::new("20", cmod_core::types::Profile::Debug);
-        let runner = BuildRunner::new(backend, None).with_jobs(4);
+        let runner = BuildRunner::new(Box::new(backend), None).with_jobs(4);
         assert_eq!(runner.effective_jobs(), 4);
     }
 
