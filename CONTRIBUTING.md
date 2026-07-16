@@ -47,8 +47,9 @@ cmod is organized as a Cargo workspace with focused crates:
 | `cmod-cache` | Content-addressed artifact caching |
 | `cmod-workspace` | Monorepo and workspace management |
 | `cmod-security` | Supply-chain integrity and verification |
+| `cmod-lsp` | LSP server for editor integration |
 
-Dependencies flow downward: `cli -> {resolver, build, cache, workspace, security} -> core`.
+Dependencies flow downward: `cli -> {resolver, build, cache, workspace, security, lsp} -> core`.
 
 ## Code Conventions
 
@@ -57,6 +58,18 @@ Dependencies flow downward: `cli -> {resolver, build, cache, workspace, security
 - Prefer extending existing modules over creating new files
 - All cross-crate dependencies must flow downward toward `cmod-core`
 
+## Commit Conventions
+
+- **Conventional-commit prefixes**: `fix(scope):`, `feat(scope):`, `docs:`,
+  `chore:` — match the existing `git log` style.
+- **One logical change per commit.** Bug-fix series get one commit per bug
+  (see the `v0.1.0-alpha.2` audit series for the pattern); an unrelated
+  drive-by fix goes in its own commit, not folded into the feature.
+- **Link the issue**: `Fixes #N` / `Closes #N` in the commit or PR body so
+  merges close issues automatically.
+- PRs are **squash-merged**; the PR title becomes the commit subject on
+  `main`, so write it like a commit subject.
+
 ## Pull Request Checklist
 
 Before submitting a PR, please ensure:
@@ -64,8 +77,37 @@ Before submitting a PR, please ensure:
 - [ ] `cargo test --all` passes
 - [ ] `cargo clippy --all-targets -- -D warnings` reports no warnings
 - [ ] `cargo fmt --all --check` passes
-- [ ] New functionality includes tests
-- [ ] Commit messages are clear and descriptive
+- [ ] New functionality includes tests (written before the fix/feature when
+      practical — regression tests should fail on the unfixed code)
+- [ ] The PR is attached to the current milestone if it implements a
+      tracked issue
+
+## CI
+
+Every PR runs the `CI` and `Examples` workflows:
+
+| Job | What it checks |
+|---|---|
+| Format | `cargo fmt --all --check` |
+| Clippy | `cargo clippy --all-targets -- -D warnings` (latest stable) |
+| MSRV (1.80) | `cargo check --all` on the minimum supported Rust |
+| Test | `cargo test --all` on ubuntu/macos/windows × stable/nightly |
+| E2E Tests | end-to-end CLI validation on ubuntu/macos |
+| Examples | builds the `examples/` projects on ubuntu/macos |
+| CodeQL | static security analysis |
+
+All jobs must be green before merge; the git hooks above catch the Format
+and Clippy failures locally first.
+
+## Releases
+
+Releases follow a branch + changelog pattern (maintainers only):
+
+1. Branch `release/vX.Y.Z`, bump the workspace `version` in `Cargo.toml`
+   (regenerating `Cargo.lock`), and document the release in `CHANGELOG.md`.
+2. Write user-facing notes in `RELEASE.md` (upgrade notes, behavior changes).
+3. PR, merge, then tag `vX.Y.Z` on `main` — the tag triggers the `Release`
+   workflow, which builds and publishes multi-platform binaries.
 
 ## RFCs
 
