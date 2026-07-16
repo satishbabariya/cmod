@@ -22,6 +22,7 @@ Complete documentation for **cmod** — a Cargo-inspired, Git-native package and
 - **[Testing](testing.md)** — Test discovery, frameworks, coverage, sanitizers, CI integration
 - **[Workspaces](workspaces.md)** — Monorepos, shared dependencies, multi-member builds
 - **[Caching](caching.md)** — Local and remote build cache management
+- **[Remote Cache Server](remote-cache.md)** — Protocol spec and hosting recipes (nginx, Caddy)
 - **[Security](security.md)** — Trust model, verification, signing, auditing
 - **[Publishing](publishing.md)** — Releasing, signing tags, SBOM generation
 

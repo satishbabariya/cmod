@@ -1264,6 +1264,69 @@ fn test_graph_critical_path_flag() {
     );
 }
 
+/// Regression test: `cache push` must report upload failures instead of
+/// counting every artifact as pushed (found while validating #44 against a
+/// read-only server).
+#[test]
+fn test_cache_push_reports_failures() {
+    use std::io::{Read, Write};
+
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "pushfail"]);
+
+    // Point the local cache into the project and handcraft one entry
+    // (no compiler needed).
+    let cache_dir = tmp.path().join("localcache");
+    let key = "a".repeat(64);
+    let entry = cache_dir.join("local.pushfail").join(&key);
+    fs::create_dir_all(&entry).unwrap();
+    fs::write(entry.join("artifact.o"), b"bytes").unwrap();
+    let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
+    fs::write(
+        tmp.path().join("cmod.toml"),
+        format!("{}\n[cache]\nlocal_path = \"localcache\"\n", manifest),
+    )
+    .unwrap();
+
+    // Minimal HTTP listener that rejects every request with 404.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        // Serve until the socket is dropped; each PUT retry reconnects.
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+
+    let output = run_cmod(
+        tmp.path(),
+        &["cache", "push", "--remote", &format!("http://{}", addr)],
+    );
+    drop(server); // listener thread exits when the process stops connecting
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "push with zero successful uploads should fail, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("failed"),
+        "output should mention failed uploads, got: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("Pushed 1 artifacts"),
+        "must not report failed uploads as pushed, got: {}",
+        stderr
+    );
+}
+
 #[test]
 fn test_cache_export_import() {
     let tmp = TempDir::new().unwrap();

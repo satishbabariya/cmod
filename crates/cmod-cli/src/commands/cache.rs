@@ -106,6 +106,7 @@ pub fn push(remote_override: Option<String>, shell: &Shell) -> Result<(), CmodEr
     shell.verbose("Remote", &remote_url);
 
     let mut pushed = 0;
+    let mut failed = 0;
     for module in &modules {
         shell.verbose("Pushing", module);
         let module_dir = config.cache_dir().join(module);
@@ -119,21 +120,41 @@ pub fn push(remote_override: Option<String>, shell: &Shell) -> Result<(), CmodEr
                     .path()
                     .strip_prefix(&module_dir)
                     .unwrap_or(entry.path());
-                let rel_str = relative.to_string_lossy().to_string();
-                let parts: Vec<&str> = rel_str.split('/').collect();
+                // Split with Path::components, not '/': Windows paths use '\'
+                // and string-splitting silently pushed zero artifacts there.
+                let mut comps = relative
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned());
+                let key_hex = comps.next().unwrap_or_default();
+                let artifact_parts: Vec<String> = comps.collect();
 
-                if parts.len() >= 2 {
-                    let key = cmod_cache::CacheKey::from_hex(parts[0])
+                if !key_hex.is_empty() && !artifact_parts.is_empty() {
+                    let key = cmod_cache::CacheKey::from_hex(&key_hex)
                         .unwrap_or(cmod_cache::CacheKey::from_hex("unknown").unwrap());
-                    let artifact_name = parts[1..].join("/");
-                    let _ = remote.put(module, &key, &artifact_name, entry.path());
-                    pushed += 1;
+                    let artifact_name = artifact_parts.join("/");
+                    match remote.put(module, &key, &artifact_name, entry.path()) {
+                        Ok(()) => pushed += 1,
+                        Err(e) => {
+                            failed += 1;
+                            shell.verbose("Failed", format!("{}/{}: {}", module, artifact_name, e));
+                        }
+                    }
                 }
             }
         }
     }
 
+    if failed > 0 {
+        shell.warn(format!("{} artifact upload(s) failed", failed));
+    }
     shell.status("Pushed", format!("{} artifacts", pushed));
+
+    if pushed == 0 && failed > 0 {
+        return Err(CmodError::Other(format!(
+            "all {} artifact upload(s) failed; check the remote cache URL and permissions",
+            failed
+        )));
+    }
     Ok(())
 }
 
