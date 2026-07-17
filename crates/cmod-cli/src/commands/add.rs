@@ -119,13 +119,20 @@ pub fn run(
 
 /// Parse a dependency specifier like `github.com/fmtlib/fmt@^10.2`.
 fn parse_dep_specifier(spec: &str) -> (String, Option<String>) {
-    if let Some(idx) = spec.find('@') {
-        let key = spec[..idx].to_string();
-        let version = spec[idx + 1..].to_string();
-        (key, Some(version))
+    let (raw_key, version) = if let Some(idx) = spec.find('@') {
+        (&spec[..idx], Some(spec[idx + 1..].to_string()))
     } else {
-        (spec.to_string(), None)
-    }
+        (spec, None)
+    };
+    // Normalize full URLs to the canonical bare key (`github.com/owner/repo`)
+    // so resolve_dep_url's scheme prepending never doubles up.
+    let key = raw_key
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .to_string();
+    (key, version)
 }
 
 /// Validate that a Git URL is reachable by attempting to list remote refs.
@@ -154,5 +161,33 @@ fn validate_git_url(url: &str) -> Result<(), CmodError> {
             }
         }
         Err(e) => Err(CmodError::Other(format!("failed to validate URL: {}", e))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression tests (#22 sweep): full URLs passed to `cmod add` must
+    /// normalize to the canonical bare key instead of producing
+    /// `https://https://…` at resolve time.
+    #[test]
+    fn test_parse_dep_specifier_strips_scheme() {
+        let (key, ver) = parse_dep_specifier("https://github.com/fmtlib/fmt");
+        assert_eq!(key, "github.com/fmtlib/fmt");
+        assert_eq!(ver, None);
+    }
+
+    #[test]
+    fn test_parse_dep_specifier_strips_dotgit_and_slash() {
+        let (key, _) = parse_dep_specifier("http://github.com/fmtlib/fmt.git/");
+        assert_eq!(key, "github.com/fmtlib/fmt");
+    }
+
+    #[test]
+    fn test_parse_dep_specifier_bare_with_version() {
+        let (key, ver) = parse_dep_specifier("github.com/fmtlib/fmt@^10.2");
+        assert_eq!(key, "github.com/fmtlib/fmt");
+        assert_eq!(ver.as_deref(), Some("^10.2"));
     }
 }

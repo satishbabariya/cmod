@@ -673,15 +673,22 @@ impl Manifest {
     /// construct the full https URL. For detailed deps with an explicit `git` field,
     /// use that directly.
     pub fn resolve_dep_url(key: &str, dep: &Dependency) -> String {
-        match dep {
-            Dependency::Simple(_) => {
+        // Keys are canonically bare (`github.com/owner/repo`), but tolerate
+        // hand-edited manifests that already carry a scheme.
+        let to_url = |key: &str| {
+            if key.contains("://") {
+                key.to_string()
+            } else {
                 format!("https://{}", key)
             }
+        };
+        match dep {
+            Dependency::Simple(_) => to_url(key),
             Dependency::Detailed(d) => {
                 if let Some(git) = &d.git {
                     git.clone()
                 } else {
-                    format!("https://{}", key)
+                    to_url(key)
                 }
             }
         }
