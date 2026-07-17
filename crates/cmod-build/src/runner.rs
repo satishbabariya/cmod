@@ -411,29 +411,66 @@ impl BuildRunner {
 
         // Try remote cache on local miss
         if let Some(ref remote) = self.remote_cache {
-            let mut all_downloaded = true;
-            for output in &node.outputs {
-                let artifact_name = output
-                    .file_name()
-                    .and_then(|f| f.to_str())
-                    .unwrap_or("unknown");
+            // Fetch the entry's metadata first: downloaded artifacts are
+            // verified against its per-artifact hashes so a truncated
+            // server-side file (interrupted upload) is never used (#62).
+            let metadata = node.outputs.first().and_then(|first| {
+                let meta_path = first.with_file_name(".remote-metadata.json");
+                let fetched = remote
+                    .get(module_id, key, "metadata.json", &meta_path)
+                    .unwrap_or(false);
+                let parsed = if fetched {
+                    std::fs::read_to_string(&meta_path)
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<ArtifactMetadata>(&s).ok())
+                } else {
+                    None
+                };
+                let _ = std::fs::remove_file(&meta_path);
+                parsed
+            });
 
-                match remote.get(module_id, key, artifact_name, output) {
-                    Ok(true) => {
-                        // Store locally for next time
-                        if let Some(ref cache) = self.cache {
-                            let name = artifact_name.to_string();
-                            let _ = cache.store_single_artifact(module_id, key, &name, output);
+            if let Some(metadata) = metadata {
+                let mut all_downloaded = true;
+                for output in &node.outputs {
+                    let artifact_name = output
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .unwrap_or("unknown");
+
+                    match remote.get(module_id, key, artifact_name, output) {
+                        Ok(true) => {
+                            if !cmod_cache::artifact_matches_metadata(
+                                &metadata,
+                                artifact_name,
+                                output,
+                            ) {
+                                self.emit_verbose(
+                                    "Rejected",
+                                    format!(
+                                        "{}/{} failed hash verification; treating as miss",
+                                        module_id, artifact_name
+                                    ),
+                                );
+                                let _ = std::fs::remove_file(output);
+                                all_downloaded = false;
+                                break;
+                            }
+                            // Store locally for next time
+                            if let Some(ref cache) = self.cache {
+                                let name = artifact_name.to_string();
+                                let _ = cache.store_single_artifact(module_id, key, &name, output);
+                            }
+                        }
+                        _ => {
+                            all_downloaded = false;
+                            break;
                         }
                     }
-                    _ => {
-                        all_downloaded = false;
-                        break;
-                    }
                 }
-            }
-            if all_downloaded && !node.outputs.is_empty() {
-                return true;
+                if all_downloaded && !node.outputs.is_empty() {
+                    return true;
+                }
             }
         }
 

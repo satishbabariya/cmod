@@ -6,8 +6,8 @@ pub mod remote;
 
 pub use bmi::{export_bmi, import_bmi, BmiMetadata, BmiPackage};
 pub use cache::{
-    compress_zstd, decompress_zstd, parse_ttl, ArtifactCache, CacheEntryInfo, CacheStatusJson,
-    EvictionResult,
+    artifact_matches_metadata, compress_zstd, decompress_zstd, parse_ttl, ArtifactCache,
+    CacheEntryInfo, CacheStatusJson, EvictionResult,
 };
 pub use key::CacheKey;
 pub use remote::{HttpRemoteCache, RemoteCache, RemoteCacheConfig, RemoteCacheMode};

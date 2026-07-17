@@ -697,6 +697,22 @@ pub struct CacheEntryBrief {
     pub size: u64,
 }
 
+/// Check a downloaded artifact against its metadata entry (SHA-256 + size).
+///
+/// Returns `false` when the artifact is not listed in the metadata or its
+/// content mismatches — the caller must treat the cache entry as a miss.
+/// This is what neutralizes truncated server-side files from interrupted
+/// uploads (#62 phase 1).
+pub fn artifact_matches_metadata(metadata: &ArtifactMetadata, name: &str, path: &Path) -> bool {
+    let Some(entry) = metadata.artifacts.iter().find(|a| a.name == name) else {
+        return false;
+    };
+    match (hash_file(path), fs::metadata(path)) {
+        (Ok(hash), Ok(meta)) => hash == entry.hash && meta.len() == entry.size,
+        _ => false,
+    }
+}
+
 /// Compress data using zstd.
 pub fn compress_zstd(data: &[u8]) -> Result<Vec<u8>, CmodError> {
     let mut encoder = zstd::Encoder::new(Vec::new(), 3).map_err(|e| CmodError::CacheError {
@@ -781,6 +797,70 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = ArtifactCache::new(tmp.path().to_path_buf());
         (tmp, cache)
+    }
+
+    // --- remote-restore verification (#62 phase 1) ---
+
+    #[test]
+    fn test_artifact_matches_metadata_accepts_intact() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("a.pcm");
+        std::fs::write(&f, b"bytes").unwrap();
+        let meta = ArtifactMetadata {
+            module_name: "m".into(),
+            cache_key: "k".into(),
+            source_hash: String::new(),
+            compiler: "clang".into(),
+            compiler_version: String::new(),
+            target: String::new(),
+            created_at: String::new(),
+            artifacts: vec![CachedArtifactEntry {
+                name: "a.pcm".into(),
+                hash: crate::key::hash_bytes(b"bytes"),
+                size: 5,
+            }],
+        };
+        assert!(artifact_matches_metadata(&meta, "a.pcm", &f));
+    }
+
+    #[test]
+    fn test_artifact_matches_metadata_rejects_truncated() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("a.pcm");
+        std::fs::write(&f, b"byt").unwrap(); // truncated upload stump
+        let meta = ArtifactMetadata {
+            module_name: "m".into(),
+            cache_key: "k".into(),
+            source_hash: String::new(),
+            compiler: "clang".into(),
+            compiler_version: String::new(),
+            target: String::new(),
+            created_at: String::new(),
+            artifacts: vec![CachedArtifactEntry {
+                name: "a.pcm".into(),
+                hash: crate::key::hash_bytes(b"bytes"),
+                size: 5,
+            }],
+        };
+        assert!(!artifact_matches_metadata(&meta, "a.pcm", &f));
+    }
+
+    #[test]
+    fn test_artifact_matches_metadata_rejects_unknown_name() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("a.pcm");
+        std::fs::write(&f, b"bytes").unwrap();
+        let meta = ArtifactMetadata {
+            module_name: "m".into(),
+            cache_key: "k".into(),
+            source_hash: String::new(),
+            compiler: "clang".into(),
+            compiler_version: String::new(),
+            target: String::new(),
+            created_at: String::new(),
+            artifacts: vec![],
+        };
+        assert!(!artifact_matches_metadata(&meta, "a.pcm", &f));
     }
 
     #[test]
