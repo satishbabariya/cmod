@@ -6,8 +6,8 @@ use cmod_core::types::{Artifact, OptimizationLevel, Profile};
 
 /// Abstraction over a C++ compiler backend.
 ///
-/// Implemented by [`ClangBackend`] (reference) and [`GccBackend`];
-/// [`MsvcBackend`] is a skeleton pending full implementation (#77).
+/// Implemented by [`ClangBackend`] (reference), [`GccBackend`], and
+/// [`MsvcBackend`].
 pub trait CompilerBackend: Send + Sync {
     /// Scan a source file for module dependencies.
     ///
@@ -102,9 +102,6 @@ pub struct BackendConfig {
 }
 
 /// Construct a compiler backend for the requested compiler family.
-///
-/// Clang and GCC are supported; MSVC returns a clear error until its
-/// backend graduates from the #48 skeleton.
 pub fn make_backend(
     kind: cmod_core::types::Compiler,
     config: &BackendConfig,
@@ -112,13 +109,7 @@ pub fn make_backend(
     match kind {
         cmod_core::types::Compiler::Clang => Ok(Box::new(ClangBackend::from_config(config))),
         cmod_core::types::Compiler::Gcc => Ok(Box::new(GccBackend::from_config(config))),
-        other => Err(CmodError::BuildFailed {
-            reason: format!(
-                "the {} backend is not yet implemented; set [toolchain] compiler = \"clang\" \
-                 (or remove the line) — see issue #48",
-                other
-            ),
-        }),
+        cmod_core::types::Compiler::Msvc => Ok(Box::new(MsvcBackend::from_config(config))),
     }
 }
 
@@ -864,20 +855,13 @@ impl GccBackend {
     }
 }
 
-/// MSVC compiler backend — **skeleton only** (#48).
+/// MSVC compiler backend (VS 2022 17.6+).
 ///
-/// Validates the `CompilerBackend` trait shape against MSVC's model. Flag
-/// mapping is real (`/std:c++NN`, `/EHsc`, `/interface`, `/ifcOutput`,
-/// `/reference name=path.ifc`); the compile/link/scan entry points return a
-/// clear skeleton error until the full implementation lands.
-///
-/// Shape findings recorded for the full implementation:
-/// - BMIs are `.ifc`, not `.pcm` — see [`CompilerBackend::bmi_extension`];
-///   `BuildPlan` path generation must consult it.
-/// - Dependency scanning has no `clang-scan-deps` equivalent; MSVC uses
-///   `cl /scanDependencies` emitting the same P1689 JSON format.
-/// - Interface units conventionally use `.ixx`, already accepted by source
-///   discovery.
+/// Drives `cl.exe`'s C++20 modules model: `/interface /TP` interface
+/// compilation with `/ifcOutput` BMI placement, `/reference name=path.ifc`
+/// per dependency, `cl /scanDependencies` P1689 scanning (shared parser
+/// with the clang path), `lib.exe`/`link.exe` archiving/linking. Requires
+/// the VS developer environment (vcvars) so `cl`/`link`/`lib` resolve.
 pub struct MsvcBackend {
     /// Path to cl.exe.
     pub cl_path: PathBuf,
@@ -895,51 +879,195 @@ impl MsvcBackend {
         }
     }
 
-    fn not_implemented(&self, what: &str) -> CmodError {
-        CmodError::BuildFailed {
-            reason: format!(
-                "MSVC backend is a skeleton; {} is not yet implemented (see issue #48)",
-                what
-            ),
+    /// Arguments for compiling a module interface/partition unit.
+    /// `/interface /TP` forces interface-unit semantics for any extension
+    /// (cmod scaffolds `.cppm`, MSVC convention is `.ixx` — both work).
+    pub fn interface_args(
+        &self,
+        source: &Path,
+        ifc_output: &Path,
+        obj_output: &Path,
+        dep_ifcs: &[(&str, &Path)],
+    ) -> Vec<String> {
+        let mut args = CompilerBackend::common_flags(self);
+        args.push("/c".to_string());
+        args.push("/interface".to_string());
+        args.push("/TP".to_string());
+        args.push("/ifcOutput".to_string());
+        args.push(ifc_output.display().to_string());
+        args.push(format!("/Fo{}", obj_output.display()));
+        for (name, path) in dep_ifcs {
+            args.push("/reference".to_string());
+            args.push(format!("{}={}", name, path.display()));
         }
+        args.push(source.display().to_string());
+        args
+    }
+
+    /// Arguments for compiling an implementation or legacy unit.
+    pub fn implementation_args(
+        &self,
+        source: &Path,
+        obj_output: &Path,
+        dep_ifcs: &[(&str, &Path)],
+    ) -> Vec<String> {
+        let mut args = CompilerBackend::common_flags(self);
+        args.push("/c".to_string());
+        args.push(format!("/Fo{}", obj_output.display()));
+        for (name, path) in dep_ifcs {
+            args.push("/reference".to_string());
+            args.push(format!("{}={}", name, path.display()));
+        }
+        args.push(source.display().to_string());
+        args
+    }
+
+    /// Arguments for P1689 dependency scanning (`cl /scanDependencies`).
+    pub fn scan_args(&self, source: &Path, deps_file: &Path) -> Vec<String> {
+        let mut args = CompilerBackend::common_flags(self);
+        args.push("/scanDependencies".to_string());
+        args.push(deps_file.display().to_string());
+        args.push(source.display().to_string());
+        args
+    }
+
+    fn run_cl(&self, args: &[String], what: &Path) -> Result<(), CmodError> {
+        let output = Command::new(&self.cl_path)
+            .args(args)
+            .output()
+            .map_err(|e| CmodError::BuildFailed {
+                reason: format!(
+                    "failed to run cl at {}: {} (MSVC builds need the VS developer \
+                     environment — run from a Developer Prompt or after vcvars)",
+                    self.cl_path.display(),
+                    e
+                ),
+            })?;
+        if !output.status.success() {
+            return Err(CmodError::BuildFailed {
+                reason: format!(
+                    "cl failed to compile {}: {}",
+                    what.display(),
+                    String::from_utf8_lossy(&output.stdout)
+                ),
+            });
+        }
+        Ok(())
     }
 }
 
 impl CompilerBackend for MsvcBackend {
-    fn scan_deps(&self, _source: &Path) -> Result<Vec<String>, CmodError> {
-        // Full implementation: `cl /scanDependencies` (P1689 JSON output).
-        Err(self.not_implemented("dependency scanning"))
+    fn scan_deps(&self, source: &Path) -> Result<Vec<String>, CmodError> {
+        let deps_file = std::env::temp_dir().join(format!(
+            "cmod-msvc-deps-{}-{}.json",
+            std::process::id(),
+            source.file_stem().and_then(|s| s.to_str()).unwrap_or("src")
+        ));
+        let mut args = self.scan_args(source, &deps_file);
+        args.push("/c".to_string());
+        let output = Command::new(&self.cl_path)
+            .args(&args)
+            .output()
+            .map_err(|e| CmodError::ModuleScanFailed {
+                reason: format!("failed to run cl at {}: {}", self.cl_path.display(), e),
+            })?;
+        if !output.status.success() {
+            let _ = std::fs::remove_file(&deps_file);
+            return Err(CmodError::ModuleScanFailed {
+                reason: format!(
+                    "cl dependency scan failed: {}",
+                    String::from_utf8_lossy(&output.stdout)
+                ),
+            });
+        }
+        let json =
+            std::fs::read_to_string(&deps_file).map_err(|e| CmodError::ModuleScanFailed {
+                reason: format!("failed to read cl deps file: {}", e),
+            })?;
+        let _ = std::fs::remove_file(&deps_file);
+        parse_p1689_imports(&json)
     }
 
     fn compile_interface(
         &self,
-        _source: &Path,
-        _pcm_output: &Path,
-        _obj_output: &Path,
-        _dep_pcms: &[(&str, &Path)],
+        source: &Path,
+        pcm_output: &Path,
+        obj_output: &Path,
+        dep_pcms: &[(&str, &Path)],
     ) -> Result<(), CmodError> {
-        // Full implementation: `cl /c /interface /ifcOutput <out.ifc>` with
-        // `/reference <name>=<path.ifc>` per dependency.
-        Err(self.not_implemented("interface compilation"))
+        if let Some(parent) = pcm_output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if let Some(parent) = obj_output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let args = self.interface_args(source, pcm_output, obj_output, dep_pcms);
+        self.run_cl(&args, source)
     }
 
     fn compile_implementation(
         &self,
-        _source: &Path,
-        _obj_output: &Path,
-        _dep_pcms: &[(&str, &Path)],
+        source: &Path,
+        obj_output: &Path,
+        dep_pcms: &[(&str, &Path)],
     ) -> Result<(), CmodError> {
-        Err(self.not_implemented("implementation compilation"))
+        if let Some(parent) = obj_output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let args = self.implementation_args(source, obj_output, dep_pcms);
+        self.run_cl(&args, source)
     }
 
-    fn link(
-        &self,
-        _objects: &[&Path],
-        _output: &Path,
-        _artifact: &Artifact,
-    ) -> Result<(), CmodError> {
-        // Full implementation: `link.exe` / `lib.exe` per artifact kind.
-        Err(self.not_implemented("linking"))
+    fn link(&self, objects: &[&Path], output: &Path, artifact: &Artifact) -> Result<(), CmodError> {
+        let obj_only: Vec<&&Path> = objects
+            .iter()
+            .filter(|p| {
+                !matches!(
+                    p.extension().and_then(|e| e.to_str()),
+                    Some("a") | Some("lib")
+                )
+            })
+            .collect();
+        let (tool, mut args): (&str, Vec<String>) = match artifact {
+            Artifact::StaticLib { .. } => {
+                if obj_only.is_empty() {
+                    return Ok(());
+                }
+                let _ = std::fs::remove_file(output);
+                (
+                    "lib",
+                    vec!["/nologo".to_string(), format!("/OUT:{}", output.display())],
+                )
+            }
+            Artifact::SharedLib { .. } => (
+                "link",
+                vec![
+                    "/nologo".to_string(),
+                    "/DLL".to_string(),
+                    format!("/OUT:{}", output.display()),
+                ],
+            ),
+            _ => (
+                "link",
+                vec!["/nologo".to_string(), format!("/OUT:{}", output.display())],
+            ),
+        };
+        for obj in &obj_only {
+            args.push(obj.display().to_string());
+        }
+        let status =
+            Command::new(tool)
+                .args(&args)
+                .status()
+                .map_err(|e| CmodError::BuildFailed {
+                    reason: format!("failed to run {}: {}", tool, e),
+                })?;
+        if !status.success() {
+            return Err(CmodError::BuildFailed {
+                reason: format!("{} failed to produce {}", tool, output.display()),
+            });
+        }
+        Ok(())
     }
 
     fn kind(&self) -> cmod_core::types::Compiler {
@@ -1024,7 +1152,7 @@ fn which(name: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    // --- MSVC skeleton: trait-shape validation (#48) ---
+    // --- MSVC backend (#48 skeleton -> #77 implementation) ---
 
     #[test]
     fn test_msvc_backend_kind_and_flags() {
@@ -1050,35 +1178,6 @@ mod tests {
             ClangBackend::new("20", Profile::Debug).bmi_extension(),
             "pcm"
         );
-    }
-
-    #[test]
-    fn test_msvc_backend_compile_is_not_implemented() {
-        let cfg = BackendConfig::default();
-        let backend = MsvcBackend::from_config(&cfg);
-        let err = backend
-            .compile_interface(
-                Path::new("a.ixx"),
-                Path::new("a.ifc"),
-                Path::new("a.obj"),
-                &[],
-            )
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("skeleton"),
-            "compile must fail with a skeleton notice, got: {}",
-            err
-        );
-        assert!(backend.scan_deps(Path::new("a.ixx")).is_err());
-        assert!(backend
-            .link(
-                &[],
-                Path::new("out.exe"),
-                &Artifact::Executable {
-                    path: PathBuf::from("out.exe")
-                }
-            )
-            .is_err());
     }
 
     #[test]
@@ -1175,12 +1274,73 @@ mod tests {
     }
 
     #[test]
-    fn test_make_backend_msvc_not_implemented() {
-        let cfg = BackendConfig::default();
-        let Err(err) = make_backend(cmod_core::types::Compiler::Msvc, &cfg) else {
-            panic!("msvc backend must not construct yet");
+    fn test_make_backend_msvc_constructs() {
+        let cfg = BackendConfig {
+            cxx_standard: "20".to_string(),
+            ..Default::default()
         };
-        assert!(err.to_string().contains("not yet implemented"));
+        let backend = make_backend(cmod_core::types::Compiler::Msvc, &cfg).unwrap();
+        assert_eq!(backend.kind(), cmod_core::types::Compiler::Msvc);
+        assert_eq!(backend.bmi_extension(), "ifc");
+    }
+
+    #[test]
+    fn test_msvc_interface_args_shape() {
+        let cfg = BackendConfig {
+            cxx_standard: "20".to_string(),
+            ..Default::default()
+        };
+        let backend = MsvcBackend::from_config(&cfg);
+        let args = backend.interface_args(
+            Path::new("src/m.cppm"),
+            Path::new("build/pcm/m.ifc"),
+            Path::new("build/obj/m.o"),
+            &[("dep", Path::new("build/pcm/dep.ifc"))],
+        );
+        assert!(args.contains(&"/c".to_string()));
+        assert!(args.contains(&"/interface".to_string()));
+        assert!(args.contains(&"/TP".to_string()));
+        assert!(args.contains(&"/ifcOutput".to_string()));
+        assert!(args.contains(&"build/pcm/m.ifc".to_string()));
+        assert!(args.iter().any(|a| a.starts_with("/Fo")));
+        assert!(args.iter().any(|a| a == "/reference"));
+        assert!(args
+            .iter()
+            .any(|a| a.contains("dep=") && a.contains("dep.ifc")));
+        assert!(args.contains(&"src/m.cppm".to_string()));
+    }
+
+    #[test]
+    fn test_msvc_implementation_args_shape() {
+        let cfg = BackendConfig {
+            cxx_standard: "20".to_string(),
+            ..Default::default()
+        };
+        let backend = MsvcBackend::from_config(&cfg);
+        let args = backend.implementation_args(
+            Path::new("src/main.cpp"),
+            Path::new("build/obj/main.o"),
+            &[("dep", Path::new("build/pcm/dep.ifc"))],
+        );
+        assert!(args.contains(&"/c".to_string()));
+        assert!(!args.contains(&"/interface".to_string()));
+        assert!(args
+            .iter()
+            .any(|a| a.contains("dep=") && a.contains("dep.ifc")));
+        assert!(args.contains(&"src/main.cpp".to_string()));
+    }
+
+    #[test]
+    fn test_msvc_scan_args_shape() {
+        let cfg = BackendConfig {
+            cxx_standard: "20".to_string(),
+            ..Default::default()
+        };
+        let backend = MsvcBackend::from_config(&cfg);
+        let args = backend.scan_args(Path::new("src/m.cppm"), Path::new("deps.json"));
+        assert!(args.contains(&"/scanDependencies".to_string()));
+        assert!(args.contains(&"deps.json".to_string()));
+        assert!(args.contains(&"src/m.cppm".to_string()));
     }
 
     #[test]
