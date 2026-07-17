@@ -181,6 +181,15 @@ cmod cache clean                                   # drop the local cache
 cmod build --remote-cache http://127.0.0.1:8787   # restores from the server
 ```
 
+## Transfer resilience
+
+Downloads are atomic (`.part` + rename) and every remote restore is
+verified against the entry's `metadata.json` hashes — a truncated
+server-side file from an interrupted upload is treated as a cache miss,
+never used, never stored locally. Design rationale and the
+resumable-transfer roadmap live in
+[plan-remote-cache-resilience.md](../plan-remote-cache-resilience.md).
+
 ## Security notes
 
 - **Only trusted writers.** Anyone who can PUT can serve compiled objects to

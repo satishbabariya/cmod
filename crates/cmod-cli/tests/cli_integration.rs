@@ -1342,6 +1342,97 @@ fn test_build_with_msvc_compiler_errors_clearly() {
     );
 }
 
+/// #62 phase 1: `cache pull` must verify downloaded artifacts against the
+/// entry's metadata hashes and discard entries with truncated/corrupt
+/// server-side files (e.g. from an interrupted upload).
+#[test]
+fn test_cache_pull_rejects_corrupt_remote_artifact() {
+    use std::io::{Read, Write};
+
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "pullverify"]);
+
+    let key = "c".repeat(64);
+    let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
+    fs::write(
+        tmp.path().join("cmod.toml"),
+        format!("{}\n[cache]\nlocal_path = \"localcache\"\n", manifest),
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("cmod.lock"),
+        format!(
+            "version = 1\n\n[[package]]\nname = \"dep\"\nversion = \"1.0.0\"\nsource = \"git\"\nhash = \"{}\"\n",
+            key
+        ),
+    )
+    .unwrap();
+
+    // Server: metadata declares the hash of the *intact* pcm bytes, but the
+    // served pcm is a truncated stump.
+    let good_pcm: &[u8] = b"intact pcm bytes";
+    let good_obj: &[u8] = b"intact obj bytes";
+    let sha = |b: &[u8]| {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(b))
+    };
+    let metadata = format!(
+        r#"{{"module_name":"dep","cache_key":"{key}","source_hash":"","compiler":"clang","compiler_version":"","target":"","created_at":"","artifacts":[{{"name":"module.pcm","hash":"{}","size":{}}},{{"name":"object.o","hash":"{}","size":{}}}]}}"#,
+        sha(good_pcm),
+        good_pcm.len(),
+        sha(good_obj),
+        good_obj.len(),
+    );
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let first = req.lines().next().unwrap_or("").to_string();
+            let body: Vec<u8> = if first.starts_with("HEAD") {
+                Vec::new()
+            } else if first.contains("metadata.json") {
+                metadata.clone().into_bytes()
+            } else if first.contains("module.pcm") {
+                b"stump".to_vec() // truncated upload leftovers
+            } else if first.contains("object.o") {
+                good_obj.to_vec()
+            } else {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+                continue;
+            };
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+            let _ = stream.write_all(&body);
+        }
+    });
+
+    let output = run_cmod(
+        tmp.path(),
+        &["cache", "pull", "--remote", &format!("http://{}", addr)],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed hash verification"),
+        "pull must reject the corrupt artifact, got: {}",
+        stderr
+    );
+    // The poisoned entry must not exist in the local cache
+    let entry = tmp.path().join("localcache").join("dep").join(&key);
+    assert!(!entry.exists(), "corrupt entry must be discarded");
+}
+
 /// Regression test for #45: `[cache] auth_token_env` must be honored by
 /// `cache push` — the bearer token from the environment goes on the wire.
 #[test]

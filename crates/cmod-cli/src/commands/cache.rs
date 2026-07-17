@@ -226,11 +226,15 @@ pub fn pull(remote_override: Option<String>, shell: &Shell) -> Result<(), CmodEr
                 let dest_dir = cache.entry_dir(&pkg.name, &key);
                 std::fs::create_dir_all(&dest_dir)?;
 
+                let mut downloaded: Vec<String> = Vec::new();
                 for artifact in &["module.pcm", "object.o", "metadata.json"] {
                     let dest = dest_dir.join(artifact);
                     match remote.get(&pkg.name, &key, artifact, &dest) {
                         Ok(true) => {
                             shell.verbose("Downloaded", format!("{}/{}", pkg.name, artifact));
+                            if *artifact != "metadata.json" {
+                                downloaded.push(artifact.to_string());
+                            }
                         }
                         Ok(false) => {}
                         Err(e) => {
@@ -238,7 +242,31 @@ pub fn pull(remote_override: Option<String>, shell: &Shell) -> Result<(), CmodEr
                         }
                     }
                 }
-                pulled += 1;
+
+                // Verify downloads against the entry's metadata hashes —
+                // truncated server-side files must never enter the local
+                // cache (#62 phase 1).
+                let verified = std::fs::read_to_string(dest_dir.join("metadata.json"))
+                    .ok()
+                    .and_then(|s| {
+                        serde_json::from_str::<cmod_cache::cache::ArtifactMetadata>(&s).ok()
+                    })
+                    .map(|meta| {
+                        downloaded.iter().all(|name| {
+                            cmod_cache::artifact_matches_metadata(&meta, name, &dest_dir.join(name))
+                        })
+                    })
+                    .unwrap_or(downloaded.is_empty());
+
+                if verified {
+                    pulled += 1;
+                } else {
+                    shell.warn(format!(
+                        "{} — remote artifacts failed hash verification; entry discarded",
+                        pkg.name
+                    ));
+                    let _ = std::fs::remove_dir_all(&dest_dir);
+                }
             }
             Ok(false) => {
                 shell.verbose("Missing", format!("{} — not in remote cache", pkg.name));
