@@ -12,6 +12,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
   LLVM_VERSION: "17"
+  # Line tables keep backtrace line numbers while cutting debuginfo size
+  # dramatically — the dominant cost of Windows link + cache steps (#80).
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   fmt:
@@ -32,6 +38,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
 
@@ -48,6 +55,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - name: Install LLVM ${{ env.LLVM_VERSION }} (Ubuntu)
         if: runner.os == 'Linux'
@@ -79,6 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - name: Install LLVM ${{ env.LLVM_VERSION }} (Ubuntu)
         if: runner.os == 'Linux'
@@ -108,6 +117,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.80
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all
 
@@ -117,6 +127,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - name: Install g++-14
         run: sudo apt-get update && sudo apt-get install -y g++-14
@@ -140,6 +151,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       # Plan-level cross-compilation checks: --target with a non-host triple
       # must flow into the build plan and emitted compiler flags (#54).
