@@ -931,6 +931,19 @@ impl MsvcBackend {
         args
     }
 
+    /// Resolve a toolchain sibling of cl.exe (link.exe, lib.exe).
+    ///
+    /// Bare names are unsafe on PATH under Git Bash/MSYS, where coreutils'
+    /// `link` shadows MSVC's linker — prefer the binary next to cl.exe.
+    fn sibling_tool(&self, name: &str) -> PathBuf {
+        self.cl_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.join(format!("{}.exe", name)))
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| PathBuf::from(name))
+    }
+
     fn run_cl(&self, args: &[String], what: &Path) -> Result<(), CmodError> {
         let output = Command::new(&self.cl_path)
             .args(args)
@@ -1055,13 +1068,12 @@ impl CompilerBackend for MsvcBackend {
         for obj in &obj_only {
             args.push(obj.display().to_string());
         }
-        let status =
-            Command::new(tool)
-                .args(&args)
-                .status()
-                .map_err(|e| CmodError::BuildFailed {
-                    reason: format!("failed to run {}: {}", tool, e),
-                })?;
+        let status = Command::new(self.sibling_tool(tool))
+            .args(&args)
+            .status()
+            .map_err(|e| CmodError::BuildFailed {
+                reason: format!("failed to run {}: {}", tool, e),
+            })?;
         if !status.success() {
             return Err(CmodError::BuildFailed {
                 reason: format!("{} failed to produce {}", tool, output.display()),
@@ -1328,6 +1340,25 @@ mod tests {
             .iter()
             .any(|a| a.contains("dep=") && a.contains("dep.ifc")));
         assert!(args.contains(&"src/main.cpp".to_string()));
+    }
+
+    #[test]
+    fn test_msvc_sibling_tool_resolves_next_to_cl() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cl = tmp.path().join("cl.exe");
+        std::fs::write(&cl, b"").unwrap();
+        std::fs::write(tmp.path().join("link.exe"), b"").unwrap();
+
+        let mut backend = MsvcBackend::from_config(&BackendConfig::default());
+        backend.cl_path = cl;
+        assert_eq!(backend.sibling_tool("link"), tmp.path().join("link.exe"));
+        // Falls back to the bare name when no sibling exists (PATH lookup) —
+        // never the coreutils `link` shadow, because callers only hit this
+        // fallback when cl itself was bare.
+        assert_eq!(
+            backend.sibling_tool("nonexistent-tool"),
+            PathBuf::from("nonexistent-tool")
+        );
     }
 
     #[test]
