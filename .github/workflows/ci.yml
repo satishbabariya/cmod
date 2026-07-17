@@ -16,8 +16,6 @@ env:
   # dramatically — the dominant cost of Windows link + cache steps (#80).
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   fmt:
@@ -38,8 +36,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets -- -D warnings
 
   test:
@@ -55,8 +55,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.rust }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install LLVM ${{ env.LLVM_VERSION }} (Ubuntu)
         if: runner.os == 'Linux'
         run: |
@@ -87,8 +89,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install LLVM ${{ env.LLVM_VERSION }} (Ubuntu)
         if: runner.os == 'Linux'
         run: |
@@ -117,8 +121,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.80
-      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --all
 
   gcc-backend:
@@ -127,8 +133,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install g++-14
         run: sudo apt-get update && sudo apt-get install -y g++-14
       - name: Build cmod
@@ -151,8 +159,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Plan-level cross-compilation checks: --target with a non-host triple
       # must flow into the build plan and emitted compiler flags (#54).
       # No cross toolchain is installed — nothing is compiled.
