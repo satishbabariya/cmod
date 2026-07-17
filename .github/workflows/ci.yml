@@ -12,6 +12,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   LLVM_VERSION: "17"
+  # Line tables keep backtrace line numbers while cutting debuginfo size
+  # dramatically — the dominant cost of Windows link + cache steps (#80).
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   fmt:
@@ -33,6 +37,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets -- -D warnings
 
   test:
@@ -49,6 +56,9 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.rust }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install LLVM ${{ env.LLVM_VERSION }} (Ubuntu)
         if: runner.os == 'Linux'
         run: |
@@ -80,6 +90,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install LLVM ${{ env.LLVM_VERSION }} (Ubuntu)
         if: runner.os == 'Linux'
         run: |
@@ -109,6 +122,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.80
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --all
 
   gcc-backend:
@@ -118,6 +134,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install g++-14
         run: sudo apt-get update && sudo apt-get install -y g++-14
       - name: Build cmod
@@ -141,6 +160,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Plan-level cross-compilation checks: --target with a non-host triple
       # must flow into the build plan and emitted compiler flags (#54).
       # No cross toolchain is installed — nothing is compiled.
