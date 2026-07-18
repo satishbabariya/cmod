@@ -267,12 +267,85 @@ impl RegistryClient {
             index.upsert_module(entry);
         }
 
-        let index_path = self
-            .cache_dir
-            .join("registry")
-            .join("index")
-            .join("index.json");
+        let repo_path = self.cache_dir.join("registry").join("index");
+        let index_path = repo_path.join("index.json");
         index.save(&index_path)?;
+
+        // Commit and push the updated index — a publication that only edits
+        // the local cache clone is silently lost on the next pull (#78).
+        let repo = git2::Repository::open(&repo_path).map_err(|e| CmodError::GitError {
+            reason: format!("failed to open registry clone: {}", e),
+        })?;
+        let mut git_index = repo.index().map_err(|e| CmodError::GitError {
+            reason: format!("registry index: {}", e),
+        })?;
+        git_index
+            .add_path(Path::new("index.json"))
+            .and_then(|_| git_index.write())
+            .map_err(|e| CmodError::GitError {
+                reason: format!("failed to stage index.json: {}", e),
+            })?;
+        let tree_id = git_index.write_tree().map_err(|e| CmodError::GitError {
+            reason: format!("failed to write tree: {}", e),
+        })?;
+        let tree = repo.find_tree(tree_id).map_err(|e| CmodError::GitError {
+            reason: format!("tree lookup: {}", e),
+        })?;
+        let sig = repo
+            .signature()
+            .or_else(|_| git2::Signature::now("cmod", "cmod@localhost"))
+            .map_err(|e| CmodError::GitError {
+                reason: format!("signature: {}", e),
+            })?;
+        let head =
+            repo.head()
+                .and_then(|h| h.peel_to_commit())
+                .map_err(|e| CmodError::GitError {
+                    reason: format!("registry HEAD: {}", e),
+                })?;
+        let branch = repo
+            .head()
+            .ok()
+            .and_then(|h| h.shorthand().map(str::to_string))
+            .unwrap_or_else(|| "main".to_string());
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            &format!("publish {} v{}", params.name, params.version),
+            &tree,
+            &[&head],
+        )
+        .map_err(|e| CmodError::GitError {
+            reason: format!("failed to commit registry update: {}", e),
+        })?;
+
+        let mut remote = repo
+            .find_remote("origin")
+            .map_err(|e| CmodError::GitError {
+                reason: format!("registry remote: {}", e),
+            })?;
+        let config = repo.config().map_err(|e| CmodError::GitError {
+            reason: format!("git config: {}", e),
+        })?;
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(move |url, username, _| {
+            git2::Cred::credential_helper(&config, url, username).or_else(|_| git2::Cred::default())
+        });
+        let mut push_opts = git2::PushOptions::new();
+        push_opts.remote_callbacks(callbacks);
+        remote
+            .push(
+                &[&format!("refs/heads/{b}:refs/heads/{b}", b = branch)],
+                Some(&mut push_opts),
+            )
+            .map_err(|e| CmodError::GitError {
+                reason: format!(
+                    "failed to push registry update (write access to the registry \
+                     repository is required): {}",
+                    e
+                ),
+            })?;
 
         Ok(())
     }
@@ -644,18 +717,64 @@ mod tests {
         assert_eq!(parsed.name, "test");
     }
 
+    /// Seed a local bare registry remote containing `index` and return its
+    /// path. Publish tests must go through real git — a cache-only fixture
+    /// is how the missing-push bug stayed hidden (#78).
+    fn local_registry(tmp: &std::path::Path, index: &RegistryIndex) -> PathBuf {
+        let seed = tmp.join("seed");
+        std::fs::create_dir_all(&seed).unwrap();
+        index.save(&seed.join("index.json")).unwrap();
+        let repo = git2::Repository::init(&seed).unwrap();
+        let mut gidx = repo.index().unwrap();
+        gidx.add_path(Path::new("index.json")).unwrap();
+        gidx.write().unwrap();
+        let tree = repo.find_tree(gidx.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
+            .unwrap();
+        let bare = tmp.join("registry.git");
+        git2::build::RepoBuilder::new()
+            .bare(true)
+            .clone(seed.to_str().unwrap(), &bare)
+            .unwrap();
+        bare
+    }
+
+    #[test]
+    fn test_publish_module_pushes_to_remote() {
+        // #78 round-trip: a publication must reach the registry remote —
+        // a fresh consumer clone has to see it.
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = local_registry(tmp.path(), &RegistryIndex::new("t", "t"));
+
+        // Publisher client publishes.
+        let publisher = RegistryClient::new(bare.to_str().unwrap(), tmp.path().join("cache-a"));
+        publisher
+            .publish_module(&PublishModuleParams {
+                name: "com.github.example.demo".to_string(),
+                version: "1.0.0".to_string(),
+                tag: "v1.0.0".to_string(),
+                commit: "0".repeat(40),
+                description: Some("probe".to_string()),
+                license: Some("MIT".to_string()),
+                repository: "https://github.com/example/demo".to_string(),
+            })
+            .unwrap();
+
+        // A fresh consumer (separate cache) must see the publication.
+        let consumer = RegistryClient::new(bare.to_str().unwrap(), tmp.path().join("cache-b"));
+        let index = consumer.update().unwrap();
+        assert!(
+            index.modules.contains_key("com.github.example.demo"),
+            "publication never reached the remote"
+        );
+    }
+
     #[test]
     fn test_publish_module_creates_entry() {
         let tmp = tempfile::tempdir().unwrap();
-        let cache_dir = tmp.path().to_path_buf();
-
-        // Create the registry index directory structure
-        let index_dir = cache_dir.join("registry").join("index");
-        std::fs::create_dir_all(&index_dir).unwrap();
-        let empty_index = RegistryIndex::new("test", "Test registry");
-        empty_index.save(&index_dir.join("index.json")).unwrap();
-
-        let client = RegistryClient::new("file:///unused", cache_dir);
+        let bare = local_registry(tmp.path(), &RegistryIndex::new("test", "Test registry"));
+        let client = RegistryClient::new(bare.to_str().unwrap(), tmp.path().join("cache"));
 
         let params = PublishModuleParams {
             name: "github.user.mylib".into(),
@@ -680,10 +799,6 @@ mod tests {
     #[test]
     fn test_publish_module_appends_version() {
         let tmp = tempfile::tempdir().unwrap();
-        let cache_dir = tmp.path().to_path_buf();
-
-        let index_dir = cache_dir.join("registry").join("index");
-        std::fs::create_dir_all(&index_dir).unwrap();
         let mut index = RegistryIndex::new("test", "Test");
         index.upsert_module(RegistryEntry {
             name: "github.user.mylib".into(),
@@ -705,9 +820,9 @@ mod tests {
             verified: false,
             deprecated: None,
         });
-        index.save(&index_dir.join("index.json")).unwrap();
+        let bare = local_registry(tmp.path(), &index);
+        let client = RegistryClient::new(bare.to_str().unwrap(), tmp.path().join("cache"));
 
-        let client = RegistryClient::new("file:///unused", cache_dir);
         let params = PublishModuleParams {
             name: "github.user.mylib".into(),
             version: "1.0.0".into(),

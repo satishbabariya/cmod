@@ -1,8 +1,10 @@
 # Design Doc: `cmod search` Against a Real Index
 
-**Status:** Designed 2026-07 (issue #53). Implementation is deliberately
-deferred — this document records what exists, what is missing, and the
-phased path to a live index. Companion to
+**Status:** Phase 1 complete 2026-07 (issue #78) — the index repo is live at
+[cmod-registry/index](https://github.com/cmod-registry/index), seeded with
+the nine cmod-ecosystem ports; `cmod search` works end-to-end against it
+and the publish path now commits+pushes (it previously only edited the
+local cache). Phase 2 (PR-based submissions) is next (#79). Companion to
 [plan-crates-io-publishing.md](plan-crates-io-publishing.md) and RFC-0015
 (ecosystem governance).
 
@@ -25,9 +27,8 @@ The code side of a Git-hosted registry is implemented and tested in
 
 ## What is missing
 
-1. **The index repo itself.** `RegistryClient::default_url()` points at
-   `https://github.com/cmod-registry/index`, which does not exist. Every
-   default-configuration `cmod search` quietly falls back to local results.
+1. ~~**The index repo itself.**~~ **Done (phase 1):** the repo exists and
+   is seeded; default-configuration `cmod search` returns registry results.
 2. **A submission path for non-owners.** `publish_module` pushes directly —
    fine for a single maintainer, wrong for community submissions.
 3. **Scale/abuse story** — irrelevant until 1 and 2 exist.
