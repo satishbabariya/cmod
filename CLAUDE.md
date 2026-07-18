@@ -4,7 +4,7 @@
 
 **cmod** is a Cargo-inspired, Git-native package and build tool for modern C++20+ modules. It provides dependency resolution, build orchestration, workspace management, and caching — all without a central package registry.
 
-**Status:** Rust implementation (Phase 0-5 complete), released as v0.1.0-alpha.2. The Cargo workspace has 8 crates and 828 passing tests. The 21 RFCs and design documents under `docs/` remain the canonical specification.
+**Status:** Rust implementation (Phase 0-5 complete), released as v0.1.0-alpha.3; v0.1.0-alpha.4 in progress (see milestone + umbrella issue #74). The Cargo workspace has 8 crates and 872 passing tests. The 21 RFCs and design documents under `docs/` remain the canonical specification.
 
 **Implementation language:** Rust (with LLVM/Clang C++ APIs for build hooks).
 
@@ -60,7 +60,7 @@ cmod/
 │   │       └── version.rs                 # Semver constraint parsing + solving
 │   ├── cmod-build/                        # Build orchestration
 │   │   └── src/
-│   │       ├── compiler.rs                # CompilerBackend trait + ClangBackend
+│   │       ├── compiler.rs                # CompilerBackend trait + Clang/GCC/MSVC backends + factory
 │   │       ├── distributed.rs             # Remote worker pool for distributed builds
 │   │       ├── graph.rs                   # ModuleGraph DAG + topological/critical-path sort
 │   │       ├── incremental.rs             # BuildState + rebuild detection (powers cmod explain)
@@ -105,6 +105,7 @@ cmod/
 ## Build & Test Commands
 
 ```bash
+git config core.hooksPath .githooks                # Enable fmt/clippy git hooks (once per clone)
 cargo check                                       # Type-check all crates
 cargo build                                        # Compile all crates
 cargo test                                         # Run all tests
@@ -114,10 +115,17 @@ cargo build --release                              # Release build
 cargo run -- <subcommand>                          # Run the CLI
 ```
 
+### Local gotchas
+
+- Apple clang cannot build C++20 modules — for local E2E runs set `CXX=/opt/homebrew/opt/llvm@18/bin/clang++` and `SCAN_DEPS=.../clang-scan-deps` (see `docs/guide/toolchains.md#compiler-detection`).
+- CI caches save only on `main` (`save-if`); PR branches restore them. Do not re-add per-branch cache saves — 1,270 stale caches once saturated the 10GB quota and caused the "slow Windows CI" symptom (#80).
+- PRs are squash-merged: never `git rebase` a stacked branch across a squash — rebuild it (`git checkout -B <branch> origin/main` + cherry-pick).
+- Real-world validation ports live under `github.com/cmod-ecosystem` on `cmod-support` branches (tracker: issue #22).
+
 ## Key Design Decisions
 
 - **Git is the registry.** Module identity is bound to Git URLs (e.g., `github.com/fmtlib/fmt`). No central package server.
-- **LLVM/Clang first.** Uses `clang-scan-deps` for module dependency discovery. GCC/MSVC support planned later via compiler abstraction.
+- **Three compiler backends.** Clang (reference, `clang-scan-deps` P1689 discovery), GCC 14+ (`-fmodules-ts`, module-mapper CMIs), and MSVC VS2022 (`/interface`, `/ifcOutput`, `cl /scanDependencies`) — all constructed via `make_backend(Compiler, &BackendConfig)`; the build pipeline only sees `dyn CompilerBackend`. BMI extensions differ per backend (`.pcm`/`.gcm`/`.ifc`) and flow through `bmi_extension()`.
 - **Lockfiles are mandatory.** `cmod.lock` pins exact commit hashes and toolchain versions for reproducible builds.
 - **Modules are first-class.** C++20 modules, partitions, and BMIs (Binary Module Interfaces) — not header-based compilation.
 - **Build graph known upfront.** The full module DAG is resolved before any compilation begins.
