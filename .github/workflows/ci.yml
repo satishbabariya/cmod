@@ -153,6 +153,31 @@ jobs:
           ./build/debug/gccdemo
           CXX=g++-14 $GITHUB_WORKSPACE/target/debug/cmod test
 
+  msvc-backend:
+    name: MSVC backend (windows, VS2022)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build cmod
+        run: cargo build -p cmod-cli
+      - name: End-to-end module build with MSVC
+        shell: bash
+        run: |
+          set -x
+          mkdir /c/msvcproj && cd /c/msvcproj
+          $GITHUB_WORKSPACE/target/debug/cmod init --name msvcdemo
+          sed -i 's/compiler = "clang"/compiler = "msvc"/' cmod.toml
+          $GITHUB_WORKSPACE/target/debug/cmod build --verbose
+          ls build/debug/pcm/
+          test -f build/debug/pcm/local_msvcdemo.ifc
+          ./build/debug/msvcdemo
+
   cross-target:
     name: Cross-target smoke
     runs-on: ubuntu-latest

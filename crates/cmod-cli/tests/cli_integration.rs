@@ -1318,11 +1318,11 @@ fn test_graph_critical_path_flag() {
     );
 }
 
-/// Regression test for #47/#48: unimplemented compiler families must produce
-/// a clear not-implemented error instead of silently building with clang.
-/// (GCC graduated to a real backend in #76 — msvc remains the skeleton.)
+/// #77: `compiler = "msvc"` outside a VS developer environment must fail
+/// with the vcvars hint, not a bare exec error. (Positive-path E2E lives in
+/// the `MSVC backend` CI job, which sets up the environment.)
 #[test]
-fn test_build_with_msvc_compiler_errors_clearly() {
+fn test_build_with_msvc_outside_dev_env_hints_vcvars() {
     let tmp = TempDir::new().unwrap();
     run_cmod(tmp.path(), &["init", "--name", "msvcwanted"]);
     let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
@@ -1332,12 +1332,14 @@ fn test_build_with_msvc_compiler_errors_clearly() {
     )
     .unwrap();
 
+    // The CI test matrix never runs under vcvars, so cl is absent on every
+    // platform here; the error must point at the developer environment.
     let output = run_cmod(tmp.path(), &["build"]);
-    assert!(!output.status.success(), "msvc build must not succeed yet");
+    assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("not yet implemented"),
-        "expected a clear not-implemented error, got: {}",
+        stderr.contains("developer environment") || stderr.contains("vcvars"),
+        "expected the vcvars hint, got: {}",
         stderr
     );
 }
