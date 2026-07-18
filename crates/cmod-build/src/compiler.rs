@@ -1068,15 +1068,23 @@ impl CompilerBackend for MsvcBackend {
         for obj in &obj_only {
             args.push(obj.display().to_string());
         }
-        let status = Command::new(self.sibling_tool(tool))
-            .args(&args)
-            .status()
-            .map_err(|e| CmodError::BuildFailed {
-                reason: format!("failed to run {}: {}", tool, e),
-            })?;
-        if !status.success() {
+        let tool_path = self.sibling_tool(tool);
+        let out =
+            Command::new(&tool_path)
+                .args(&args)
+                .output()
+                .map_err(|e| CmodError::BuildFailed {
+                    reason: format!("failed to run {}: {}", tool_path.display(), e),
+                })?;
+        if !out.status.success() {
             return Err(CmodError::BuildFailed {
-                reason: format!("{} failed to produce {}", tool, output.display()),
+                reason: format!(
+                    "{} failed to produce {}: {}{}",
+                    tool_path.display(),
+                    output.display(),
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr),
+                ),
             });
         }
         Ok(())
