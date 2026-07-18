@@ -1156,15 +1156,28 @@ fn find_executable(name: &str) -> PathBuf {
 
 /// Simple which implementation.
 fn which(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|dir| {
-            let full = dir.join(name);
-            if full.is_file() {
-                Some(full)
-            } else {
-                None
-            }
-        })
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .and_then(|dirs| find_in_dirs(name, &dirs))
+}
+
+/// Locate `name` (or `name.exe`, the Windows executable form) in `dirs`.
+///
+/// The `.exe` probe matters beyond Windows-native lookups: without it,
+/// `cl` resolves to a bare name, its parent is empty, and MSVC sibling
+/// tools (`link.exe`) can't be found — Git Bash then shadows `link` with
+/// coreutils' hardlink tool.
+fn find_in_dirs(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    dirs.iter().find_map(|dir| {
+        let plain = dir.join(name);
+        if plain.is_file() {
+            return Some(plain);
+        }
+        let exe = dir.join(format!("{}.exe", name));
+        if exe.is_file() {
+            return Some(exe);
+        }
+        None
     })
 }
 
@@ -1348,6 +1361,19 @@ mod tests {
             .iter()
             .any(|a| a.contains("dep=") && a.contains("dep.ifc")));
         assert!(args.contains(&"src/main.cpp".to_string()));
+    }
+
+    #[test]
+    fn test_find_in_dirs_probes_exe_suffix() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("cl.exe"), b"").unwrap();
+        let dirs = vec![tmp.path().to_path_buf()];
+        assert_eq!(
+            find_in_dirs("cl", &dirs),
+            Some(tmp.path().join("cl.exe")),
+            "must find cl.exe when probing for cl"
+        );
+        assert_eq!(find_in_dirs("missing", &dirs), None);
     }
 
     #[test]
