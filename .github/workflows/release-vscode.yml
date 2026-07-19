@@ -70,7 +70,9 @@ jobs:
           DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${CMOD_VERSION}/${ASSET_NAME}"
 
           echo "Downloading ${DOWNLOAD_URL}"
-          curl -fSL -o "archive.${EXT}" "${DOWNLOAD_URL}"
+          # Save under the real asset name — sha256sum -c verifies the
+          # filename recorded in the checksums manifest.
+          curl -fSL -o "${ASSET_NAME}" "${DOWNLOAD_URL}"
 
           # Download and verify checksum
           CHECKSUM_URL="https://github.com/${{ github.repository }}/releases/download/${CMOD_VERSION}/checksums-${CMOD_VERSION}.sha256"
@@ -79,9 +81,9 @@ jobs:
 
           # Extract
           if [[ "$EXT" == "zip" ]]; then
-            unzip "archive.zip" -d editors/vscode/bin/
+            unzip "${ASSET_NAME}" -d editors/vscode/bin/
           else
-            tar xzf "archive.tar.gz" -C editors/vscode/bin/
+            tar xzf "${ASSET_NAME}" -C editors/vscode/bin/
           fi
 
           # Make executable on Unix
