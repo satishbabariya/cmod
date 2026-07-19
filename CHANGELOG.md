@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.4] - 2026-07-19
+
+Compiler backends & ecosystem bootstrap. Closes the v0.1.0-alpha.4 milestone (#74): all three major C++ compilers build modules, the module registry is live, and the VS Code extension shipped its first release.
+
+### Added
+
+- **GCC backend (GCC 14+)** — `-fmodules-ts` module builds with module-mapper CMI placement (`.gcm`) and `g++ -fdeps-format=p1689r5` dependency scanning; permanent ubuntu/g++-14 E2E CI job. (#82, closes #76)
+- **MSVC backend (VS 2022)** — `/interface /TP` compilation with `/ifcOutput` (`.ifc`) and `/reference` dependencies, `cl /scanDependencies` P1689 scanning, `lib.exe`/`link.exe` linking; toolchain siblings resolved beside `cl.exe` so Git Bash's coreutils `link` can't shadow the linker; permanent windows/VS2022 E2E CI job. Failures outside a VS developer environment carry a vcvars hint. (#86, #67, closes #77, #48)
+- **BMI extensions flow through the build plan** — `BuildPlan::from_graph` takes the backend's extension (`.pcm`/`.gcm`/`.ifc`); clang paths byte-identical. (#81, closes #75)
+- **The module registry is live** — [`cmod-registry/index`](https://github.com/cmod-registry/index) exists at the long-baked-in default URL, seeded with the nine cmod-ecosystem ports; `cmod search` returns real results online and offline. (closes #78)
+- **VS Code extension v0.1.0** — first release: 7 platform VSIXes with bundled cmod binaries + universal VSIX on the [vscode-v0.1.0 release](https://github.com/satishbabariya/cmod/releases/tag/vscode-v0.1.0); marketplace publish pending publisher setup (#52). Release-workflow first-run fixes: committed lockfile, real binaryVersion pin, checksum filenames. (#89, #92, #93)
+- **Verified remote-cache restores** — downloads are checked against the entry's metadata hashes; truncated server-side files from interrupted uploads are treated as misses, never used, never stored. Resumable-transfer roadmap in `docs/plan-remote-cache-resilience.md`. (#85, closes #62)
+
+### Fixed
+
+- **`cmod publish` actually publishes** — the registry client only edited its local cache clone and never pushed; publications were silently discarded on the next pull. Now commits and pushes (credential-helper aware). (#88)
+- **`cmod add` accepts pasted URLs** — `cmod add https://github.com/owner/repo` double-prepended the scheme and failed resolution; full URLs now normalize to the canonical bare key. Found by the real-world validation sweep. (#84)
+- **Windows CI eviction lottery** — 1,270 stale per-branch caches saturated the 10GB Actions quota, evicting the (largest) Windows caches and causing random 8–10 minute legs. Caches now save on `main` only with per-toolchain shared keys; Windows legs run ~2 minutes steady-state. `line-tables-only` debuginfo trims MSVC link cost. (#83, closes #80)
+- **Extension npm audit clean** — the 22 alerts surfaced by committing the lockfile resolved to zero: `npm audit fix`, typescript-eslint 6→8, mocha 10→11 with overrides for its vulnerable internal pins; toolchain re-verified (lint/compile/package). (#94)
+- **spdlog ecosystem port repaired** — its hand-tuned build config had been lost to a migrate-regenerated manifest, breaking every consumer; restored and re-validated. (cmod-ecosystem/spdlog@eda53d1)
+- clippy.toml MSRV aligned to 1.80 (was silently evaluating MSRV-gated lints against 1.74). (#86)
+
+### Docs
+
+- CLAUDE.md refreshed for the alpha.4 state with a Local Gotchas section. (#87)
+- Registry phase 1 marked complete; phase 2 (PR-based submissions) tracked in #79. (#88)
+
+### Validation
+
+- Real-world OSS sweep re-run against current main: fmt, json, spdlog, Catch2 — 4/4 green after the #84 and spdlog fixes. (#22)
+
 ## [0.1.0-alpha.3] - 2026-07-16
 
 Offline & distribution polish, plus compiler-backend groundwork. Closes out the full v0.1.0-alpha.3 milestone (#36): all 15 planned items plus the three stretch goals.
