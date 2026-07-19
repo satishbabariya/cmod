@@ -29,7 +29,7 @@
     "url": "https://github.com/satishbabariya/cmod"
   },
   "cmod": {
-    "binaryVersion": "0.1.0"
+    "binaryVersion": "0.1.0-alpha.3"
   },
   "activationEvents": [
     "workspaceContains:cmod.toml",
