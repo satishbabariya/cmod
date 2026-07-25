@@ -135,9 +135,21 @@ pub fn run(
     }
 
     // Step 8: Publish to registry if configured
-    if let Some(ref publish) = config.manifest.publish {
-        if let Some(ref registry_url) = publish.registry {
+    let registry_url = config
+        .manifest
+        .publish
+        .as_ref()
+        .and_then(|p| p.registry.as_ref());
+    match registry_url {
+        Some(registry_url) => {
             publish_to_registry(name, version, &tag, &config, registry_url, shell);
+        }
+        None => {
+            shell.note(
+                "no [publish] registry configured — the release is tag-only; add \
+                 [publish] registry = \"https://github.com/cmod-registry/index\" \
+                 to cmod.toml to list this module for `cmod search`",
+            );
         }
     }
 

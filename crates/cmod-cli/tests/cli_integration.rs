@@ -2217,3 +2217,54 @@ fn test_registry_validate_command() {
     assert!(!gone.status.success(), "removals must fail");
     assert!(String::from_utf8_lossy(&gone.stderr).contains("com.github.x.gone"));
 }
+
+/// #101: publishing without [publish] registry must say what was done
+/// (tag) and what was skipped (registry listing), not silently omit it.
+#[test]
+fn test_publish_without_registry_explains_skip() {
+    let tmp = TempDir::new().unwrap();
+    run_cmod(tmp.path(), &["init", "--name", "pubux"]);
+    // publish's governance pre-check requires description + license
+    let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
+    fs::write(
+        tmp.path().join("cmod.toml"),
+        manifest.replace(
+            "[package]",
+            "[package]\ndescription = \"t\"\nlicense = \"MIT\"",
+        ),
+    )
+    .unwrap();
+
+    // publish requires a git repo with a commit
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .expect("git")
+    };
+    git(&["init", "-q"]);
+    // repo-local identity: the publish subprocess creates an annotated tag,
+    // and CI runners have no global git identity
+    git(&["config", "user.name", "t"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+
+    let output = run_cmod(tmp.path(), &["publish"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "publish should succeed: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("no [publish] registry configured"),
+        "must explain the skipped registry listing, got: {}",
+        stderr
+    );
+}
