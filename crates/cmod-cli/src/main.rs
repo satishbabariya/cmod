@@ -398,6 +398,12 @@ enum Commands {
 
     /// Start the LSP server for IDE integration
     Lsp,
+
+    /// Registry index maintenance (validation for submission PRs)
+    Registry {
+        #[command(subcommand)]
+        action: RegistryAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -439,6 +445,19 @@ enum PluginAction {
         /// Arguments to pass to the plugin (key=value pairs)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegistryAction {
+    /// Validate a registry index.json against governance policy
+    Validate {
+        /// Path to the index.json to validate
+        path: String,
+        /// Base-revision index.json — additionally enforce the
+        /// no-deletions policy (yanks flip a flag, rows never disappear)
+        #[arg(long)]
+        against: Option<String>,
     },
 }
 
@@ -664,6 +683,11 @@ fn main() {
         Commands::EmitCmake => commands::build::emit_cmake(&shell),
         Commands::Migrate { from } => match from {
             MigrateFrom::Cmake { path } => commands::migrate::run(path, &shell),
+        },
+        Commands::Registry { action } => match action {
+            RegistryAction::Validate { path, against } => {
+                commands::registry::validate(&path, against.as_deref(), &shell)
+            }
         },
         Commands::Lsp => {
             let mut server = cmod_lsp::server::LspServer::new();

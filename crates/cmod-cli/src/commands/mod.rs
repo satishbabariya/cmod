@@ -17,6 +17,7 @@ pub mod plugin;
 #[allow(dead_code)]
 pub mod plugin_sandbox;
 pub mod publish;
+pub mod registry;
 pub mod remove;
 pub mod resolve;
 pub mod run;

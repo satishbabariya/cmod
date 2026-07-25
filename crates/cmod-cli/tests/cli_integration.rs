@@ -2168,3 +2168,52 @@ fn test_migrate_cmake_existing_cmod_toml() {
         "should fail when cmod.toml already exists"
     );
 }
+
+/// #79: `cmod registry validate` gates index PRs — clean passes, violations
+/// and removals fail with actionable output.
+#[test]
+fn test_registry_validate_command() {
+    let tmp = TempDir::new().unwrap();
+
+    let good = r#"{"version":1,"name":"t","description":"t","updated_at":"now","modules":{
+      "com.github.x.y":{"name":"com.github.x.y","description":"d","repository":"https://github.com/x/y",
+        "versions":[{"version":"1.0.0","tag":"v1.0.0","commit":"cc","min_cpp_standard":null,"published_at":"now","yanked":false}],
+        "keywords":[],"category":null,"license":"MIT","authors":[],"updated_at":"now","verified":false,"deprecated":null}}}"#;
+    let bad = good.replace("\"license\":\"MIT\"", "\"license\":null");
+    fs::write(tmp.path().join("good.json"), good).unwrap();
+    fs::write(tmp.path().join("bad.json"), &bad).unwrap();
+    // base with an extra module that "removed.json" drops
+    let removed = good;
+    let base = good.replace(
+        "\"modules\":{",
+        r#""modules":{"com.github.x.gone":{"name":"com.github.x.gone","description":"d","repository":"https://github.com/x/g","versions":[{"version":"1.0.0","tag":"v1.0.0","commit":"cc","min_cpp_standard":null,"published_at":"now","yanked":false}],"keywords":[],"category":null,"license":"MIT","authors":[],"updated_at":"now","verified":false,"deprecated":null},"#,
+    );
+    fs::write(tmp.path().join("base.json"), base).unwrap();
+    fs::write(tmp.path().join("removed.json"), removed).unwrap();
+
+    let ok = run_cmod(tmp.path(), &["registry", "validate", "good.json"]);
+    assert!(
+        ok.status.success(),
+        "clean index must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+
+    let fail = run_cmod(tmp.path(), &["registry", "validate", "bad.json"]);
+    assert!(!fail.status.success(), "violations must fail");
+    assert!(String::from_utf8_lossy(&fail.stderr)
+        .to_lowercase()
+        .contains("license"));
+
+    let gone = run_cmod(
+        tmp.path(),
+        &[
+            "registry",
+            "validate",
+            "removed.json",
+            "--against",
+            "base.json",
+        ],
+    );
+    assert!(!gone.status.success(), "removals must fail");
+    assert!(String::from_utf8_lossy(&gone.stderr).contains("com.github.x.gone"));
+}

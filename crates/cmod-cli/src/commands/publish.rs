@@ -367,8 +367,29 @@ fn publish_to_registry(
         Err(e) => {
             shell.warn(format!("failed to publish to registry: {}", e));
             shell.note("the git tag was created successfully; registry publish can be retried");
+            // Without write access, the community path is a submission PR
+            // against the index repo — hand the user their ready-made entry.
+            let entry = cmod_resolver::registry::RegistryEntry::from_publish_params(
+                &params,
+                &chrono_free_timestamp(),
+            );
+            if let Ok(fragment) = serde_json::to_string_pretty(&entry) {
+                shell.note(format!(
+                    "no write access? open a PR against {} adding this entry to index.json \
+                     under \"modules\" (key: \"{}\"):\n{}",
+                    registry_url, entry.name, fragment
+                ));
+            }
         }
     }
+}
+
+/// Seconds-since-epoch timestamp string (no chrono dependency).
+fn chrono_free_timestamp() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_default()
 }
 
 /// Resolve HEAD commit hash.
