@@ -4,7 +4,7 @@
 [cmod-registry/index](https://github.com/cmod-registry/index), seeded with
 the nine cmod-ecosystem ports; `cmod search` works end-to-end against it
 and the publish path now commits+pushes (it previously only edited the
-local cache). Phase 2 (PR-based submissions) is next (#79). Companion to
+local cache). Phase 2 (PR-based submissions) shipped 2026-07: `cmod publish` prints a ready-made entry fragment when it lacks push access, and the index repo's **Validate submission** Action runs `cmod registry validate` (the client's own rules + no-deletions policy) on every `index.json` PR. Companion to
 [plan-crates-io-publishing.md](plan-crates-io-publishing.md) and RFC-0015
 (ecosystem governance).
 

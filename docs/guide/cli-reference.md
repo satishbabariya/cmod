@@ -555,6 +555,19 @@ List workspace members.
 cmod workspace list
 ```
 
+### `cmod registry validate`
+
+Validate a registry `index.json` against governance policy (the same rules
+`cmod publish` submissions face). Used by the cmod-registry validation CI.
+
+```
+cmod registry validate <PATH> [--against <BASE>]
+```
+
+`--against` additionally enforces the no-deletions policy: listings and
+version rows may never be removed relative to the base revision (yanks flip
+`"yanked": true`).
+
 ### `cmod workspace add`
 
 Add a member to the workspace.

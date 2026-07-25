@@ -40,6 +40,34 @@ pub struct RegistryEntry {
     pub deprecated: Option<String>,
 }
 
+impl RegistryEntry {
+    /// Build the entry a publication would create — shared by
+    /// `RegistryClient::publish_module` and the `cmod publish` PR-fragment
+    /// fallback so the two can never drift (#79).
+    pub fn from_publish_params(params: &PublishModuleParams, now: &str) -> Self {
+        RegistryEntry {
+            name: params.name.clone(),
+            description: params.description.clone(),
+            repository: params.repository.clone(),
+            versions: vec![RegistryVersion {
+                version: params.version.clone(),
+                tag: params.tag.clone(),
+                commit: params.commit.clone(),
+                min_cpp_standard: None,
+                published_at: now.to_string(),
+                yanked: false,
+            }],
+            keywords: Vec::new(),
+            category: None,
+            license: params.license.clone(),
+            authors: Vec::new(),
+            updated_at: now.to_string(),
+            verified: false,
+            deprecated: None,
+        }
+    }
+}
+
 /// A specific version of a module in the registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryVersion {
@@ -251,20 +279,7 @@ impl RegistryClient {
                 entry.license = Some(lic.clone());
             }
         } else {
-            let entry = RegistryEntry {
-                name: params.name.clone(),
-                description: params.description.clone(),
-                repository: params.repository.clone(),
-                versions: vec![new_version],
-                keywords: Vec::new(),
-                category: None,
-                license: params.license.clone(),
-                authors: Vec::new(),
-                updated_at: now,
-                verified: false,
-                deprecated: None,
-            };
-            index.upsert_module(entry);
+            index.upsert_module(RegistryEntry::from_publish_params(params, &now));
         }
 
         let repo_path = self.cache_dir.join("registry").join("index");
@@ -450,6 +465,69 @@ impl Default for NamingRules {
             require_reverse_domain: true,
         }
     }
+}
+
+/// Validate every entry in a registry index against governance policy.
+///
+/// Returns human-readable violations (empty = valid). This is the same rule
+/// set `validate_for_publishing` applies to individual submissions, plus
+/// structural checks — the registry's validation Action runs exactly this
+/// via `cmod registry validate` (#79).
+pub fn validate_index(index: &RegistryIndex, policy: &GovernancePolicy) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (key, entry) in &index.modules {
+        if key != &entry.name {
+            violations.push(format!(
+                "{}: map key does not match entry name '{}'",
+                key, entry.name
+            ));
+        }
+        if entry.repository.is_empty() {
+            violations.push(format!("{}: repository URL is empty", entry.name));
+        }
+        if entry.versions.is_empty() {
+            violations.push(format!("{}: no versions listed", entry.name));
+        }
+        for v in &entry.versions {
+            for violation in validate_for_publishing(
+                &entry.name,
+                &v.version,
+                entry.description.as_deref(),
+                entry.license.as_deref(),
+                policy,
+            ) {
+                violations.push(format!("{} v{}: {}", entry.name, v.version, violation));
+            }
+        }
+    }
+    violations
+}
+
+/// Validate an updated index against its base revision.
+///
+/// Policy (POLICY.md): listings and version rows are never deleted — a yank
+/// flips the `yanked` flag so existing lockfiles keep resolving.
+pub fn validate_index_against_base(new: &RegistryIndex, base: &RegistryIndex) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (name, base_entry) in &base.modules {
+        match new.modules.get(name) {
+            None => violations.push(format!(
+                "{}: module removed — yank versions instead of deleting listings",
+                name
+            )),
+            Some(new_entry) => {
+                for bv in &base_entry.versions {
+                    if !new_entry.versions.iter().any(|nv| nv.version == bv.version) {
+                        violations.push(format!(
+                            "{} v{}: version row removed — set \"yanked\": true instead",
+                            name, bv.version
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    violations
 }
 
 /// Validate a module against governance policy before publishing.
@@ -715,6 +793,112 @@ mod tests {
         let json = serde_json::to_string(&index).unwrap();
         let parsed: RegistryIndex = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "test");
+    }
+
+    #[test]
+    fn test_entry_from_params_matches_publish_shape() {
+        let params = PublishModuleParams {
+            name: "com.github.x.y".to_string(),
+            version: "1.2.0".to_string(),
+            tag: "v1.2.0".to_string(),
+            commit: "a".repeat(40),
+            description: Some("d".to_string()),
+            license: Some("MIT".to_string()),
+            repository: "https://github.com/x/y".to_string(),
+        };
+        let entry = RegistryEntry::from_publish_params(&params, "ts");
+        assert_eq!(entry.name, "com.github.x.y");
+        assert_eq!(entry.versions.len(), 1);
+        assert_eq!(entry.versions[0].tag, "v1.2.0");
+        assert_eq!(entry.updated_at, "ts");
+        assert!(!entry.verified);
+    }
+
+    // --- index validation for registry phase 2 (#79) ---
+
+    fn seeded_entry(name: &str) -> RegistryEntry {
+        RegistryEntry {
+            name: name.to_string(),
+            description: Some("desc".to_string()),
+            repository: "https://github.com/x/y".to_string(),
+            versions: vec![RegistryVersion {
+                version: "1.0.0".to_string(),
+                tag: "v1.0.0".to_string(),
+                commit: "c".repeat(40),
+                min_cpp_standard: None,
+                published_at: "now".to_string(),
+                yanked: false,
+            }],
+            keywords: vec![],
+            category: None,
+            license: Some("MIT".to_string()),
+            authors: vec![],
+            updated_at: "now".to_string(),
+            verified: false,
+            deprecated: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_index_clean() {
+        let mut idx = RegistryIndex::new("t", "t");
+        idx.upsert_module(seeded_entry("com.github.x.y"));
+        assert!(validate_index(&idx, &GovernancePolicy::default()).is_empty());
+    }
+
+    #[test]
+    fn test_validate_index_flags_violations() {
+        let mut idx = RegistryIndex::new("t", "t");
+        let mut banned = seeded_entry("std.core");
+        banned.license = None;
+        banned.versions[0].version = "not-semver".to_string();
+        idx.upsert_module(banned);
+        let violations = validate_index(&idx, &GovernancePolicy::default());
+        let joined = violations.join("\n");
+        assert!(joined.contains("std.core"), "banned name: {joined}");
+        assert!(
+            joined.to_lowercase().contains("license"),
+            "license: {joined}"
+        );
+        assert!(
+            joined.to_lowercase().contains("semver") || joined.contains("not-semver"),
+            "semver: {joined}"
+        );
+    }
+
+    #[test]
+    fn test_validate_index_against_base_rejects_removals() {
+        let mut base = RegistryIndex::new("t", "t");
+        base.upsert_module(seeded_entry("com.github.x.a"));
+        let mut b_entry = seeded_entry("com.github.x.b");
+        b_entry.versions.push(RegistryVersion {
+            version: "1.1.0".to_string(),
+            tag: "v1.1.0".to_string(),
+            commit: "d".repeat(40),
+            min_cpp_standard: None,
+            published_at: "now".to_string(),
+            yanked: false,
+        });
+        base.upsert_module(b_entry.clone());
+
+        // New index drops module a and removes a version row of b
+        let mut new = RegistryIndex::new("t", "t");
+        let mut b_short = b_entry.clone();
+        b_short.versions.pop();
+        new.upsert_module(b_short);
+
+        let violations = validate_index_against_base(&new, &base);
+        let joined = violations.join("\n");
+        assert!(
+            joined.contains("com.github.x.a"),
+            "module removal: {joined}"
+        );
+        assert!(joined.contains("1.1.0"), "version removal: {joined}");
+
+        // Yank-flag flips are allowed
+        let mut yanked = base.clone();
+        yanked.modules.get_mut("com.github.x.b").unwrap().versions[1].yanked = true;
+        assert!(validate_index_against_base(&yanked, &base).is_empty());
     }
 
     /// Seed a local bare registry remote containing `index` and return its
