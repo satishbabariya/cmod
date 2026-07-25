@@ -163,9 +163,14 @@ jobs:
         with:
           shared-key: stable
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: ilammy/msvc-dev-cmd@v1
+      # Build BEFORE entering the VS dev environment: msvc-dev-cmd exports
+      # INCLUDE/LIB, which the native-dep build scripts (vendored openssl,
+      # libgit2) track via rerun-if-env-changed — building under the same
+      # env the shared cache was fingerprinted with keeps restores warm
+      # (#100: 527s -> expected ~2m). cc-rs finds MSVC via vswhere anyway.
       - name: Build cmod
         run: cargo build -p cmod-cli
+      - uses: ilammy/msvc-dev-cmd@v1
       - name: End-to-end module build with MSVC
         shell: bash
         run: |
