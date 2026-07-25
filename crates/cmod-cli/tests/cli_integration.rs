@@ -2248,6 +2248,10 @@ fn test_publish_without_registry_explains_skip() {
             .expect("git")
     };
     git(&["init", "-q"]);
+    // repo-local identity: the publish subprocess creates an annotated tag,
+    // and CI runners have no global git identity
+    git(&["config", "user.name", "t"]);
+    git(&["config", "user.email", "t@t"]);
     git(&["add", "-A"]);
     git(&["commit", "-qm", "init"]);
 
