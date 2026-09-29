@@ -11,6 +11,9 @@ set -eu
 REPO="satishbabariya/cmod"
 INSTALL_DIR="${HOME}/.cmod/bin"
 VERSION=""
+# Declared here (not `local` to main) so the EXIT trap can still see it
+# after main() returns and the top-level scope resumes.
+_tmpdir=""
 
 usage() {
     cat <<EOF
@@ -153,7 +156,7 @@ main() {
         esac
     done
 
-    local _target _version _archive _url _checksum_url _tmpdir
+    local _target _version _archive _url _checksum_url
 
     say "detecting platform..."
     _target="$(detect_target)"
