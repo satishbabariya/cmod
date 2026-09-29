@@ -9,6 +9,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   LLVM_VERSION: "17"
+  # Pinned: Homebrew llvm 23 (libc++ 23 + clang's module-directive rule) breaks
+  # the cmod-ecosystem/fmt module interface. Unpin once the fork carries
+  # fmtlib/fmt 3febdca5 and 758d39eb.
+  LLVM_MACOS_FORMULA: "llvm@22"
 
 jobs:
   build-examples:
@@ -35,11 +39,11 @@ jobs:
           sudo apt-get install -y clang-${{ env.LLVM_VERSION }} llvm-${{ env.LLVM_VERSION }} clang-tools-${{ env.LLVM_VERSION }}
           echo "/usr/lib/llvm-${{ env.LLVM_VERSION }}/bin" >> $GITHUB_PATH
 
-      - name: Install LLVM (macOS)
+      - name: Install ${{ env.LLVM_MACOS_FORMULA }} (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install llvm
-          echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
+          brew install ${{ env.LLVM_MACOS_FORMULA }}
+          echo "$(brew --prefix ${{ env.LLVM_MACOS_FORMULA }})/bin" >> $GITHUB_PATH
 
       - name: Verify Clang
         run: clang++ --version

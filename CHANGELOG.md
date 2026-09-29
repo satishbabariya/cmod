@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Branch/rev/tag dependencies honour `cmod.lock`** — lock reuse compared the semver `version` requirement against the locked pseudo-version (`^0.1` vs `0.0.0-<date>-<sha>`), which never matches, so every `cmod resolve` silently moved branch deps to the upstream head. Pinned deps now reuse the lock when it matches the pin; a branch keeps its locked commit while that commit is still on the branch, and `cmod update` advances it. `--locked` and `--offline` apply the same rules. Lock format unchanged. See `docs/guide/dependencies.md#pinned-dependencies-branch-rev-tag`. (RED-32)
+
 ## [0.1.0-alpha.4] - 2026-07-19
 
 Compiler backends & ecosystem bootstrap. Closes the v0.1.0-alpha.4 milestone (#74): all three major C++ compilers build modules, the module registry is live, and the VS Code extension shipped its first release.

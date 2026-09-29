@@ -123,6 +123,21 @@ cmod resolve --locked
 
 If the lockfile is missing or outdated, the command fails with exit code 2 instead of silently updating. This is recommended for CI pipelines.
 
+### Pinned dependencies (`branch`, `rev`, `tag`)
+
+A pinned dependency never resolves through its `version` requirement. Its locked version is a pseudo-version (`0.0.0-<YYYYMMDD>-<short-sha>`) or the tag's own version, so `version` is informational only. `cmod resolve` reuses the locked commit when it still matches the pin:
+
+| Pin | Lock reused when | Otherwise |
+|---|---|---|
+| `rev = "<hex>"` | the locked commit starts with `rev` | re-resolved |
+| `tag = "v1.2.0"` (semver) | the locked version equals the tag's version | re-resolved |
+| `branch = "..."` | the locked commit is the branch head or an ancestor of it | re-resolved to the head |
+| `rev`/`tag` that is not hex/semver | never (resolved from Git) | re-resolved |
+
+The pin precedence is `rev`, then `tag`, then `branch`, the same as resolution. With `--offline`, a pin that only Git can check (a branch, a symbolic rev, a non-semver tag) reuses the lock as-is. `--locked` accepts those pins too and rejects a proven mismatch.
+
+A moved branch head therefore does not reach `cmod.lock` until you run `cmod update` (or `cmod update <name>`). Switching the manifest to a branch that does not contain the locked commit, or an upstream force-push that drops it, re-resolves to the new head. `cmod.lock` does not record the branch name, so switching to a branch that *does* contain the locked commit keeps the lock; run `cmod update <name>` to move to the new branch's head.
+
 ### Lockfile integrity
 
 The lockfile includes an optional `integrity` hash (SHA-256) that covers all package data. Use `--verify` during builds to check it:

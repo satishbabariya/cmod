@@ -243,29 +243,42 @@ impl Resolver {
         let url = Manifest::resolve_dep_url(name, dep);
         let repo_dir = self.dep_repo_dir(name);
 
-        // Check if we have a locked version we can reuse
-        if let Some(lock) = existing_lock {
-            if let Some(locked_pkg) = lock.find_package(name) {
-                if let Some(version_req_str) = dep.version_req() {
-                    let req = version::parse_version_req(version_req_str)?;
-                    if let Ok(locked_ver) = version::parse_version(&locked_pkg.version) {
-                        if req.matches(&locked_ver) {
-                            // Locked version still satisfies constraint, reuse it
-                            resolved.insert(
-                                name.to_string(),
-                                ResolvedDep {
-                                    name: name.to_string(),
-                                    version: locked_ver,
-                                    repo_url: url,
-                                    commit: locked_pkg.commit.clone().unwrap_or_default(),
-                                    hash: locked_pkg.hash.clone().unwrap_or_default(),
-                                    local_path: repo_dir,
-                                    deps: locked_pkg.deps.clone(),
-                                },
-                            );
-                            return Ok(());
-                        }
+        let locked_pkg = existing_lock.and_then(|lock| lock.find_package(name));
+
+        // Check if we have a locked version we can reuse. Pinned deps
+        // (rev/tag/branch) are matched on the pin, not the semver req: the
+        // lock holds a pseudo-version the req can never match.
+        if let Some(locked_pkg) = locked_pkg {
+            let reuse = match check_pin(dep, locked_pkg) {
+                PinCheck::Matches => true,
+                PinCheck::Mismatch => false,
+                // A branch can only be checked against a fetched repo; offline,
+                // the lock is the only record of the pinned commit.
+                PinCheck::NeedsGit => offline,
+                PinCheck::NotPinned => match dep.version_req() {
+                    Some(version_req_str) => {
+                        let req = version::parse_version_req(version_req_str)?;
+                        version::parse_version(&locked_pkg.version)
+                            .is_ok_and(|locked_ver| req.matches(&locked_ver))
                     }
+                    None => false,
+                },
+            };
+            if reuse {
+                if let Ok(locked_ver) = version::parse_version(&locked_pkg.version) {
+                    resolved.insert(
+                        name.to_string(),
+                        ResolvedDep {
+                            name: name.to_string(),
+                            version: locked_ver,
+                            repo_url: url,
+                            commit: locked_pkg.commit.clone().unwrap_or_default(),
+                            hash: locked_pkg.hash.clone().unwrap_or_default(),
+                            local_path: repo_dir,
+                            deps: locked_pkg.deps.clone(),
+                        },
+                    );
+                    return Ok(());
                 }
             }
         }
@@ -347,7 +360,15 @@ impl Resolver {
             }
             Dependency::Detailed(d) if d.branch.is_some() => {
                 let branch = d.branch.as_ref().unwrap();
-                let oid = git::resolve_branch(&repo, branch)?;
+                let head = git::resolve_branch(&repo, branch)?;
+                // Keep the locked commit while it is still on the branch; move
+                // to the head only when the lock cannot describe this branch
+                // (manifest switched branches, or upstream rewrote history).
+                // `cmod update` drops the lock entry to advance deliberately.
+                let oid = locked_pkg
+                    .and_then(|p| p.commit.as_deref())
+                    .and_then(|commit| git::commit_reachable_from(&repo, commit, head))
+                    .unwrap_or(head);
                 let date = git::commit_date(&repo, oid)?;
                 let pv = version::pseudo_version(&date, &git::short_hash(&oid));
                 let ver = Version::parse(&pv).map_err(|e| CmodError::UnresolvableConstraints {
@@ -517,11 +538,17 @@ impl Resolver {
                 .find_package(name)
                 .ok_or(CmodError::LockfileOutdated)?;
 
-            if let Some(req_str) = dep.version_req() {
-                let req = version::parse_version_req(req_str)?;
-                let locked_ver = version::parse_version(&locked.version)?;
-                if !req.matches(&locked_ver) {
-                    return Err(CmodError::LockfileOutdated);
+            match check_pin(dep, locked) {
+                PinCheck::Mismatch => return Err(CmodError::LockfileOutdated),
+                PinCheck::Matches | PinCheck::NeedsGit => {}
+                PinCheck::NotPinned => {
+                    if let Some(req_str) = dep.version_req() {
+                        let req = version::parse_version_req(req_str)?;
+                        let locked_ver = version::parse_version(&locked.version)?;
+                        if !req.matches(&locked_ver) {
+                            return Err(CmodError::LockfileOutdated);
+                        }
+                    }
                 }
             }
         }
@@ -731,6 +758,54 @@ pub struct VersionConflict {
     pub requesters: Vec<String>,
     /// The version that was resolved.
     pub resolved_version: String,
+}
+
+/// How a locked package relates to a dependency's source pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinCheck {
+    /// No `rev`/`tag`/`branch`: the semver requirement decides.
+    NotPinned,
+    /// The lock provably records the pinned source.
+    Matches,
+    /// The lock provably records a different source.
+    Mismatch,
+    /// Only the Git repo can tell (a branch, a symbolic rev, a non-semver tag).
+    NeedsGit,
+}
+
+/// Compare a locked package with the dependency's `rev`/`tag`/`branch` pin,
+/// using the same precedence as resolution (rev, then tag, then branch).
+///
+/// A pinned dependency never resolves through its semver requirement, so its
+/// lock entry is not checked against it either.
+fn check_pin(dep: &Dependency, locked: &LockedPackage) -> PinCheck {
+    let Dependency::Detailed(d) = dep else {
+        return PinCheck::NotPinned;
+    };
+    if let Some(rev) = &d.rev {
+        let is_hex = rev.len() >= 4 && rev.chars().all(|c| c.is_ascii_hexdigit());
+        if !is_hex {
+            return PinCheck::NeedsGit;
+        }
+        let rev = rev.to_ascii_lowercase();
+        return match &locked.commit {
+            Some(commit) if commit.starts_with(&rev) => PinCheck::Matches,
+            _ => PinCheck::Mismatch,
+        };
+    }
+    if let Some(tag) = &d.tag {
+        let Ok(tag_ver) = Version::parse(tag.strip_prefix('v').unwrap_or(tag)) else {
+            return PinCheck::NeedsGit;
+        };
+        return match version::parse_version(&locked.version) {
+            Ok(locked_ver) if locked_ver == tag_ver => PinCheck::Matches,
+            _ => PinCheck::Mismatch,
+        };
+    }
+    if d.branch.is_some() {
+        return PinCheck::NeedsGit;
+    }
+    PinCheck::NotPinned
 }
 
 /// Check a dependency's compat constraints against the project manifest's toolchain.
@@ -1598,5 +1673,277 @@ mod tests {
         let dep_manifest = minimal_manifest();
         let project = minimal_manifest();
         assert!(check_dep_compat("test_dep", &dep_manifest, &project).is_ok());
+    }
+
+    // ---- Pinned (branch / rev / tag) dependencies and lock reuse ----
+
+    const BRANCH_DEP: &str = "github.com/cmod-test/branchdep";
+
+    fn pinned_dep(
+        version: Option<&str>,
+        branch: Option<&str>,
+        rev: Option<&str>,
+        tag: Option<&str>,
+    ) -> Dependency {
+        Dependency::Detailed(DetailedDependency {
+            version: version.map(str::to_string),
+            git: None,
+            branch: branch.map(str::to_string),
+            rev: rev.map(str::to_string),
+            tag: tag.map(str::to_string),
+            path: None,
+            features: vec![],
+            optional: false,
+            default_features: true,
+            workspace: false,
+        })
+    }
+
+    fn locked_git_package(name: &str, version: &str, commit: &str) -> LockedPackage {
+        LockedPackage {
+            name: name.to_string(),
+            version: version.to_string(),
+            source: Some("git".to_string()),
+            repo: Some(format!("https://{}", name)),
+            commit: Some(commit.to_string()),
+            hash: Some("sha256:deadbeef".to_string()),
+            toolchain: None,
+            targets: BTreeMap::new(),
+            deps: vec![],
+            features: vec![],
+        }
+    }
+
+    /// Commit a one-file tree to `refs/heads/<branch>` of `repo`.
+    fn commit_to_branch(
+        repo: &git2::Repository,
+        branch: &str,
+        parent: Option<git2::Oid>,
+        content: &str,
+    ) -> git2::Oid {
+        let blob = repo.blob(content.as_bytes()).unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        builder.insert("lib.cppm", blob, 0o100644).unwrap();
+        let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+        let sig = git2::Signature::new(
+            "cmod-test",
+            "test@cmod.invalid",
+            &git2::Time::new(1_773_300_000, 0),
+        )
+        .unwrap();
+        let parents: Vec<git2::Commit> = parent
+            .map(|oid| repo.find_commit(oid).unwrap())
+            .into_iter()
+            .collect();
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(
+            Some(&format!("refs/heads/{}", branch)),
+            &sig,
+            &sig,
+            content,
+            &tree,
+            &parent_refs,
+        )
+        .unwrap()
+    }
+
+    /// Build an "upstream" repo with `root -> a` on `cmod-support`, and clone
+    /// it into the resolver's deps dir so `fetch_repo` fetches from the local
+    /// upstream instead of the network.
+    fn branch_dep_fixture(
+        tmp: &std::path::Path,
+        resolver: &Resolver,
+    ) -> (git2::Repository, git2::Oid, git2::Oid) {
+        let upstream = git2::Repository::init(tmp.join("upstream")).unwrap();
+        let root = commit_to_branch(&upstream, "cmod-support", None, "root");
+        let a = commit_to_branch(&upstream, "cmod-support", Some(root), "a");
+        upstream.set_head("refs/heads/cmod-support").unwrap();
+
+        let upstream_path = tmp.join("upstream");
+        git2::Repository::clone(
+            upstream_path.to_str().unwrap(),
+            resolver.dep_repo_dir(BRANCH_DEP),
+        )
+        .unwrap();
+        (upstream, root, a)
+    }
+
+    #[test]
+    fn test_resolve_branch_dep_keeps_locked_commit_when_branch_moves() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut resolver = Resolver::new(tmp.path().join("deps"));
+        let (upstream, _root, a) = branch_dep_fixture(tmp.path(), &resolver);
+
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            BRANCH_DEP.to_string(),
+            pinned_dep(Some("^0.1"), Some("cmod-support"), None, None),
+        );
+
+        let lock1 = resolver.resolve(&manifest, None, false, false).unwrap();
+        let locked = lock1.find_package(BRANCH_DEP).unwrap();
+        assert_eq!(locked.commit.as_deref(), Some(a.to_string().as_str()));
+        assert!(locked.version.starts_with("0.0.0-"));
+
+        // Upstream moves the branch head.
+        let b = commit_to_branch(&upstream, "cmod-support", Some(a), "b");
+
+        let lock2 = resolver
+            .resolve(&manifest, Some(&lock1), false, false)
+            .unwrap();
+        let relocked = lock2.find_package(BRANCH_DEP).unwrap();
+        assert_ne!(relocked.commit.as_deref(), Some(b.to_string().as_str()));
+        assert_eq!(relocked.commit, locked.commit);
+        assert_eq!(relocked.version, locked.version);
+        assert_eq!(relocked.hash, locked.hash);
+    }
+
+    #[test]
+    fn test_resolve_branch_dep_re_resolves_when_locked_commit_not_on_branch() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut resolver = Resolver::new(tmp.path().join("deps"));
+        let (upstream, root, _a) = branch_dep_fixture(tmp.path(), &resolver);
+
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            BRANCH_DEP.to_string(),
+            pinned_dep(Some("^0.1"), Some("cmod-support"), None, None),
+        );
+        let lock1 = resolver.resolve(&manifest, None, false, false).unwrap();
+
+        // The manifest switches to a branch that diverged before the locked
+        // commit: the lock no longer describes the requested source.
+        let c = commit_to_branch(&upstream, "other", Some(root), "c");
+        manifest.dependencies.insert(
+            BRANCH_DEP.to_string(),
+            pinned_dep(Some("^0.1"), Some("other"), None, None),
+        );
+
+        let lock2 = resolver
+            .resolve(&manifest, Some(&lock1), false, false)
+            .unwrap();
+        let relocked = lock2.find_package(BRANCH_DEP).unwrap();
+        assert_eq!(relocked.commit.as_deref(), Some(c.to_string().as_str()));
+    }
+
+    #[test]
+    fn test_resolve_offline_reuses_locked_branch_dep() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            BRANCH_DEP.to_string(),
+            pinned_dep(Some("^0.1"), Some("cmod-support"), None, None),
+        );
+        let commit = "7bf8390ac3597c064822927970e84d68574a8eff";
+        let mut lock = Lockfile::new();
+        lock.upsert_package(locked_git_package(
+            BRANCH_DEP,
+            "0.0.0-20260312-7bf8390a",
+            commit,
+        ));
+
+        let result = resolver
+            .resolve(&manifest, Some(&lock), false, true)
+            .unwrap();
+        let pkg = result.find_package(BRANCH_DEP).unwrap();
+        assert_eq!(pkg.commit.as_deref(), Some(commit));
+        assert_eq!(pkg.version, "0.0.0-20260312-7bf8390a");
+    }
+
+    #[test]
+    fn test_resolve_offline_reuses_locked_rev_dep() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            BRANCH_DEP.to_string(),
+            pinned_dep(None, None, Some("7bf8390a"), None),
+        );
+        let commit = "7bf8390ac3597c064822927970e84d68574a8eff";
+        let mut lock = Lockfile::new();
+        lock.upsert_package(locked_git_package(
+            BRANCH_DEP,
+            "0.0.0-20260312-7bf8390a",
+            commit,
+        ));
+
+        let result = resolver
+            .resolve(&manifest, Some(&lock), false, true)
+            .unwrap();
+        assert_eq!(
+            result.find_package(BRANCH_DEP).unwrap().commit.as_deref(),
+            Some(commit)
+        );
+
+        // A different rev is a different source: the lock cannot satisfy it.
+        manifest.dependencies.insert(
+            BRANCH_DEP.to_string(),
+            pinned_dep(None, None, Some("3761884f"), None),
+        );
+        assert!(resolver
+            .resolve(&manifest, Some(&lock), false, true)
+            .is_err());
+    }
+
+    #[test]
+    fn test_resolve_offline_reuses_locked_semver_tag_dep() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            BRANCH_DEP.to_string(),
+            pinned_dep(None, None, None, Some("v1.2.0")),
+        );
+        let mut lock = Lockfile::new();
+        lock.upsert_package(locked_git_package(BRANCH_DEP, "1.2.0", "abc123"));
+
+        let result = resolver
+            .resolve(&manifest, Some(&lock), false, true)
+            .unwrap();
+        assert_eq!(result.find_package(BRANCH_DEP).unwrap().version, "1.2.0");
+    }
+
+    #[test]
+    fn test_validate_lockfile_accepts_branch_pseudo_version() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            BRANCH_DEP.to_string(),
+            pinned_dep(Some("^0.1"), Some("cmod-support"), None, None),
+        );
+        let mut lock = Lockfile::new();
+        lock.upsert_package(locked_git_package(
+            BRANCH_DEP,
+            "0.0.0-20260312-7bf8390a",
+            "7bf8390ac3597c064822927970e84d68574a8eff",
+        ));
+
+        // `--locked`: a branch pin is satisfied by its locked commit even
+        // though `^0.1` cannot match the pseudo-version.
+        assert!(resolver
+            .resolve(&manifest, Some(&lock), true, false)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_validate_lockfile_rejects_rev_mismatch() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut resolver = Resolver::new(tmp.path().to_path_buf());
+        let mut manifest = minimal_manifest();
+        manifest.dependencies.insert(
+            BRANCH_DEP.to_string(),
+            pinned_dep(None, None, Some("3761884f"), None),
+        );
+        let mut lock = Lockfile::new();
+        lock.upsert_package(locked_git_package(
+            BRANCH_DEP,
+            "0.0.0-20260312-7bf8390a",
+            "7bf8390ac3597c064822927970e84d68574a8eff",
+        ));
+
+        let result = resolver.resolve(&manifest, Some(&lock), true, false);
+        assert!(matches!(result, Err(CmodError::LockfileOutdated)));
     }
 }
