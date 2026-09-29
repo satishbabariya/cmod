@@ -82,28 +82,26 @@ detect_target() {
 }
 
 get_latest_version() {
-    local _url _version
+    local _url _tags _version
 
-    # Try /releases/latest first (only returns stable releases)
-    _url="${API_BASE}/repos/${REPO}/releases/latest"
+    # List releases (newest first) rather than /releases/latest: every cmod
+    # v* release is marked prerelease, so /releases/latest would resolve to
+    # whatever non-prerelease tag exists in another namespace (e.g. the VS
+    # Code extension's vscode-v* tags) instead of the newest cmod build.
+    _url="${API_BASE}/repos/${REPO}/releases"
 
     if command -v curl > /dev/null 2>&1; then
-        _version="$(curl -sSf "$_url" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')" || true
+        _tags="$(curl -sSf "$_url" 2>/dev/null | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//')" || true
     elif command -v wget > /dev/null 2>&1; then
-        _version="$(wget -qO- "$_url" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')" || true
+        _tags="$(wget -qO- "$_url" 2>/dev/null | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//')" || true
     else
         err "need 'curl' or 'wget' to download"
     fi
 
-    # Fall back to the most recent release (including pre-releases)
-    if [ -z "$_version" ]; then
-        _url="${API_BASE}/repos/${REPO}/releases?per_page=1"
-        if command -v curl > /dev/null 2>&1; then
-            _version="$(curl -sSf "$_url" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')"
-        elif command -v wget > /dev/null 2>&1; then
-            _version="$(wget -qO- "$_url" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')"
-        fi
-    fi
+    # Take the newest tag that is a cmod release (v1.2.3, including
+    # pre-releases like v0.1.0-alpha.4), skipping other tag namespaces
+    # such as vscode-v* used by the VS Code extension releases.
+    _version="$(printf '%s\n' "$_tags" | grep -E '^v[0-9]' | head -1)"
 
     if [ -z "$_version" ]; then
         err "could not determine latest version"
