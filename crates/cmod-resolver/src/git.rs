@@ -178,6 +178,19 @@ pub fn resolve_branch(repo: &Repository, branch: &str) -> Result<Oid, CmodError>
     })
 }
 
+/// Return `commit` if it is `tip` or an ancestor of `tip`.
+///
+/// Used to keep a locked branch commit while it is still part of the
+/// branch's history. Unknown or malformed commits yield `None`.
+pub fn commit_reachable_from(repo: &Repository, commit: &str, tip: Oid) -> Option<Oid> {
+    let oid = Oid::from_str(commit).ok()?;
+    if oid == tip || repo.graph_descendant_of(tip, oid).unwrap_or(false) {
+        Some(oid)
+    } else {
+        None
+    }
+}
+
 /// Resolve an exact commit hash (prefix match).
 pub fn resolve_commit(repo: &Repository, rev: &str) -> Result<Oid, CmodError> {
     let obj = repo

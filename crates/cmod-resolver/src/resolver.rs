@@ -243,29 +243,42 @@ impl Resolver {
         let url = Manifest::resolve_dep_url(name, dep);
         let repo_dir = self.dep_repo_dir(name);
 
-        // Check if we have a locked version we can reuse
-        if let Some(lock) = existing_lock {
-            if let Some(locked_pkg) = lock.find_package(name) {
-                if let Some(version_req_str) = dep.version_req() {
-                    let req = version::parse_version_req(version_req_str)?;
-                    if let Ok(locked_ver) = version::parse_version(&locked_pkg.version) {
-                        if req.matches(&locked_ver) {
-                            // Locked version still satisfies constraint, reuse it
-                            resolved.insert(
-                                name.to_string(),
-                                ResolvedDep {
-                                    name: name.to_string(),
-                                    version: locked_ver,
-                                    repo_url: url,
-                                    commit: locked_pkg.commit.clone().unwrap_or_default(),
-                                    hash: locked_pkg.hash.clone().unwrap_or_default(),
-                                    local_path: repo_dir,
-                                    deps: locked_pkg.deps.clone(),
-                                },
-                            );
-                            return Ok(());
-                        }
+        let locked_pkg = existing_lock.and_then(|lock| lock.find_package(name));
+
+        // Check if we have a locked version we can reuse. Pinned deps
+        // (rev/tag/branch) are matched on the pin, not the semver req: the
+        // lock holds a pseudo-version the req can never match.
+        if let Some(locked_pkg) = locked_pkg {
+            let reuse = match check_pin(dep, locked_pkg) {
+                PinCheck::Matches => true,
+                PinCheck::Mismatch => false,
+                // A branch can only be checked against a fetched repo; offline,
+                // the lock is the only record of the pinned commit.
+                PinCheck::NeedsGit => offline,
+                PinCheck::NotPinned => match dep.version_req() {
+                    Some(version_req_str) => {
+                        let req = version::parse_version_req(version_req_str)?;
+                        version::parse_version(&locked_pkg.version)
+                            .is_ok_and(|locked_ver| req.matches(&locked_ver))
                     }
+                    None => false,
+                },
+            };
+            if reuse {
+                if let Ok(locked_ver) = version::parse_version(&locked_pkg.version) {
+                    resolved.insert(
+                        name.to_string(),
+                        ResolvedDep {
+                            name: name.to_string(),
+                            version: locked_ver,
+                            repo_url: url,
+                            commit: locked_pkg.commit.clone().unwrap_or_default(),
+                            hash: locked_pkg.hash.clone().unwrap_or_default(),
+                            local_path: repo_dir,
+                            deps: locked_pkg.deps.clone(),
+                        },
+                    );
+                    return Ok(());
                 }
             }
         }
@@ -347,7 +360,15 @@ impl Resolver {
             }
             Dependency::Detailed(d) if d.branch.is_some() => {
                 let branch = d.branch.as_ref().unwrap();
-                let oid = git::resolve_branch(&repo, branch)?;
+                let head = git::resolve_branch(&repo, branch)?;
+                // Keep the locked commit while it is still on the branch; move
+                // to the head only when the lock cannot describe this branch
+                // (manifest switched branches, or upstream rewrote history).
+                // `cmod update` drops the lock entry to advance deliberately.
+                let oid = locked_pkg
+                    .and_then(|p| p.commit.as_deref())
+                    .and_then(|commit| git::commit_reachable_from(&repo, commit, head))
+                    .unwrap_or(head);
                 let date = git::commit_date(&repo, oid)?;
                 let pv = version::pseudo_version(&date, &git::short_hash(&oid));
                 let ver = Version::parse(&pv).map_err(|e| CmodError::UnresolvableConstraints {
@@ -517,11 +538,17 @@ impl Resolver {
                 .find_package(name)
                 .ok_or(CmodError::LockfileOutdated)?;
 
-            if let Some(req_str) = dep.version_req() {
-                let req = version::parse_version_req(req_str)?;
-                let locked_ver = version::parse_version(&locked.version)?;
-                if !req.matches(&locked_ver) {
-                    return Err(CmodError::LockfileOutdated);
+            match check_pin(dep, locked) {
+                PinCheck::Mismatch => return Err(CmodError::LockfileOutdated),
+                PinCheck::Matches | PinCheck::NeedsGit => {}
+                PinCheck::NotPinned => {
+                    if let Some(req_str) = dep.version_req() {
+                        let req = version::parse_version_req(req_str)?;
+                        let locked_ver = version::parse_version(&locked.version)?;
+                        if !req.matches(&locked_ver) {
+                            return Err(CmodError::LockfileOutdated);
+                        }
+                    }
                 }
             }
         }
@@ -731,6 +758,54 @@ pub struct VersionConflict {
     pub requesters: Vec<String>,
     /// The version that was resolved.
     pub resolved_version: String,
+}
+
+/// How a locked package relates to a dependency's source pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinCheck {
+    /// No `rev`/`tag`/`branch`: the semver requirement decides.
+    NotPinned,
+    /// The lock provably records the pinned source.
+    Matches,
+    /// The lock provably records a different source.
+    Mismatch,
+    /// Only the Git repo can tell (a branch, a symbolic rev, a non-semver tag).
+    NeedsGit,
+}
+
+/// Compare a locked package with the dependency's `rev`/`tag`/`branch` pin,
+/// using the same precedence as resolution (rev, then tag, then branch).
+///
+/// A pinned dependency never resolves through its semver requirement, so its
+/// lock entry is not checked against it either.
+fn check_pin(dep: &Dependency, locked: &LockedPackage) -> PinCheck {
+    let Dependency::Detailed(d) = dep else {
+        return PinCheck::NotPinned;
+    };
+    if let Some(rev) = &d.rev {
+        let is_hex = rev.len() >= 4 && rev.chars().all(|c| c.is_ascii_hexdigit());
+        if !is_hex {
+            return PinCheck::NeedsGit;
+        }
+        let rev = rev.to_ascii_lowercase();
+        return match &locked.commit {
+            Some(commit) if commit.starts_with(&rev) => PinCheck::Matches,
+            _ => PinCheck::Mismatch,
+        };
+    }
+    if let Some(tag) = &d.tag {
+        let Ok(tag_ver) = Version::parse(tag.strip_prefix('v').unwrap_or(tag)) else {
+            return PinCheck::NeedsGit;
+        };
+        return match version::parse_version(&locked.version) {
+            Ok(locked_ver) if locked_ver == tag_ver => PinCheck::Matches,
+            _ => PinCheck::Mismatch,
+        };
+    }
+    if d.branch.is_some() {
+        return PinCheck::NeedsGit;
+    }
+    PinCheck::NotPinned
 }
 
 /// Check a dependency's compat constraints against the project manifest's toolchain.
