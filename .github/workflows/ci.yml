@@ -222,3 +222,22 @@ jobs:
       # must flow into the build plan and emitted compiler flags (#54).
       # No cross toolchain is installed — nothing is compiled.
       - run: cargo test --test cli_integration test_cross_target -- --nocapture
+
+  vscode-extension:
+    name: VS Code Extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      # Catches Dependabot-alert regressions before they reach main — nothing
+      # else in CI installs editors/vscode/package-lock.json.
+      - run: npm audit --audit-level=moderate
+      - run: npm run lint
+      - run: npm run compile
+      - run: npx vsce package
