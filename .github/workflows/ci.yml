@@ -183,6 +183,31 @@ jobs:
           test -f build/debug/pcm/local_msvcdemo.ifc
           ./build/debug/msvcdemo
 
+      # Real-world header-only ecosystem ports as MSVC consumers (#99).
+      # Static-lib ports are excluded for now: their manifests carry
+      # gcc/clang-style defines that MSVC needs spelled differently.
+      - name: Real-world header-only consumers (MSVC)
+        shell: bash
+        run: |
+          set -x
+          CMOD=$GITHUB_WORKSPACE/target/debug/cmod
+
+          consumer() { # name repo
+            mkdir "/c/rw-$1" && cd "/c/rw-$1"
+            $CMOD init --name consumer
+            sed -i 's/compiler = "clang"/compiler = "msvc"/' cmod.toml
+            $CMOD add "github.com/cmod-ecosystem/$2" --branch cmod-support
+            cp "$GITHUB_WORKSPACE/.github/msvc-smoke/$1.cpp" src/main.cpp
+            $CMOD resolve
+            $CMOD build --verbose
+            ./build/debug/consumer
+            cd /
+          }
+
+          consumer json json
+          consumer cli11 CLI11
+          consumer rapidjson rapidjson
+
   cross-target:
     name: Cross-target smoke
     runs-on: ubuntu-latest
