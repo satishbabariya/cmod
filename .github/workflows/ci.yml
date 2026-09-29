@@ -18,6 +18,13 @@ env:
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
+  install-script:
+    name: Install script (fixture release list)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/test-install.sh
+
   fmt:
     name: Format
     runs-on: ubuntu-latest

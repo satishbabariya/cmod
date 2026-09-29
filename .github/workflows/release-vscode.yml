@@ -194,4 +194,5 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: "VS Code Extension ${{ github.ref_name }}"
           generate_release_notes: true
+          make_latest: false
           files: vsix-artifacts/*.vsix

@@ -11,6 +11,14 @@ set -eu
 REPO="satishbabariya/cmod"
 INSTALL_DIR="${HOME}/.cmod/bin"
 VERSION=""
+# Declared here (not `local` to main) so the EXIT trap can still see it
+# after main() returns and the top-level scope resumes.
+_tmpdir=""
+
+# Overridable so CI can point the installer at a fixture server instead of
+# the real GitHub hosts (see scripts/test-install.sh).
+API_BASE="${CMOD_API_BASE:-https://api.github.com}"
+DOWNLOAD_BASE="${CMOD_DOWNLOAD_BASE:-https://github.com}"
 
 usage() {
     cat <<EOF
@@ -74,28 +82,26 @@ detect_target() {
 }
 
 get_latest_version() {
-    local _url _version
+    local _url _tags _version
 
-    # Try /releases/latest first (only returns stable releases)
-    _url="https://api.github.com/repos/${REPO}/releases/latest"
+    # List releases (newest first) rather than /releases/latest: every cmod
+    # v* release is marked prerelease, so /releases/latest would resolve to
+    # whatever non-prerelease tag exists in another namespace (e.g. the VS
+    # Code extension's vscode-v* tags) instead of the newest cmod build.
+    _url="${API_BASE}/repos/${REPO}/releases"
 
     if command -v curl > /dev/null 2>&1; then
-        _version="$(curl -sSf "$_url" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')" || true
+        _tags="$(curl -sSf "$_url" 2>/dev/null | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//')" || true
     elif command -v wget > /dev/null 2>&1; then
-        _version="$(wget -qO- "$_url" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')" || true
+        _tags="$(wget -qO- "$_url" 2>/dev/null | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//')" || true
     else
         err "need 'curl' or 'wget' to download"
     fi
 
-    # Fall back to the most recent release (including pre-releases)
-    if [ -z "$_version" ]; then
-        _url="https://api.github.com/repos/${REPO}/releases?per_page=1"
-        if command -v curl > /dev/null 2>&1; then
-            _version="$(curl -sSf "$_url" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')"
-        elif command -v wget > /dev/null 2>&1; then
-            _version="$(wget -qO- "$_url" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')"
-        fi
-    fi
+    # Take the newest tag that is a cmod release (v1.2.3, including
+    # pre-releases like v0.1.0-alpha.4), skipping other tag namespaces
+    # such as vscode-v* used by the VS Code extension releases.
+    _version="$(printf '%s\n' "$_tags" | grep -E '^v[0-9]' | head -1)"
 
     if [ -z "$_version" ]; then
         err "could not determine latest version"
@@ -153,7 +159,7 @@ main() {
         esac
     done
 
-    local _target _version _archive _url _checksum_url _tmpdir
+    local _target _version _archive _url _checksum_url
 
     say "detecting platform..."
     _target="$(detect_target)"
@@ -168,8 +174,8 @@ main() {
     say "version: $_version"
 
     _archive="cmod-${_version}-${_target}.tar.gz"
-    _url="https://github.com/${REPO}/releases/download/${_version}/${_archive}"
-    _checksum_url="https://github.com/${REPO}/releases/download/${_version}/checksums-${_version}.sha256"
+    _url="${DOWNLOAD_BASE}/${REPO}/releases/download/${_version}/${_archive}"
+    _checksum_url="${DOWNLOAD_BASE}/${REPO}/releases/download/${_version}/checksums-${_version}.sha256"
 
     _tmpdir="$(mktemp -d)"
     trap 'rm -rf "$_tmpdir"' EXIT
