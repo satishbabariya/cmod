@@ -217,16 +217,22 @@ fn test_single_project(
         return Ok(TestSummary::new());
     }
 
-    // Compile all tests
-    let compiled = compile_tests(config, &test_sources, shell, opts)?;
+    // Compile all tests. Compile failures count as failed tests, so a run
+    // where some or all tests did not build cannot report success.
+    let (compiled, compile_failures) = compile_tests(config, &test_sources, shell, opts)?;
+
+    let mut summary = TestSummary::new();
+    for failure in compile_failures {
+        update_summary(&mut summary, failure);
+    }
 
     if compiled.is_empty() {
         shell.warn("no tests compiled successfully");
-        return Ok(TestSummary::new());
+        return Ok(summary);
     }
 
     // Execute tests (parallel or sequential)
-    let summary = execute_tests(&compiled, opts, config, shell);
+    summary.merge(execute_tests(&compiled, opts, config, shell));
 
     // Run post-test hook
     super::build::run_hook(
@@ -374,7 +380,7 @@ fn compile_tests(
     test_sources: &[PathBuf],
     shell: &Shell,
     opts: &TestOptions,
-) -> Result<Vec<CompiledTest>, CmodError> {
+) -> Result<(Vec<CompiledTest>, Vec<TestResult>), CmodError> {
     let build_dir = config.build_dir();
     let pcm_dir = build_dir.join("pcm");
     let obj_dir = build_dir.join("obj");
@@ -482,6 +488,7 @@ fn compile_tests(
 
         shell.verbose("Compiling", format!("test: {}", test_name));
 
+        let start = Instant::now();
         let output = cmd.output().map_err(|e| CmodError::TestFailed {
             reason: format!("failed to compile test '{}': {}", test_name, e),
         })?;
@@ -498,7 +505,16 @@ fn compile_tests(
             if !stderr.is_empty() {
                 shell.error(&stderr);
             }
-            compile_failures.push(test_name);
+            compile_failures.push(TestResult {
+                name: test_name,
+                status: TestStatus::CompileFailed {
+                    reason: "compilation failed".to_string(),
+                },
+                duration: start.elapsed(),
+                stdout: String::new(),
+                stderr,
+                source: test_source.clone(),
+            });
         }
     }
 
@@ -506,11 +522,15 @@ fn compile_tests(
         shell.warn(format!(
             "{} test(s) failed to compile: {}",
             compile_failures.len(),
-            compile_failures.join(", ")
+            compile_failures
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
 
-    Ok(compiled)
+    Ok((compiled, compile_failures))
 }
 
 /// The compiler backend that builds test binaries: `[toolchain] compiler`,
