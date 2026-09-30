@@ -676,6 +676,66 @@ fn test_e2e_test_failure_detected() {
 }
 
 #[test]
+fn test_e2e_test_compile_failure_fails() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    init_project_with_source(tmp.path(), "nocompile");
+
+    // The only test does not compile, so nothing runs.
+    fs::write(
+        tmp.path().join("tests/main.cpp"),
+        "int main() { return not_declared; }\n",
+    )
+    .unwrap();
+
+    let output = run_cmod_with_llvm(tmp.path(), &["test"]);
+    assert!(
+        !output.status.success(),
+        "test should fail when no test compiles: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("test result: FAILED. 0 passed, 1 failed"),
+        "compile failure should be counted: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn test_e2e_test_partial_compile_failure_fails() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    init_project_with_source(tmp.path(), "partial");
+
+    // tests/main.cpp passes; tests/broken.cpp does not compile.
+    fs::write(
+        tmp.path().join("tests/broken.cpp"),
+        "int main() { return not_declared; }\n",
+    )
+    .unwrap();
+
+    let output = run_cmod_with_llvm(tmp.path(), &["test"]);
+    assert!(
+        !output.status.success(),
+        "test should fail when any test does not compile: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("test result: FAILED. 1 passed, 1 failed"),
+        "compile failure should be counted: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn test_e2e_test_no_tests_dir() {
     if !has_llvm_clang() {
         eprintln!("Skipping: LLVM Clang not found");
