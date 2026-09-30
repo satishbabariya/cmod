@@ -29,6 +29,32 @@ impl DepArtifacts {
     }
 }
 
+/// Map each module that `sources` declare to its BMI in `bmi_dir`.
+///
+/// `bmi_ext` must come from the backend that built `bmi_dir`
+/// (`CompilerBackend::bmi_extension`): Clang writes `.pcm`, GCC `.gcm` and
+/// MSVC `.ifc`. Modules whose BMI is missing are left out.
+pub fn collect_module_bmis(
+    bmi_dir: &Path,
+    sources: &[PathBuf],
+    bmi_ext: &str,
+) -> HashMap<String, PathBuf> {
+    let mut bmis = HashMap::new();
+    if !bmi_dir.exists() {
+        return bmis;
+    }
+    for source in sources {
+        if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
+            let sanitized = mod_name.replace(['.', ':', '/'], "_");
+            let bmi_path = bmi_dir.join(format!("{}.{}", sanitized, bmi_ext));
+            if bmi_path.exists() {
+                bmis.insert(mod_name, bmi_path);
+            }
+        }
+    }
+    bmis
+}
+
 /// Build an HTTP remote-cache client honoring the manifest's `[cache]`
 /// settings: `auth_token_env` (bearer token read from the environment),
 /// `timeout`, and `retries`.
@@ -230,8 +256,9 @@ pub fn detect_include_dirs(dep_dir: &Path, config: &Config) -> Vec<PathBuf> {
 /// Collect already-built artifacts (PCMs, objects, include dirs) from path dependencies.
 ///
 /// Walks `[dependencies]` entries with `path = "..."`, loads their config,
-/// and collects PCMs, static archives, and include dirs.
-pub fn collect_path_dep_artifacts(config: &Config) -> DepArtifacts {
+/// and collects BMIs, static archives, and include dirs. Dependencies are built
+/// with the root's compiler, so `bmi_ext` is the root backend's extension.
+pub fn collect_path_dep_artifacts(config: &Config, bmi_ext: &str) -> DepArtifacts {
     let mut result = DepArtifacts::default();
 
     for dep in config.manifest.dependencies.values() {
@@ -258,23 +285,14 @@ pub fn collect_path_dep_artifacts(config: &Config) -> DepArtifacts {
 
         // PCM files
         let dep_build_dir = dep_config.build_dir();
-        let pcm_dir = dep_build_dir.join("pcm");
-        if pcm_dir.exists() {
-            let dep_sources = runner::discover_sources_multi(
-                &dep_config.src_dirs(),
-                &dep_config.exclude_patterns(),
-            )
-            .unwrap_or_default();
-            for source in &dep_sources {
-                if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
-                    let sanitized = mod_name.replace(['.', ':', '/'], "_");
-                    let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
-                    if pcm_path.exists() {
-                        result.pcms.insert(mod_name, pcm_path);
-                    }
-                }
-            }
-        }
+        let dep_sources =
+            runner::discover_sources_multi(&dep_config.src_dirs(), &dep_config.exclude_patterns())
+                .unwrap_or_default();
+        result.pcms.extend(collect_module_bmis(
+            &dep_build_dir.join("pcm"),
+            &dep_sources,
+            bmi_ext,
+        ));
 
         // Prefer .a archives over individual .o files
         let mut has_archive = false;
@@ -313,7 +331,10 @@ pub fn collect_path_dep_artifacts(config: &Config) -> DepArtifacts {
 ///
 /// This is useful for commands like `compile-commands` and `test` that need to
 /// reference dependency artifacts without building them.
-pub fn collect_dep_artifacts(config: &Config, lockfile: &Lockfile) -> DepArtifacts {
+///
+/// `bmi_ext` is the root backend's BMI extension, as for
+/// [`collect_path_dep_artifacts`].
+pub fn collect_dep_artifacts(config: &Config, lockfile: &Lockfile, bmi_ext: &str) -> DepArtifacts {
     let mut result = DepArtifacts::default();
 
     let vendor_dir = config.root.join("vendor");
@@ -345,23 +366,14 @@ pub fn collect_dep_artifacts(config: &Config, lockfile: &Lockfile) -> DepArtifac
 
         // Collect PCM files from the dep's build directory
         let dep_build_dir = dep_config.build_dir();
-        let pcm_dir = dep_build_dir.join("pcm");
-        if pcm_dir.exists() {
-            let dep_sources = runner::discover_sources_multi(
-                &dep_config.src_dirs(),
-                &dep_config.exclude_patterns(),
-            )
-            .unwrap_or_default();
-            for source in &dep_sources {
-                if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
-                    let sanitized = mod_name.replace(['.', ':', '/'], "_");
-                    let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
-                    if pcm_path.exists() {
-                        result.pcms.insert(mod_name, pcm_path);
-                    }
-                }
-            }
-        }
+        let dep_sources =
+            runner::discover_sources_multi(&dep_config.src_dirs(), &dep_config.exclude_patterns())
+                .unwrap_or_default();
+        result.pcms.extend(collect_module_bmis(
+            &dep_build_dir.join("pcm"),
+            &dep_sources,
+            bmi_ext,
+        ));
 
         // Collect linkable artifacts: prefer .a archives over individual .o files
         let mut has_archive = false;
@@ -393,4 +405,54 @@ pub fn collect_dep_artifacts(config: &Config, lockfile: &Lockfile) -> DepArtifac
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// A root package with a path dependency `dep` whose build left one BMI,
+    /// `build/debug/pcm/dep_core.<ext>`, for module `dep.core`.
+    fn root_with_built_path_dep(ext: &str) -> (TempDir, Config) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("app");
+        let dep = tmp.path().join("dep");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(dep.join("src")).unwrap();
+        std::fs::create_dir_all(dep.join("build/debug/pcm")).unwrap();
+        std::fs::write(
+            root.join("cmod.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+             [toolchain]\ncompiler = \"gcc\"\n\n\
+             [dependencies]\ndep = { path = \"../dep\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dep.join("cmod.toml"),
+            "[package]\nname = \"dep\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(dep.join("src/core.cppm"), "export module dep.core;\n").unwrap();
+        std::fs::write(dep.join(format!("build/debug/pcm/dep_core.{}", ext)), "").unwrap();
+        let config = Config::load(&root).unwrap();
+        (tmp, config)
+    }
+
+    #[test]
+    fn path_dep_bmis_use_the_backend_extension() {
+        let (tmp, config) = root_with_built_path_dep("gcm");
+        let artifacts = collect_path_dep_artifacts(&config, "gcm");
+        assert_eq!(
+            artifacts.pcms.get("dep.core"),
+            Some(&tmp.path().join("app/../dep/build/debug/pcm/dep_core.gcm")),
+        );
+    }
+
+    #[test]
+    fn path_dep_bmis_ignore_other_extensions() {
+        let (_tmp, config) = root_with_built_path_dep("pcm");
+        let artifacts = collect_path_dep_artifacts(&config, "gcm");
+        assert!(artifacts.pcms.is_empty(), "{:?}", artifacts.pcms);
+    }
 }
