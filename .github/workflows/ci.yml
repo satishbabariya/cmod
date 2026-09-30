@@ -160,6 +160,51 @@ jobs:
           ./build/debug/gccdemo
           CXX=g++-14 $GITHUB_WORKSPACE/target/debug/cmod test
 
+      # Real-world ecosystem ports as GCC consumers (#98). Every consumer
+      # runs even if an earlier one fails, so one run yields the full table.
+      - name: Real-world consumers (GCC)
+        run: |
+          CMOD=$GITHUB_WORKSPACE/target/debug/cmod
+          export CXX=g++-14
+          g++-14 --version | head -1
+          echo "cmod $(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+
+          consumer() { # name repo
+            mkdir "/tmp/rw-$1" && cd "/tmp/rw-$1"
+            $CMOD init --name consumer
+            sed -i 's/compiler = "clang"/compiler = "gcc"/' cmod.toml
+            $CMOD add "github.com/cmod-ecosystem/$2" --branch cmod-support
+            cp "$GITHUB_WORKSPACE/.github/gcc-smoke/$1.cpp" src/main.cpp
+            $CMOD resolve
+            # Workaround for #111: deps build with their own [toolchain]
+            # compiler, and every port says clang. Delete with the fix.
+            sed -i 's/compiler = "clang"/compiler = "gcc"/' build/deps/*/cmod.toml
+            $CMOD build --verbose
+            ./build/debug/consumer
+          }
+
+          printf '| port | result |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          failed=()
+          for c in fmt:fmt json:json spdlog:spdlog catch2:Catch2; do
+            echo "::group::${c%%:*}"
+            # Not `if (...)`: set -e is ignored inside an if-condition.
+            set +e
+            (set -ex; consumer "${c%%:*}" "${c#*:}")
+            rc=$?
+            set -e
+            if [ $rc -eq 0 ]; then
+              echo "| ${c#*:} | pass |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              failed+=("${c%%:*}")
+              echo "| ${c#*:} | FAIL |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "::endgroup::"
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::GCC consumers failed: ${failed[*]}"
+            exit 1
+          fi
+
   msvc-backend:
     name: MSVC backend (windows, VS2022)
     runs-on: windows-latest
