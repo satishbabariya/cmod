@@ -63,6 +63,40 @@ pub trait CompilerBackend: Send + Sync {
     fn bmi_extension(&self) -> &'static str {
         "pcm"
     }
+
+    /// Build the command that compiles and links one test binary in a single
+    /// driver call (`cmod test`). May write side files next to
+    /// `test.output`, such as GCC's module mapper.
+    fn test_binary_command(&self, test: &TestBinary<'_>) -> Result<Command, CmodError> {
+        Err(CmodError::TestFailed {
+            reason: format!(
+                "cannot build {}: `cmod test` does not support compiler = \"{}\" yet",
+                test.source.display(),
+                self.kind()
+            ),
+        })
+    }
+
+    /// Flags that instrument a test binary for `cmod test --coverage`, or
+    /// `None` when cmod cannot produce a coverage report for this backend.
+    fn coverage_flags(&self) -> Option<Vec<String>> {
+        None
+    }
+}
+
+/// One test binary for [`CompilerBackend::test_binary_command`].
+pub struct TestBinary<'a> {
+    /// The test source file.
+    pub source: &'a Path,
+    /// Where the linked test executable goes.
+    pub output: &'a Path,
+    /// BMIs the test may import, as `(module name, BMI path)`.
+    pub bmis: &'a [(String, PathBuf)],
+    /// Flags passed through as-is, in order: include dirs, test framework,
+    /// `[test] extra_flags`, sanitizers, coverage.
+    pub flags: &'a [String],
+    /// Objects and archives linked into the test.
+    pub objects: &'a [PathBuf],
 }
 
 /// LTO mode for link-time optimization.
@@ -434,6 +468,32 @@ impl CompilerBackend for ClangBackend {
         ClangBackend::common_flags(self)
     }
 
+    fn test_binary_command(&self, test: &TestBinary<'_>) -> Result<Command, CmodError> {
+        // Only the standard and the target, not common_flags(): this is the
+        // command line `cmod test` built by hand before #112, kept as is.
+        let mut cmd = Command::new(&self.clang_path);
+        cmd.arg(format!("-std=c++{}", self.cxx_standard));
+        if let Some(ref target) = self.target {
+            cmd.arg(format!("--target={}", target));
+        }
+        cmd.args(
+            test.bmis
+                .iter()
+                .map(|(name, path)| format!("-fmodule-file={}={}", name, path.display())),
+        );
+        cmd.args(test.flags);
+        cmd.arg("-o").arg(test.output).arg(test.source);
+        cmd.args(test.objects);
+        Ok(cmd)
+    }
+
+    fn coverage_flags(&self) -> Option<Vec<String>> {
+        Some(vec![
+            "-fprofile-instr-generate".to_string(),
+            "-fcoverage-mapping".to_string(),
+        ])
+    }
+
     fn fingerprint(&self) -> String {
         format!(
             "clang|std={}|stdlib={}|target={}|sysroot={}|profile={:?}|lto={}:{:?}|opt={:?}|flags={}",
@@ -803,6 +863,21 @@ impl CompilerBackend for GccBackend {
 
     fn common_flags(&self) -> Vec<String> {
         self.config_flags()
+    }
+
+    fn test_binary_command(&self, test: &TestBinary<'_>) -> Result<Command, CmodError> {
+        // Compile and link in one call. The mapper resolves the test's
+        // imports to the CMIs the build produced.
+        let mapper = self.write_mapper(test.output, test.bmis)?;
+        let mut cmd = Command::new(&self.gxx_path);
+        cmd.args(self.config_flags())
+            .arg(format!("-fmodule-mapper={}", mapper.display()))
+            .args(test.flags)
+            .arg("-o")
+            .arg(test.output)
+            .arg(test.source)
+            .args(test.objects);
+        Ok(cmd)
     }
 
     fn fingerprint(&self) -> String {
@@ -1200,6 +1275,26 @@ mod tests {
         assert!(flags.contains(&"/std:c++20".to_string()));
         assert!(flags.contains(&"/EHsc".to_string()));
         assert!(flags.contains(&"/DFOO=1".to_string()));
+    }
+
+    #[test]
+    fn test_msvc_test_binary_is_a_clear_error() {
+        let b = MsvcBackend::from_config(&BackendConfig {
+            cxx_standard: "20".into(),
+            ..Default::default()
+        });
+        let err = b
+            .test_binary_command(&TestBinary {
+                source: Path::new("tests/main.cpp"),
+                output: Path::new("build/test_main"),
+                bmis: &[],
+                flags: &[],
+                objects: &[],
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("compiler = \"msvc\""), "{}", err);
+        assert_eq!(b.coverage_flags(), None);
     }
 
     #[test]

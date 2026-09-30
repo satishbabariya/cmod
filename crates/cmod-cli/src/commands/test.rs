@@ -2,10 +2,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use cmod_build::compiler::{make_backend, BackendConfig, CompilerBackend, TestBinary};
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::shell::Shell;
-use cmod_core::types::Profile;
+use cmod_core::types::{Compiler, Profile};
 use cmod_workspace::WorkspaceManager;
 
 // ---------------------------------------------------------------------------
@@ -378,17 +379,26 @@ fn compile_tests(
     let pcm_dir = build_dir.join("pcm");
     let obj_dir = build_dir.join("obj");
 
-    let cxx_standard = config
-        .manifest
-        .toolchain
-        .as_ref()
-        .and_then(|tc| tc.cxx_standard.clone())
-        .unwrap_or_else(|| "20".to_string());
+    let backend = test_backend(config)?;
 
-    let target_triple = resolve_target_triple(config);
+    // Coverage flags come from the backend. Without them there is nothing
+    // for the llvm-profdata/llvm-cov report to read, so refuse up front.
+    let coverage_flags: Vec<String> = if opts.coverage {
+        backend
+            .coverage_flags()
+            .ok_or_else(|| CmodError::TestFailed {
+                reason: format!(
+                    "--coverage is not supported with compiler = \"{}\"; \
+                     it needs compiler = \"clang\" (llvm-profdata and llvm-cov)",
+                    backend.kind()
+                ),
+            })?
+    } else {
+        vec![]
+    };
 
-    // Collect PCM and object files from the build
-    let mut pcm_flags = collect_pcm_flags(config, &pcm_dir);
+    // Collect BMIs and object files from the build
+    let mut bmis = collect_bmis(config, &pcm_dir, backend.bmi_extension());
     let mut obj_files = collect_obj_files(config, &obj_dir);
 
     // Collect dependency artifacts (PCMs, objects, include dirs)
@@ -397,10 +407,10 @@ fn compile_tests(
     // Path dependencies
     let path_dep_artifacts = super::common::collect_path_dep_artifacts(config);
     for (mod_name, pcm_path) in &path_dep_artifacts.pcms {
-        pcm_flags.push(format!("-fmodule-file={}={}", mod_name, pcm_path.display()));
+        bmis.push((mod_name.clone(), pcm_path.clone()));
     }
     for obj in &path_dep_artifacts.objs {
-        obj_files.push(obj.display().to_string());
+        obj_files.push(obj.clone());
     }
     for inc_dir in &path_dep_artifacts.include_dirs {
         dep_include_flags.push(format!("-I{}", inc_dir.display()));
@@ -411,11 +421,11 @@ fn compile_tests(
         let dep_artifacts = super::common::collect_dep_artifacts(config, &lockfile);
 
         for (mod_name, pcm_path) in &dep_artifacts.pcms {
-            pcm_flags.push(format!("-fmodule-file={}={}", mod_name, pcm_path.display()));
+            bmis.push((mod_name.clone(), pcm_path.clone()));
         }
 
         for obj in &dep_artifacts.objs {
-            obj_files.push(obj.display().to_string());
+            obj_files.push(obj.clone());
         }
 
         for inc_dir in &dep_artifacts.include_dirs {
@@ -442,20 +452,16 @@ fn compile_tests(
     // Sanitizer flags
     let sanitizer_flags = build_sanitizer_flags(&opts.sanitize);
 
-    // Coverage flags
-    let coverage_flags: Vec<String> = if opts.coverage {
-        vec![
-            "-fprofile-instr-generate".to_string(),
-            "-fcoverage-mapping".to_string(),
-        ]
-    } else {
-        vec![]
-    };
+    let flags: Vec<String> = dep_include_flags
+        .into_iter()
+        .chain(framework_flags)
+        .chain(extra_flags)
+        .chain(sanitizer_flags)
+        .chain(coverage_flags)
+        .collect();
 
     let mut compiled = Vec::new();
     let mut compile_failures = Vec::new();
-
-    let clang_path = std::env::var_os("CXX").unwrap_or_else(|| std::ffi::OsString::from("clang++"));
 
     for test_source in test_sources {
         let test_name = test_source
@@ -466,44 +472,13 @@ fn compile_tests(
 
         let test_binary = build_dir.join(format!("test_{}", test_name));
 
-        let mut cmd = std::process::Command::new(&clang_path);
-        cmd.arg(format!("-std=c++{}", cxx_standard));
-        cmd.arg(format!("--target={}", target_triple));
-
-        for flag in &pcm_flags {
-            cmd.arg(flag);
-        }
-
-        // Dependency include directories
-        for flag in &dep_include_flags {
-            cmd.arg(flag);
-        }
-
-        // Framework flags
-        for flag in &framework_flags {
-            cmd.arg(flag);
-        }
-
-        // Extra flags from manifest
-        for flag in &extra_flags {
-            cmd.arg(flag);
-        }
-
-        // Sanitizer flags
-        for flag in &sanitizer_flags {
-            cmd.arg(flag);
-        }
-
-        // Coverage flags
-        for flag in &coverage_flags {
-            cmd.arg(flag);
-        }
-
-        cmd.arg("-o").arg(&test_binary).arg(test_source);
-
-        for obj in &obj_files {
-            cmd.arg(obj);
-        }
+        let mut cmd = backend.test_binary_command(&TestBinary {
+            source: test_source,
+            output: &test_binary,
+            bmis: &bmis,
+            flags: &flags,
+            objects: &obj_files,
+        })?;
 
         shell.verbose("Compiling", format!("test: {}", test_name));
 
@@ -538,6 +513,25 @@ fn compile_tests(
     Ok(compiled)
 }
 
+/// The compiler backend that builds test binaries: `[toolchain] compiler`,
+/// the C++ standard, the profile and the target triple. Nothing else from
+/// `[build]` reaches test compiles, as before tests went through the backend.
+fn test_backend(config: &Config) -> Result<Box<dyn CompilerBackend>, CmodError> {
+    let toolchain = config.manifest.toolchain.as_ref();
+    let compiler = toolchain
+        .and_then(|tc| tc.compiler.clone())
+        .unwrap_or(Compiler::Clang);
+    let backend_cfg = BackendConfig {
+        cxx_standard: toolchain
+            .and_then(|tc| tc.cxx_standard.clone())
+            .unwrap_or_else(|| "20".to_string()),
+        profile: config.profile,
+        target: Some(resolve_target_triple(config)),
+        ..Default::default()
+    };
+    make_backend(compiler, &backend_cfg)
+}
+
 fn resolve_target_triple(config: &Config) -> String {
     config
         .target
@@ -563,10 +557,12 @@ fn resolve_target_triple(config: &Config) -> String {
         })
 }
 
-fn collect_pcm_flags(config: &Config, pcm_dir: &Path) -> Vec<String> {
-    let mut pcm_flags = Vec::new();
+/// BMIs the build left in `pcm_dir` (files ending in `.<bmi_ext>`), as
+/// `(module name, path)`.
+fn collect_bmis(config: &Config, pcm_dir: &Path, bmi_ext: &str) -> Vec<(String, PathBuf)> {
+    let mut bmis = Vec::new();
     if !pcm_dir.exists() {
-        return pcm_flags;
+        return bmis;
     }
 
     let src_dirs = config.src_dirs();
@@ -584,22 +580,22 @@ fn collect_pcm_flags(config: &Config, pcm_dir: &Path) -> Vec<String> {
     if let Ok(entries) = std::fs::read_dir(pcm_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("pcm") {
+            if path.extension().and_then(|e| e.to_str()) == Some(bmi_ext) {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     let module_name = name_map
                         .get(stem)
                         .cloned()
                         .unwrap_or_else(|| stem.to_string());
-                    pcm_flags.push(format!("-fmodule-file={}={}", module_name, path.display()));
+                    bmis.push((module_name, path));
                 }
             }
         }
     }
 
-    pcm_flags
+    bmis
 }
 
-fn collect_obj_files(config: &Config, obj_dir: &Path) -> Vec<String> {
+fn collect_obj_files(config: &Config, obj_dir: &Path) -> Vec<PathBuf> {
     let mut obj_files = Vec::new();
     if !obj_dir.exists() {
         return obj_files;
@@ -629,7 +625,7 @@ fn collect_obj_files(config: &Config, obj_dir: &Path) -> Vec<String> {
                 if main_obj_stems.contains(stem) {
                     continue;
                 }
-                obj_files.push(path.display().to_string());
+                obj_files.push(path);
             }
         }
     }
@@ -1503,6 +1499,141 @@ fn escape_xml(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Load a project whose `[toolchain]` uses `compiler` and pins the
+    /// target triple, so the expected command line does not depend on the host.
+    fn project_with_compiler(tmp: &Path, compiler: &str) -> Config {
+        std::fs::write(
+            tmp.join("cmod.toml"),
+            format!(
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n\
+                 [toolchain]\ncompiler = \"{}\"\ncxx_standard = \"20\"\n\
+                 target = \"x86_64-unknown-linux-gnu\"\n",
+                compiler
+            ),
+        )
+        .unwrap();
+        Config::load(tmp).unwrap()
+    }
+
+    fn args_of(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    // #112: g++ rejects `--target=` and clang's `-fmodule-file=`. With
+    // compiler = "gcc" the test command must come from the GCC backend.
+    #[test]
+    fn test_gcc_test_command_has_no_clang_flags() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = project_with_compiler(tmp.path(), "gcc");
+        let source = tmp.path().join("tests/main.cpp");
+        let output = tmp.path().join("build/test_main");
+        let gcm = tmp.path().join("build/pcm/local_demo.gcm");
+        let obj = tmp.path().join("build/obj/lib.o");
+
+        let cmd = test_backend(&config)
+            .unwrap()
+            .test_binary_command(&TestBinary {
+                source: &source,
+                output: &output,
+                bmis: &[("local.demo".to_string(), gcm.clone())],
+                flags: &["-Iinclude".to_string()],
+                objects: std::slice::from_ref(&obj),
+            })
+            .unwrap();
+        let args = args_of(&cmd);
+
+        assert!(
+            !args.iter().any(|a| a.starts_with("--target=")),
+            "g++ rejects --target=: {:?}",
+            args
+        );
+        assert!(
+            !args.iter().any(|a| a.starts_with("-fmodule-file=")),
+            "g++ reads BMIs through a module mapper, not -fmodule-file=: {:?}",
+            args
+        );
+        assert!(args.contains(&"-fmodules-ts".to_string()), "{:?}", args);
+
+        let mapper = tmp.path().join("build/test_main.map");
+        assert!(
+            args.contains(&format!("-fmodule-mapper={}", mapper.display())),
+            "{:?}",
+            args
+        );
+        assert_eq!(
+            std::fs::read_to_string(&mapper).unwrap(),
+            format!("local.demo {}\n", gcm.display())
+        );
+
+        let tail: Vec<String> = [&output, &source, &obj]
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        assert_eq!(
+            args[args.len() - 4..],
+            [
+                "-o".to_string(),
+                tail[0].clone(),
+                tail[1].clone(),
+                tail[2].clone()
+            ]
+        );
+    }
+
+    // The clang command line must stay what `cmod test` built by hand
+    // before #112, flag for flag.
+    #[test]
+    fn test_clang_test_command_matches_legacy_command_line() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = project_with_compiler(tmp.path(), "clang");
+
+        let cmd = test_backend(&config)
+            .unwrap()
+            .test_binary_command(&TestBinary {
+                source: Path::new("/p/tests/main.cpp"),
+                output: Path::new("/p/build/test_main"),
+                bmis: &[(
+                    "local.demo".to_string(),
+                    PathBuf::from("/p/build/pcm/local_demo.pcm"),
+                )],
+                flags: &["-Iinclude".to_string(), "-fsanitize=address".to_string()],
+                objects: &[PathBuf::from("/p/build/obj/lib.o")],
+            })
+            .unwrap();
+
+        assert_eq!(
+            args_of(&cmd),
+            [
+                "-std=c++20",
+                "--target=x86_64-unknown-linux-gnu",
+                "-fmodule-file=local.demo=/p/build/pcm/local_demo.pcm",
+                "-Iinclude",
+                "-fsanitize=address",
+                "-o",
+                "/p/build/test_main",
+                "/p/tests/main.cpp",
+                "/p/build/obj/lib.o",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_coverage_flags_come_from_the_backend() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let clang = test_backend(&project_with_compiler(tmp.path(), "clang")).unwrap();
+        assert_eq!(
+            clang.coverage_flags(),
+            Some(vec![
+                "-fprofile-instr-generate".to_string(),
+                "-fcoverage-mapping".to_string(),
+            ])
+        );
+        let gcc = test_backend(&project_with_compiler(tmp.path(), "gcc")).unwrap();
+        assert_eq!(gcc.coverage_flags(), None);
+    }
 
     #[test]
     fn test_matches_test_patterns_glob() {
