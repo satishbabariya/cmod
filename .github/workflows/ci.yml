@@ -178,9 +178,6 @@ jobs:
             $CMOD add "github.com/cmod-ecosystem/$2" --branch cmod-support
             cp "$GITHUB_WORKSPACE/.github/gcc-smoke/$1.cpp" src/main.cpp
             $CMOD resolve
-            # Workaround for #111: deps build with their own [toolchain]
-            # compiler, and every port says clang. Delete with the fix.
-            sed -i 's/compiler = "clang"/compiler = "gcc"/' build/deps/*/cmod.toml
             $CMOD build --verbose
             ./build/debug/consumer
           }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dependencies build with the root package's compiler** — git and path dependencies were built with the compiler in their own `[toolchain]`, and every cmod-ecosystem port says clang, so a `compiler = "gcc"` project handed clang's `--target=` and `--precompile` to g++ and failed on its first dependency. BMIs only work with the compiler that wrote them, so the root's compiler now builds the whole graph. A dependency's own `compiler` is reported under `--verbose` and not used. The compiler family is part of the cache key, so the first build after upgrading is a cold one for any dependency whose manifest names a different compiler from the root. Cache-key format and lockfile unchanged. See `docs/adr/0002-build-dependencies-with-the-root-compiler.md`. (#111)
+
 ## [0.1.0-alpha.5] - 2026-09-30
 
 The release that makes `cmod test` tell the truth. The newest binary `install.sh` gave you (alpha.4) still exited 0 when every test failed to compile; that fix, and everything else on `main` since alpha.4, ships here. The GCC-backend defects the ecosystem sweep in #108 found (#111 dependency compiler routing, #114 BMI extension collection) are real but are not in this release — they need cache-key and multi-site changes and go to alpha.6.
