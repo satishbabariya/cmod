@@ -1,13 +1,13 @@
 version = 1
-integrity = "sha256:291413d19a6d99579172a52a0a0a8be2b65b641e196d0e870f39311c8f044f4d"
+integrity = "sha256:11de2201966bc60bad3018e1378157559102cef5043fd987c1e9fb64e56351db"
 
 [[package]]
 name = "github.com/cmod-ecosystem/fmt"
-version = "0.0.0-20260312-7bf8390a"
+version = "0.0.0-20260930-83341561"
 source = "git"
 repo = "https://github.com/cmod-ecosystem/fmt"
-commit = "7bf8390ac3597c064822927970e84d68574a8eff"
-hash = "sha256:9ca72aca620a956a95d00fbe93ab0e06cc28634e2836fc46b667632745b142a4"
+commit = "83341561ea05927715cad62cbdb0eaf3bcd143e3"
+hash = "sha256:c04ce3c4779a073860c173c0f1478ae0736158d9223617aa3f6eec5c97bdcf22"
 deps = []
 features = []
 
