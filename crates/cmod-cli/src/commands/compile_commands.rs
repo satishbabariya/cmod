@@ -7,6 +7,7 @@ use cmod_build::runner;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::shell::Shell;
+use cmod_core::types::Compiler;
 
 /// Run `cmod compile-commands` — generate a compile_commands.json without building.
 pub fn run(shell: &Shell, target_override: Option<String>) -> Result<(), CmodError> {
@@ -42,15 +43,19 @@ pub fn run(shell: &Shell, target_override: Option<String>) -> Result<(), CmodErr
 
     // Add dependency artifacts if lockfile exists (without building)
     if let Ok(lockfile) = cmod_core::lockfile::Lockfile::load(&config.lockfile_path) {
-        let dep_artifacts = super::common::collect_dep_artifacts(&config, &lockfile);
+        let bmi_ext = make_backend(compiler_kind.clone(), &backend_cfg)?.bmi_extension();
+        let dep_artifacts = super::common::collect_dep_artifacts(&config, &lockfile, bmi_ext);
 
-        // Add dep PCMs as -fmodule-file= flags
-        for (mod_name, pcm_path) in &dep_artifacts.pcms {
-            backend_cfg.extra_flags.push(format!(
-                "-fmodule-file={}={}",
-                mod_name,
-                pcm_path.display()
-            ));
+        // Add dep PCMs as -fmodule-file= flags. That flag and the `.pcm`
+        // format are clang's; clangd cannot read a `.gcm` or `.ifc`.
+        if compiler_kind == Compiler::Clang {
+            for (mod_name, pcm_path) in &dep_artifacts.pcms {
+                backend_cfg.extra_flags.push(format!(
+                    "-fmodule-file={}={}",
+                    mod_name,
+                    pcm_path.display()
+                ));
+            }
         }
 
         // Add dep include directories

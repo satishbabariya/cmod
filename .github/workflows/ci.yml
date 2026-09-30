@@ -184,7 +184,7 @@ jobs:
 
           printf '| port | result |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
           failed=()
-          for c in fmt:fmt json:json spdlog:spdlog catch2:Catch2; do
+          for c in fmt:fmt json:json json-import:json spdlog:spdlog catch2:Catch2; do
             echo "::group::${c%%:*}"
             # Not `if (...)`: set -e is ignored inside an if-condition.
             set +e
