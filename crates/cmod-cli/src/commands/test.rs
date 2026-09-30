@@ -411,7 +411,8 @@ fn compile_tests(
     let mut dep_include_flags: Vec<String> = Vec::new();
 
     // Path dependencies
-    let path_dep_artifacts = super::common::collect_path_dep_artifacts(config);
+    let path_dep_artifacts =
+        super::common::collect_path_dep_artifacts(config, backend.bmi_extension());
     for (mod_name, pcm_path) in &path_dep_artifacts.pcms {
         bmis.push((mod_name.clone(), pcm_path.clone()));
     }
@@ -424,7 +425,8 @@ fn compile_tests(
 
     // Git dependencies (from lockfile)
     if let Ok(lockfile) = cmod_core::lockfile::Lockfile::load(&config.lockfile_path) {
-        let dep_artifacts = super::common::collect_dep_artifacts(config, &lockfile);
+        let dep_artifacts =
+            super::common::collect_dep_artifacts(config, &lockfile, backend.bmi_extension());
 
         for (mod_name, pcm_path) in &dep_artifacts.pcms {
             bmis.push((mod_name.clone(), pcm_path.clone()));

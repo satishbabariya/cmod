@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Dependencies build with the root package's compiler** — git and path dependencies were built with the compiler in their own `[toolchain]`, and every cmod-ecosystem port says clang, so a `compiler = "gcc"` project handed clang's `--target=` and `--precompile` to g++ and failed on its first dependency. BMIs only work with the compiler that wrote them, so the root's compiler now builds the whole graph. A dependency's own `compiler` is reported under `--verbose` and not used. The compiler family is part of the cache key, so the first build after upgrading is a cold one for any dependency whose manifest names a different compiler from the root. Cache-key format and lockfile unchanged. See `docs/adr/0002-build-dependencies-with-the-root-compiler.md`. (#111)
+- **GCC consumers can `import` a dependency's module** — cmod looked for each dependency's BMI as `<module>.pcm`, but GCC writes `.gcm` and MSVC `.ifc`, so under `compiler = "gcc"` a consumer's `import nlohmann.json;` got no mapping and g++ stopped with `Unknown CMI mapping`. BMIs of git, path and workspace dependencies, and those `cmod test` and `cmod compile-commands` read, are now found by the backend's own extension. Clang builds are unchanged. (#114)
 
 ## [0.1.0-alpha.5] - 2026-09-30
 
