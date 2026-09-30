@@ -12,6 +12,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   LLVM_VERSION: "17"
+  # Homebrew formula for the macOS jobs. Keep in sync with examples.yml.
+  LLVM_MACOS_FORMULA: "llvm"
   # Line tables keep backtrace line numbers while cutting debuginfo size
   # dramatically — the dominant cost of Windows link + cache steps (#80).
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -74,11 +76,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-${{ env.LLVM_VERSION }} llvm-${{ env.LLVM_VERSION }} clang-tools-${{ env.LLVM_VERSION }}
           echo "/usr/lib/llvm-${{ env.LLVM_VERSION }}/bin" >> $GITHUB_PATH
-      - name: Install LLVM (macOS)
+      - name: Install ${{ env.LLVM_MACOS_FORMULA }} (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install llvm
-          echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
+          brew install ${{ env.LLVM_MACOS_FORMULA }}
+          echo "$(brew --prefix ${{ env.LLVM_MACOS_FORMULA }})/bin" >> $GITHUB_PATH
       - name: Verify LLVM (Windows)
         if: runner.os == 'Windows'
         run: clang++ --version
@@ -108,11 +110,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-${{ env.LLVM_VERSION }} llvm-${{ env.LLVM_VERSION }} clang-tools-${{ env.LLVM_VERSION }}
           echo "/usr/lib/llvm-${{ env.LLVM_VERSION }}/bin" >> $GITHUB_PATH
-      - name: Install LLVM (macOS)
+      - name: Install ${{ env.LLVM_MACOS_FORMULA }} (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install llvm
-          echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
+          brew install ${{ env.LLVM_MACOS_FORMULA }}
+          echo "$(brew --prefix ${{ env.LLVM_MACOS_FORMULA }})/bin" >> $GITHUB_PATH
       - name: Verify Clang available
         run: clang++ --version
       - name: Run example project tests

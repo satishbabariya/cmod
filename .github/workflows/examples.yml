@@ -9,10 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   LLVM_VERSION: "17"
-  # Pinned: Homebrew llvm 23 (libc++ 23 + clang's module-directive rule) breaks
-  # the cmod-ecosystem/fmt module interface. Unpin once the fork carries
-  # fmtlib/fmt 3febdca5 and 758d39eb.
-  LLVM_MACOS_FORMULA: "llvm@22"
+  # Homebrew formula for the macOS jobs. Keep in sync with ci.yml.
+  LLVM_MACOS_FORMULA: "llvm"
 
 jobs:
   build-examples:
