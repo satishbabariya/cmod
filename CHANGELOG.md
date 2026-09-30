@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`cmod test` builds tests with the configured compiler** — test binaries were built with a hand-written clang command line, so under `compiler = "gcc"` g++ rejected `--target=` and no test compiled. Tests now build through `CompilerBackend::test_binary_command`, like `cmod build`: GCC gets `-fmodules-ts` and a module mapper for the `.gcm` files, and the clang command line is unchanged. `--coverage` flags come from the backend, and with gcc or msvc it stops with an error that names the compiler. `cmod test` with msvc reports that it is not supported yet. See `docs/adr/0001-compile-tests-through-compiler-backend.md`. (#112)
 - **Branch/rev/tag dependencies honour `cmod.lock`** — lock reuse compared the semver `version` requirement against the locked pseudo-version (`^0.1` vs `0.0.0-<date>-<sha>`), which never matches, so every `cmod resolve` silently moved branch deps to the upstream head. Pinned deps now reuse the lock when it matches the pin; a branch keeps its locked commit while that commit is still on the branch, and `cmod update` advances it. `--locked` and `--offline` apply the same rules. Lock format unchanged. See `docs/guide/dependencies.md#pinned-dependencies-branch-rev-tag`. (RED-32)
 
 ## [0.1.0-alpha.4] - 2026-07-19
