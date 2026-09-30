@@ -404,17 +404,24 @@ fn build_path_dependencies(
             );
         }
 
-        // Collect BMI files, named with the extension of the compiler that
-        // built them
+        // Collect PCM files
         let dep_build_dir = dep_config.build_dir();
-        let (backend_cfg, compiler_kind, _) = setup_compiler(&dep_config, &[]);
-        let bmi_ext =
-            cmod_build::compiler::make_backend(compiler_kind, &backend_cfg)?.bmi_extension();
-        artifacts.pcms.extend(super::common::collect_module_bmis(
-            &dep_build_dir.join("pcm"),
-            &dep_sources,
-            bmi_ext,
-        ));
+        let pcm_dir = dep_build_dir.join("pcm");
+        if pcm_dir.exists() {
+            let dep_sources = runner::discover_sources_multi(
+                &dep_config.src_dirs(),
+                &dep_config.exclude_patterns(),
+            )?;
+            for source in &dep_sources {
+                if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
+                    let sanitized = mod_name.replace(['.', ':', '/'], "_");
+                    let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
+                    if pcm_path.exists() {
+                        artifacts.pcms.insert(mod_name, pcm_path);
+                    }
+                }
+            }
+        }
 
         // Collect linkable artifacts: prefer .a archives over individual .o files
         // to avoid duplicate symbols from stale path-encoded objects.
@@ -559,7 +566,6 @@ fn build_vendored_dependencies(
             }
         }
         let backend = cmod_build::compiler::make_backend(compiler_kind, &backend_cfg)?;
-        let bmi_ext = backend.bmi_extension();
 
         // Set up cache
         let cache = ArtifactCache::new(dep_config.cache_dir());
@@ -609,12 +615,19 @@ fn build_vendored_dependencies(
             Some(&dep_config.manifest.package.name),
         )?;
 
-        // Collect BMI files from the built dependency
-        artifacts.pcms.extend(super::common::collect_module_bmis(
-            &build_dir.join("pcm"),
-            &sources,
-            bmi_ext,
-        ));
+        // Collect PCM files from the built dependency
+        let pcm_dir = build_dir.join("pcm");
+        if pcm_dir.exists() {
+            for source in &sources {
+                if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
+                    let sanitized = mod_name.replace(['.', ':', '/'], "_");
+                    let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
+                    if pcm_path.exists() {
+                        artifacts.pcms.insert(mod_name, pcm_path);
+                    }
+                }
+            }
+        }
 
         // Collect linkable artifacts: prefer .a archives over individual .o files
         let mut has_archive = false;
@@ -831,7 +844,6 @@ fn build_workspace(
         }
 
         let backend = cmod_build::compiler::make_backend(compiler_kind, &backend_cfg)?;
-        let bmi_ext = backend.bmi_extension();
         let mut runner_instance = BuildRunner::new(backend, Some(cache))
             .with_jobs(jobs)
             .with_force(force)
@@ -854,9 +866,21 @@ fn build_workspace(
                 print_build_stats(&stats, shell, timings);
                 shell.verbose("Built", format!("{}", output.display()));
 
-                // Collect BMI files from this member for downstream members
-                let this_pcms =
-                    super::common::collect_module_bmis(&build_dir.join("pcm"), &sources, bmi_ext);
+                // Collect PCM files from this member for downstream members
+                let mut this_pcms: std::collections::HashMap<String, std::path::PathBuf> =
+                    std::collections::HashMap::new();
+                let pcm_dir = build_dir.join("pcm");
+                if pcm_dir.exists() {
+                    for source in &sources {
+                        if let Ok(Some(mod_name)) = runner::extract_module_name(source) {
+                            let sanitized = mod_name.replace(['.', ':', '/'], "_");
+                            let pcm_path = pcm_dir.join(format!("{}.pcm", sanitized));
+                            if pcm_path.exists() {
+                                this_pcms.insert(mod_name, pcm_path);
+                            }
+                        }
+                    }
+                }
                 member_pcm_paths.insert(member.name.clone(), this_pcms);
 
                 // Collect object files from this member for downstream linking
