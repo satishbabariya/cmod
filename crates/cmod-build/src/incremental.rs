@@ -33,6 +33,11 @@ pub struct BuildState {
     /// recorded. Checked once per header, on first use.
     #[serde(skip)]
     header_changed: OnceLock<Vec<bool>>,
+    /// Hash of everything the last successful link read (see
+    /// `BuildRunner`'s link phase). Equal on the next build, with the
+    /// output still there, means the link is skipped.
+    #[serde(default)]
+    pub link_key: Option<String>,
 }
 
 /// State tracked for a single build node.

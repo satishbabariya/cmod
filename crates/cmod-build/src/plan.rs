@@ -234,6 +234,52 @@ impl BuildPlan {
         map
     }
 
+    /// Remove files in `obj/` and `pcm/` that no node of this plan outputs:
+    /// objects and BMIs of sources since deleted or renamed, or from a
+    /// checkout that was elsewhere (output names encode the source path).
+    /// A node's sidecars (`<output>.d`, `.json`, `.map`) are kept with it.
+    /// Returns how many files were removed.
+    ///
+    /// This replaces clearing both directories before every dependency
+    /// build, which kept stale objects out of the `obj/` listing but also
+    /// made every dependency rebuild or restore every object.
+    pub fn prune_stale_outputs(&self) -> usize {
+        let outputs: std::collections::HashSet<std::ffi::OsString> = self
+            .nodes
+            .iter()
+            .filter(|n| n.kind != NodeKind::Link)
+            .flat_map(|n| n.outputs.iter())
+            .filter_map(|o| o.file_name().map(|f| f.to_os_string()))
+            .collect();
+        let belongs = |name: &std::ffi::OsStr| {
+            let name = name.to_string_lossy();
+            outputs.iter().any(|output| {
+                let output = output.to_string_lossy();
+                name == output
+                    || name
+                        .strip_prefix(output.as_ref())
+                        .is_some_and(|rest| rest.starts_with('.'))
+            })
+        };
+
+        let mut removed = 0;
+        for dir in [self.build_dir.join("obj"), self.build_dir.join("pcm")] {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let is_file = entry.file_type().is_ok_and(|t| t.is_file());
+                if is_file
+                    && !belongs(&entry.file_name())
+                    && std::fs::remove_file(entry.path()).is_ok()
+                {
+                    removed += 1;
+                }
+            }
+        }
+        removed
+    }
+
     /// Get all object file paths for linking.
     pub fn object_paths(&self) -> Vec<PathBuf> {
         let mut objs = Vec::new();
@@ -359,6 +405,64 @@ mod tests {
     use super::*;
     use crate::graph::{ModuleGraph, ModuleNode};
     use cmod_core::types::ModuleUnitKind;
+
+    #[test]
+    fn test_prune_stale_outputs_keeps_plan_outputs_and_sidecars() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut graph = ModuleGraph::new();
+        graph.add_node(ModuleNode {
+            id: "m".to_string(),
+            name: "local.m".to_string(),
+            kind: ModuleUnitKind::InterfaceUnit,
+            source: PathBuf::from("src/m.cppm"),
+            package: "test".to_string(),
+            imports: vec![],
+            partition_of: None,
+        });
+        let plan = BuildPlan::from_graph(
+            &graph,
+            tmp.path(),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::StaticLib,
+            Some("test"),
+            "pcm",
+        )
+        .unwrap();
+
+        let obj = tmp.path().join("obj");
+        let pcm = tmp.path().join("pcm");
+        std::fs::create_dir_all(&obj).unwrap();
+        std::fs::create_dir_all(&pcm).unwrap();
+        for keep in [
+            obj.join("local_m.o"),
+            obj.join("local_m.o.d"),
+            pcm.join("local_m.pcm"),
+            pcm.join("local_m.pcm.map"),
+        ] {
+            std::fs::write(&keep, "").unwrap();
+        }
+        for stale in [
+            obj.join("_old_checkout_src_gone_cpp.o"),
+            obj.join("_old_checkout_src_gone_cpp.o.d"),
+            obj.join("local_m.obj"),
+            pcm.join("local_old.pcm"),
+        ] {
+            std::fs::write(&stale, "").unwrap();
+        }
+
+        assert_eq!(plan.prune_stale_outputs(), 4);
+        let mut left: Vec<String> = std::fs::read_dir(&obj)
+            .unwrap()
+            .chain(std::fs::read_dir(&pcm).unwrap())
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            vec!["local_m.o", "local_m.o.d", "local_m.pcm", "local_m.pcm.map"]
+        );
+    }
 
     #[test]
     fn test_build_plan_bmi_extension_flows_into_outputs() {

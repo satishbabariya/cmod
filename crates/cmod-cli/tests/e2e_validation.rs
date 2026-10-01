@@ -2271,3 +2271,107 @@ fn test_e2e_path_dependency_change_rebuilds_importer() {
     );
     assert_eq!(build_and_run(tmp.path(), "pd", &["build"]), "2");
 }
+
+// ─── Group 30: Incremental Dependencies and Links ───────────────────────────
+
+/// A root binary with a path dependency whose module has a separate
+/// implementation unit, so an implementation change reaches the root only
+/// through the dependency's archive.
+fn write_impl_dep_project(dir: &Path) -> std::path::PathBuf {
+    write_rebuild_manifest(
+        dir,
+        "app",
+        "\n[dependencies]\ndep = { path = \"libs/dep\" }\n",
+    );
+    let dep = dir.join("libs/dep");
+    fs::create_dir_all(dep.join("src")).unwrap();
+    fs::write(
+        dep.join("cmod.toml"),
+        "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+         [module]\nname = \"local.dep\"\nroot = \"src/lib.cppm\"\n\n\
+         [toolchain]\ncompiler = \"clang\"\ncxx_standard = \"20\"\n\n\
+         [build]\ntype = \"static-lib\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dep.join("src/lib.cppm"),
+        "export module local.dep;\n\nexport int f();\n",
+    )
+    .unwrap();
+    let imp = dep.join("src/impl.cpp");
+    fs::write(&imp, "module local.dep;\n\nint f() { return 1; }\n").unwrap();
+    fs::write(
+        dir.join("src/main.cpp"),
+        "import local.dep;\n#include <cstdio>\nint main() { std::printf(\"%d\\n\", f()); }\n",
+    )
+    .unwrap();
+    let output = run_cmod_with_llvm(dir, &["resolve"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    imp
+}
+
+/// A build with nothing changed compiles and links nothing, including the
+/// dependency, whose objects used to be deleted before every build.
+#[test]
+fn test_e2e_noop_build_compiles_and_links_nothing() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_impl_dep_project(tmp.path());
+    assert_eq!(build_and_run(tmp.path(), "app", &["build"]), "1");
+
+    let output = run_cmod_with_llvm(tmp.path(), &["-v", "build"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let err = stderr(&output);
+    for word in ["Compiled", "Cached", "Linked"] {
+        assert!(!err.contains(word), "no-op build {}: {}", word, err);
+    }
+}
+
+/// Only the dependency's archive changes; the root's objects do not. The
+/// root binary must still be relinked.
+#[test]
+fn test_e2e_dependency_implementation_change_relinks_root() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let imp = write_impl_dep_project(tmp.path());
+    assert_eq!(build_and_run(tmp.path(), "app", &["build"]), "1");
+
+    rewrite(&imp, "module local.dep;\n\nint f() { return 2; }\n");
+    assert_eq!(build_and_run(tmp.path(), "app", &["build"]), "2");
+}
+
+/// Object names encode the source path, so a moved checkout leaves the old
+/// location's objects in the dependency's obj/ directory. They must not be
+/// linked in (duplicate symbols) or survive the build.
+#[test]
+fn test_e2e_moved_checkout_prunes_stale_objects() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let first = tmp.path().join("first");
+    fs::create_dir_all(&first).unwrap();
+    write_impl_dep_project(&first);
+    assert_eq!(build_and_run(&first, "app", &["build"]), "1");
+
+    let moved = tmp.path().join("moved");
+    fs::rename(&first, &moved).unwrap();
+    assert_eq!(build_and_run(&moved, "app", &["build"]), "1");
+
+    let obj_dir = moved.join("libs/dep/build/debug/obj");
+    for entry in fs::read_dir(&obj_dir).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        assert!(
+            !name.contains("first"),
+            "stale object from the old location survived: {}",
+            name
+        );
+    }
+}

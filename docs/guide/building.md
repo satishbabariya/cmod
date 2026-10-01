@@ -71,6 +71,8 @@ A module is rebuilt when any of these change:
 - Target triple
 - Standard library
 
+Dependencies are incremental too. A link is skipped when the objects, dependency archives and flags it reads are unchanged and its output exists. Objects and BMIs left in `build/<profile>/obj` and `pcm` by deleted sources or by a checkout in another directory are removed before each build.
+
 Force a full rebuild:
 
 ```bash
