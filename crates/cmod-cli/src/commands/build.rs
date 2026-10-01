@@ -466,35 +466,11 @@ fn build_path_dependencies(
             bmi_ext,
         ));
 
-        // Collect linkable artifacts: prefer .a archives over individual .o files
-        // to avoid duplicate symbols from stale path-encoded objects.
-        let mut has_archive = false;
-        if dep_build_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&dep_build_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("a") {
-                        artifacts.objs.push(path);
-                        has_archive = true;
-                    }
-                }
-            }
-        }
-
-        // Only collect individual .o files if no archive was produced
-        if !has_archive {
-            let obj_dir = dep_build_dir.join("obj");
-            if obj_dir.exists() {
-                if let Ok(entries) = std::fs::read_dir(&obj_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                            artifacts.objs.push(path);
-                        }
-                    }
-                }
-            }
-        }
+        // Prefer .a archives over individual .o files, to avoid duplicate
+        // symbols from stale path-encoded objects.
+        artifacts
+            .objs
+            .extend(super::common::linkable_artifacts(&dep_build_dir));
     }
 
     if !artifacts.pcms.is_empty() || !artifacts.objs.is_empty() {
@@ -548,6 +524,9 @@ fn build_vendored_dependencies(
         let dep_dir = if let Some(report) = dry_run {
             match super::common::locked_checkout_on_disk(pkg, &vendor_dir, &deps_dir) {
                 Some(d) => d,
+                // Path dependencies are built from their own directory, not
+                // fetched; the build skips them here too.
+                None if !super::common::is_fetched(pkg) => continue,
                 None => {
                     report.push(cmod_build::runner::DryRunEntry {
                         node_id: pkg.name.clone(),
@@ -686,32 +665,9 @@ fn build_vendored_dependencies(
         ));
 
         // Collect linkable artifacts: prefer .a archives over individual .o files
-        let mut has_archive = false;
-        if build_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&build_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("a") {
-                        artifacts.objs.push(path);
-                        has_archive = true;
-                    }
-                }
-            }
-        }
-
-        if !has_archive {
-            let obj_dir = build_dir.join("obj");
-            if obj_dir.exists() {
-                if let Ok(entries) = std::fs::read_dir(&obj_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                            artifacts.objs.push(path);
-                        }
-                    }
-                }
-            }
-        }
+        artifacts
+            .objs
+            .extend(super::common::linkable_artifacts(&build_dir));
 
         shell.verbose(
             "Built",
@@ -874,7 +830,12 @@ fn build_workspace(
             .unwrap_or_default();
 
         // Start with git dep artifacts, then layer workspace member deps on top
-        let transitive_deps = ws.transitive_member_deps(&member.name);
+        // Sorted: the order sets the link command, and with it the link key.
+        let mut transitive_deps: Vec<String> = ws
+            .transitive_member_deps(&member.name)
+            .into_iter()
+            .collect();
+        transitive_deps.sort();
         let mut extra_pcms: std::collections::HashMap<String, std::path::PathBuf> =
             git_dep_artifacts.pcms.clone();
         let mut extra_objs: Vec<std::path::PathBuf> = git_dep_artifacts.objs.clone();
@@ -947,18 +908,7 @@ fn build_workspace(
                 member_pcm_paths.insert(member.name.clone(), this_pcms);
 
                 // Collect object files from this member for downstream linking
-                let mut this_objs: Vec<std::path::PathBuf> = Vec::new();
-                let obj_dir = build_dir.join("obj");
-                if obj_dir.exists() {
-                    if let Ok(entries) = std::fs::read_dir(&obj_dir) {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                                this_objs.push(path);
-                            }
-                        }
-                    }
-                }
+                let this_objs = super::common::files_with_extension(&build_dir.join("obj"), "o");
                 member_obj_paths.insert(member.name.clone(), this_objs);
 
                 // Store include dirs from this member for downstream members
