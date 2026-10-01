@@ -94,6 +94,10 @@ pub enum RebuildReason {
     HeaderChanged(PathBuf),
     /// The headers the source includes were not recorded.
     HeadersUnknown,
+    /// A module the source imports will be rebuilt first (dry runs).
+    DependencyWillRebuild(String),
+    /// An object, archive or flag a link reads changed since the last link.
+    LinkInputsChanged,
 }
 
 impl std::fmt::Display for RebuildReason {
@@ -109,6 +113,10 @@ impl std::fmt::Display for RebuildReason {
                 write!(f, "included header changed: {}", path.display())
             }
             RebuildReason::HeadersUnknown => write!(f, "included headers not recorded"),
+            RebuildReason::DependencyWillRebuild(module) => {
+                write!(f, "imports {}, which will be rebuilt", module)
+            }
+            RebuildReason::LinkInputsChanged => write!(f, "link inputs changed"),
         }
     }
 }

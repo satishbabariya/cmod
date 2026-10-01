@@ -1,7 +1,7 @@
+use std::sync::Arc;
+
 use cmod_build::graph::ModuleNode;
-use cmod_build::runner;
-use cmod_cache::key::{hash_file, CacheKey, CacheKeyInputs};
-use cmod_cache::ArtifactCache;
+use cmod_build::runner::{self, DryRunEntry, DryRunReport};
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::shell::{Shell, Verbosity};
@@ -62,95 +62,56 @@ pub fn run(module_name: String, shell: &Shell) -> Result<(), CmodError> {
     println!("Kind:   {:?}", node.kind);
     println!();
 
-    // Check rebuild reasons
-    let mut reasons = Vec::new();
+    // Ask the build itself: a dry run makes the same decisions `cmod build`
+    // would (sources, headers, imported BMIs, flags, outputs), for this
+    // package and its dependencies, without building anything.
+    let report = Arc::new(DryRunReport::default());
+    super::build::run(
+        false,
+        false,
+        false,
+        shell,
+        None,
+        0,
+        false,
+        None,
+        true,
+        false,
+        false,
+        &[],
+        false,
+        false,
+        false,
+        vec![],
+        Some(report.clone()),
+    )?;
 
-    // 1. Check if source file has changed (via cache key comparison)
-    let cache = ArtifactCache::new(config.cache_dir());
-    let source_hash = hash_file(&node.source).unwrap_or_default();
-
-    if verbose {
-        println!(
-            "  Source hash: {}",
-            &source_hash[..16.min(source_hash.len())]
-        );
-    }
-
-    let cxx_standard = config
-        .manifest
-        .toolchain
-        .as_ref()
-        .and_then(|tc| tc.cxx_standard.clone())
-        .unwrap_or_else(|| "20".to_string());
-
-    let target = config
-        .target
-        .clone()
-        .or_else(|| {
-            config
-                .manifest
-                .toolchain
-                .as_ref()
-                .and_then(|tc| tc.target.clone())
+    let entries: Vec<DryRunEntry> = report
+        .entries()
+        .into_iter()
+        .filter(|e| {
+            e.module.as_deref() == Some(module_name.as_str())
+                || e.source.as_ref() == Some(&node.source)
         })
-        .unwrap_or_else(|| "unknown".to_string());
+        .collect();
 
-    let inputs = CacheKeyInputs {
-        source_hash: source_hash.clone(),
-        dependency_hashes: vec![],
-        compiler: "clang".to_string(),
-        compiler_version: String::new(),
-        cxx_standard,
-        stdlib: String::new(),
-        target: target.clone(),
-        flags: vec![],
-    };
-
-    let key = CacheKey::compute(&inputs);
-
-    if !cache.has(&node.name, &key) {
-        reasons.push("cache miss — no cached artifact matches current inputs".to_string());
-    } else {
-        println!("  Cache: HIT — cached artifact exists for current inputs");
-    }
-
-    // 2. Check if build output exists
-    let build_dir = config.build_dir();
     let profile_name = match config.profile {
         Profile::Debug => "debug",
         Profile::Release => "release",
     };
-    let obj_path = build_dir.join("obj").join(format!("{}.o", node.name));
-    let pcm_path = build_dir.join("pcm").join(format!("{}.pcm", node.name));
+    let reasons: Vec<String> = entries
+        .iter()
+        .filter_map(|e| {
+            let reason = e.reason.as_ref()?;
+            let source = e
+                .source
+                .as_ref()
+                .map(|s| s.strip_prefix(&cwd).unwrap_or(s).display().to_string())
+                .unwrap_or_default();
+            Some(format!("{}: {}", source, reason))
+        })
+        .collect();
 
-    if !obj_path.exists() {
-        reasons.push(format!("object file missing: {}", obj_path.display()));
-    }
-
-    if matches!(
-        node.kind,
-        cmod_core::types::ModuleUnitKind::InterfaceUnit
-            | cmod_core::types::ModuleUnitKind::PartitionUnit
-    ) && !pcm_path.exists()
-    {
-        reasons.push(format!("PCM file missing: {}", pcm_path.display()));
-    }
-
-    // 3. Check if source is newer than output
-    if obj_path.exists() {
-        if let (Ok(src_meta), Ok(obj_meta)) = (
-            std::fs::metadata(&node.source),
-            std::fs::metadata(&obj_path),
-        ) {
-            if let (Ok(src_time), Ok(obj_time)) = (src_meta.modified(), obj_meta.modified()) {
-                if src_time > obj_time {
-                    reasons.push("source is newer than object file".to_string());
-                }
-            }
-        }
-    }
-
-    // Print reasons
     if reasons.is_empty() {
         println!("  Status: UP TO DATE — no rebuild needed");
         println!("  Profile: {}", profile_name);
@@ -161,6 +122,10 @@ pub fn run(module_name: String, shell: &Shell) -> Result<(), CmodError> {
         for (i, reason) in reasons.iter().enumerate() {
             println!("    {}. {}", i + 1, reason);
         }
+    }
+    if verbose {
+        println!();
+        super::build::print_dry_run(&report);
     }
 
     Ok(())

@@ -2375,3 +2375,85 @@ fn test_e2e_moved_checkout_prunes_stale_objects() {
         );
     }
 }
+
+// ─── Group 31: Dry Run and Explain ──────────────────────────────────────────
+
+/// `build --dry-run` names what would rebuild and why, and builds nothing.
+#[test]
+fn test_e2e_dry_run_reports_without_building() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_header_project(tmp.path());
+    assert_eq!(build_and_run(tmp.path(), "hdr", &["build"]), "1 10");
+
+    let output = run_cmod_with_llvm(tmp.path(), &["build", "--dry-run"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("0 of 4 build steps would run"),
+        "{}",
+        stdout(&output)
+    );
+
+    rewrite(&tmp.path().join("include/value.h"), "#define VALUE 2\n");
+    let state = tmp.path().join("build/debug/.cmod-build-state.json");
+    let state_before = fs::read(&state).unwrap();
+    let output = run_cmod_with_llvm(tmp.path(), &["build", "--dry-run"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains("included header changed"), "{}", out);
+    assert!(out.contains("4 of 4 build steps would run"), "{}", out);
+
+    // Nothing was built or recorded.
+    assert_eq!(fs::read(&state).unwrap(), state_before);
+    let run = Command::new(tmp.path().join("build/debug/hdr"))
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&run).trim(), "1 10");
+}
+
+/// A dry run of a project never built writes nothing at all.
+#[test]
+fn test_e2e_dry_run_writes_nothing() {
+    let tmp = TempDir::new().unwrap();
+    init_project_with_source(tmp.path(), "dry");
+    let output = run_cmod(tmp.path(), &["build", "--dry-run"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("no previous build state"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(!tmp.path().join("build").exists());
+    assert!(!tmp.path().join("cmod.lock").exists());
+}
+
+/// `explain` reports the reason the build would act on, not a cache-key
+/// guess.
+#[test]
+fn test_e2e_explain_reports_header_change() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_header_project(tmp.path());
+    assert_eq!(build_and_run(tmp.path(), "hdr", &["build"]), "1 10");
+
+    let output = run_cmod_with_llvm(tmp.path(), &["explain", "local.hdr"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("UP TO DATE"),
+        "{}",
+        stdout(&output)
+    );
+
+    rewrite(&tmp.path().join("include/value.h"), "#define VALUE 2\n");
+    let output = run_cmod_with_llvm(tmp.path(), &["explain", "local.hdr"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains("NEEDS REBUILD"), "{}", out);
+    assert!(out.contains("included header changed"), "{}", out);
+}

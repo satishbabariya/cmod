@@ -75,11 +75,13 @@ cmod build [OPTIONS]
 | `--timings` | | Display per-module compile timings |
 | `--distributed` | | Enable distributed build across remote workers |
 | `--workers <URLS>` | | Worker endpoints for distributed builds (comma-separated) |
+| `--dry-run` | `-n` | Print each build step and whether it would run, and why; build and write nothing |
 
 **Examples:**
 
 ```bash
 cmod build                     # Debug build
+cmod build --dry-run           # What would rebuild, and why
 cmod build --release           # Release build
 cmod build -j 8                # Limit to 8 parallel jobs
 cmod build --force             # Force full rebuild
@@ -335,7 +337,7 @@ cmod graph --format dot | dot -Tpng -o graph.png  # Generate image
 
 ### `cmod explain`
 
-Explain why a specific module would be rebuilt.
+Explain why a specific module would be rebuilt. Runs `cmod build --dry-run`, so the answer is the decision the build itself would make (source, included headers, imported BMIs including dependencies', flags, missing outputs), and nothing is built or written. `--verbose` also prints the whole dry run.
 
 ```
 cmod explain <MODULE>
@@ -345,6 +347,17 @@ cmod explain <MODULE>
 
 ```bash
 cmod explain local.math            # Why would local.math rebuild?
+```
+
+```
+Module: local.math
+Source: /work/app/src/math.cppm
+Kind:   InterfaceUnit
+
+  Status: NEEDS REBUILD
+  Profile: debug
+  Reasons:
+    1. src/math.cppm: included header changed: /work/app/include/config.h
 ```
 
 ### `cmod compile-commands`

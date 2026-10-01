@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use cmod_build::compiler::BackendConfig;
 use cmod_build::graph::{ModuleGraph, ModuleNode};
-use cmod_build::runner::{self, BuildRunner, BuildStats};
+use cmod_build::runner::{self, BuildRunner, BuildStats, DryRunReport};
 use cmod_cache::{ArtifactCache, RemoteCacheMode};
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
@@ -31,6 +31,7 @@ pub fn run(
     no_cache: bool,
     distributed: bool,
     workers: Vec<String>,
+    dry_run: Option<Arc<DryRunReport>>,
 ) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let mut config = Config::load(&cwd)?;
@@ -40,7 +41,9 @@ pub fn run(
     } else {
         Profile::Debug
     };
-    config.locked = locked;
+    // A dry run reports on the existing lockfile; it never writes one.
+    config.locked = locked || dry_run.is_some();
+    let no_hooks = no_hooks || dry_run.is_some();
     config.offline = offline;
     if let Some(t) = target_override {
         config.target = Some(t);
@@ -70,6 +73,7 @@ pub fn run(
             &effective_remote_url,
             timings,
             no_cache,
+            &dry_run,
         );
     }
 
@@ -138,6 +142,7 @@ pub fn run(
         distributed,
         &workers,
         Some(&lockfile),
+        &dry_run,
     );
 
     // Step 4: Run post-build hook (only on success)
@@ -155,6 +160,31 @@ pub fn run(
     }
 
     result
+}
+
+/// Print a dry run's findings to stdout, one line per build step in build
+/// order: what would be rebuilt or relinked and why, and what is up to date.
+pub fn print_dry_run(report: &DryRunReport) {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let show = |p: &std::path::Path| p.strip_prefix(&cwd).unwrap_or(p).display().to_string();
+    let entries = report.entries();
+    for entry in &entries {
+        let what = match (&entry.source, &entry.output) {
+            (Some(source), _) => format!(
+                "{} ({})",
+                entry.module.as_deref().unwrap_or("?"),
+                show(source)
+            ),
+            (None, Some(output)) => format!("link {}", show(output)),
+            (None, None) => entry.node_id.clone(),
+        };
+        match &entry.reason {
+            Some(reason) => println!("rebuild     {}: {}", what, reason),
+            None => println!("up-to-date  {}", what),
+        }
+    }
+    let stale = entries.iter().filter(|e| e.reason.is_some()).count();
+    println!("{} of {} build steps would run", stale, entries.len());
 }
 
 /// Create a remote cache instance from a URL, if provided, honoring the
@@ -187,15 +217,16 @@ fn build_module(
     distributed: bool,
     workers: &[String],
     lockfile: Option<&Lockfile>,
+    dry_run: &Option<Arc<DryRunReport>>,
 ) -> Result<(), CmodError> {
     // Build path dependencies first and collect their artifacts
     let mut dep_artifacts =
-        build_path_dependencies(config, shell, jobs, force, remote_url, no_cache)?;
+        build_path_dependencies(config, shell, jobs, force, remote_url, no_cache, dry_run)?;
 
     // Build vendored/resolved git dependencies and collect their artifacts
     if let Some(lockfile) = lockfile {
         let ven_artifacts = build_vendored_dependencies(
-            config, lockfile, shell, jobs, force, remote_url, no_cache,
+            config, lockfile, shell, jobs, force, remote_url, no_cache, dry_run,
         )?;
         dep_artifacts.merge(&ven_artifacts);
     }
@@ -259,7 +290,8 @@ fn build_module(
         .with_no_cache(no_cache)
         .with_extra_pcm_paths(dep_artifacts.pcms)
         .with_extra_obj_paths(dep_artifacts.objs)
-        .with_shell(Arc::new(Shell::new(shell.verbosity())));
+        .with_shell(Arc::new(Shell::new(shell.verbosity())))
+        .with_dry_run(dry_run.clone());
 
     if let Some(remote) = make_remote_cache(config, remote_url, shell) {
         runner = runner.with_remote_cache(remote);
@@ -320,8 +352,10 @@ fn build_module(
         Some(&config.manifest.package.name),
     )?;
 
-    print_build_stats(&stats, shell, timings);
-    shell.status("Finished", format!("{}", output.display()));
+    if dry_run.is_none() {
+        print_build_stats(&stats, shell, timings);
+        shell.status("Finished", format!("{}", output.display()));
+    }
     Ok(())
 }
 
@@ -336,6 +370,7 @@ fn build_path_dependencies(
     force: bool,
     remote_url: &Option<String>,
     no_cache: bool,
+    dry_run: &Option<Arc<DryRunReport>>,
 ) -> Result<super::common::DepArtifacts, CmodError> {
     let mut artifacts = super::common::DepArtifacts::default();
 
@@ -396,6 +431,7 @@ fn build_path_dependencies(
                 false,
                 &[],
                 dep_lockfile.as_ref(),
+                dry_run,
             )?;
         } else {
             shell.verbose(
@@ -477,6 +513,7 @@ fn build_vendored_dependencies(
     force: bool,
     remote_url: &Option<String>,
     no_cache: bool,
+    dry_run: &Option<Arc<DryRunReport>>,
 ) -> Result<super::common::DepArtifacts, CmodError> {
     let mut artifacts = super::common::DepArtifacts::default();
 
@@ -593,7 +630,8 @@ fn build_vendored_dependencies(
             .with_no_cache(no_cache)
             .with_extra_pcm_paths(artifacts.pcms.clone())
             .with_extra_obj_paths(extra_objs)
-            .with_shell(Arc::new(Shell::new(shell.verbosity())));
+            .with_shell(Arc::new(Shell::new(shell.verbosity())))
+            .with_dry_run(dry_run.clone());
 
         if let Some(remote) = make_remote_cache(config, remote_url, shell) {
             runner = runner.with_remote_cache(remote);
@@ -670,6 +708,7 @@ fn build_vendored_dependencies(
 }
 
 /// Build all members of a workspace.
+#[allow(clippy::too_many_arguments)]
 fn build_workspace(
     config: &Config,
     shell: &Shell,
@@ -678,6 +717,7 @@ fn build_workspace(
     remote_url: &Option<String>,
     timings: bool,
     no_cache: bool,
+    dry_run: &Option<Arc<DryRunReport>>,
 ) -> Result<(), CmodError> {
     let ws = WorkspaceManager::load(&config.root)?;
 
@@ -698,7 +738,9 @@ fn build_workspace(
 
     // Build external git dependencies first (shared across all workspace members)
     let git_dep_artifacts = if !lockfile.packages.is_empty() {
-        build_vendored_dependencies(config, &lockfile, shell, jobs, force, remote_url, no_cache)?
+        build_vendored_dependencies(
+            config, &lockfile, shell, jobs, force, remote_url, no_cache, dry_run,
+        )?
     } else {
         super::common::DepArtifacts::default()
     };
@@ -837,7 +879,8 @@ fn build_workspace(
             .with_no_cache(no_cache)
             .with_extra_pcm_paths(extra_pcms)
             .with_extra_obj_paths(extra_objs)
-            .with_shell(Arc::new(Shell::new(shell.verbosity())));
+            .with_shell(Arc::new(Shell::new(shell.verbosity())))
+            .with_dry_run(dry_run.clone());
         if let Some(remote) = make_remote_cache(config, remote_url, shell) {
             runner_instance = runner_instance.with_remote_cache(remote);
         }
@@ -850,8 +893,10 @@ fn build_workspace(
             Some(&member.name),
         ) {
             Ok((output, stats)) => {
-                print_build_stats(&stats, shell, timings);
-                shell.verbose("Built", format!("{}", output.display()));
+                if dry_run.is_none() {
+                    print_build_stats(&stats, shell, timings);
+                    shell.verbose("Built", format!("{}", output.display()));
+                }
 
                 // Collect BMI files from this member for downstream members
                 let this_pcms =
@@ -902,7 +947,9 @@ fn build_workspace(
         });
     }
 
-    shell.status("Finished", "workspace build complete");
+    if dry_run.is_none() {
+        shell.status("Finished", "workspace build complete");
+    }
     Ok(())
 }
 

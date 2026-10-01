@@ -18,7 +18,7 @@ use cmod_core::types::{Artifact, BuildType, NodeKind, Profile};
 use crate::compiler::CompilerBackend;
 use crate::depfile;
 use crate::graph::ModuleGraph;
-use crate::incremental::{file_mtime, BuildState, HeaderState};
+use crate::incremental::{file_mtime, BuildState, HeaderState, RebuildReason};
 use crate::plan::{BuildNode, BuildPlan};
 
 /// Statistics from a build execution.
@@ -53,6 +53,61 @@ struct NodeInputs {
     headers: Option<IncludedHeaders>,
 }
 
+/// What a dry run found for one build node.
+#[derive(Debug, Clone)]
+pub struct DryRunEntry {
+    /// Build node ID.
+    pub node_id: String,
+    /// Kind of build step.
+    pub kind: NodeKind,
+    /// Module the node compiles, if any.
+    pub module: Option<String>,
+    /// Source file, for compile nodes.
+    pub source: Option<PathBuf>,
+    /// First output, for link nodes.
+    pub output: Option<PathBuf>,
+    /// Why the node would be rebuilt; `None` when it is up to date.
+    pub reason: Option<RebuildReason>,
+}
+
+/// What a dry run ([`BuildRunner::with_dry_run`]) would rebuild and why,
+/// across the root package and its dependencies, in build order. Shared by
+/// the runners of one `cmod build`, so a dependency that would be rebuilt
+/// marks the root's importers too.
+#[derive(Debug, Default)]
+pub struct DryRunReport {
+    entries: Mutex<Vec<DryRunEntry>>,
+}
+
+impl DryRunReport {
+    /// All entries so far, in build order.
+    pub fn entries(&self) -> Vec<DryRunEntry> {
+        self.lock().clone()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<DryRunEntry>> {
+        match self.entries.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Whether an earlier runner found that `module`'s interface would be
+    /// rebuilt.
+    fn module_will_rebuild(&self, module: &str) -> bool {
+        self.lock().iter().any(|e| {
+            e.kind == NodeKind::Interface
+                && e.reason.is_some()
+                && e.module.as_deref() == Some(module)
+        })
+    }
+
+    /// Whether any entry so far would be rebuilt.
+    fn any_will_rebuild(&self) -> bool {
+        self.lock().iter().any(|e| e.reason.is_some())
+    }
+}
+
 /// Build runner that executes a build plan.
 pub struct BuildRunner {
     backend: Box<dyn CompilerBackend>,
@@ -77,6 +132,8 @@ pub struct BuildRunner {
     shell: Option<Arc<Shell>>,
     /// Optional distributed worker pool for remote compilation.
     worker_pool: Option<crate::distributed::WorkerPool>,
+    /// When set, report what would be rebuilt instead of building.
+    dry_run: Option<Arc<DryRunReport>>,
     /// Headers and dependency outputs read during the current build, as
     /// observed once: content hash plus the mtime read before hashing
     /// (`None`: unreadable). Many sources include the same headers and
@@ -119,6 +176,7 @@ impl BuildRunner {
             bmi_dirs: Vec::new(),
             shell: None,
             worker_pool: None,
+            dry_run: None,
             file_hashes: Mutex::new(HashMap::new()),
         }
     }
@@ -175,6 +233,13 @@ impl BuildRunner {
     /// Add BMI directories for precompiled module lookup.
     pub fn with_bmi_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
         self.bmi_dirs = dirs;
+        self
+    }
+
+    /// Report into `report` what would be rebuilt and why, without
+    /// compiling, linking, pruning or writing build state.
+    pub fn with_dry_run(mut self, report: Option<Arc<DryRunReport>>) -> Self {
+        self.dry_run = report;
         self
     }
 
@@ -331,16 +396,7 @@ impl BuildRunner {
             self.backend.bmi_extension(),
         )?;
 
-        // Ensure output directories exist
-        fs::create_dir_all(build_dir.join("pcm"))?;
-        fs::create_dir_all(build_dir.join("obj"))?;
-        let pruned = plan.prune_stale_outputs();
-        if pruned > 0 {
-            self.emit_verbose("Pruned", format!("{} stale build outputs", pruned));
-        }
-
-        // Execute the plan
-        let (output, _stats) = self.execute_plan(&plan)?;
+        let (output, _stats) = self.run_plan(&plan)?;
         Ok(output)
     }
 
@@ -364,13 +420,103 @@ impl BuildRunner {
             package_name,
             self.backend.bmi_extension(),
         )?;
-        fs::create_dir_all(build_dir.join("pcm"))?;
-        fs::create_dir_all(build_dir.join("obj"))?;
+        self.run_plan(&plan)
+    }
+
+    /// Prepare the build directory and execute `plan`, or report on it in a
+    /// dry run.
+    fn run_plan(&self, plan: &BuildPlan) -> Result<(PathBuf, BuildStats), CmodError> {
+        if let Some(report) = &self.dry_run {
+            return Ok((self.dry_run_plan(plan, report), BuildStats::default()));
+        }
+        fs::create_dir_all(plan.build_dir.join("pcm"))?;
+        fs::create_dir_all(plan.build_dir.join("obj"))?;
         let pruned = plan.prune_stale_outputs();
         if pruned > 0 {
             self.emit_verbose("Pruned", format!("{} stale build outputs", pruned));
         }
-        self.execute_plan(&plan)
+        self.execute_plan(plan)
+    }
+
+    /// Decide, for each node of `plan` in build order, whether it would be
+    /// rebuilt and why, the way [`Self::execute_plan`] decides, and add it to
+    /// `report`. A node whose dependency would be rebuilt is reported as
+    /// rebuilt too, since that dependency's BMI or archive would change.
+    /// Touches nothing on disk. Returns the final output path.
+    fn dry_run_plan(&self, plan: &BuildPlan, report: &DryRunReport) -> PathBuf {
+        self.clear_file_hashes();
+        let state = BuildState::load(&plan.build_dir);
+        let flags_hash = self.flags_hash();
+        let dependency_rebuilds =
+            report.any_will_rebuild() && plan.build_type != BuildType::StaticLib;
+        let mut rebuilding: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut final_output = PathBuf::new();
+
+        for node in plan.nodes.iter().filter(|n| n.kind != NodeKind::Link) {
+            let module_of = |id: &str| {
+                plan.nodes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .and_then(|n| n.module_name.clone())
+                    .unwrap_or_else(|| id.to_string())
+            };
+            let reason = if self.force_rebuild {
+                Some(RebuildReason::Forced)
+            } else if let Some(dep) = node
+                .dependencies
+                .iter()
+                .find(|d| rebuilding.contains(d.as_str()))
+            {
+                Some(RebuildReason::DependencyWillRebuild(module_of(dep)))
+            } else if let Some(module) = node
+                .external_imports
+                .iter()
+                .find(|m| report.module_will_rebuild(m))
+            {
+                Some(RebuildReason::DependencyWillRebuild(module.clone()))
+            } else {
+                state.needs_rebuild(node, &flags_hash, &self.dep_output_hashes(node, plan))
+            };
+            if reason.is_some() {
+                rebuilding.insert(&node.id);
+            }
+            report.lock().push(DryRunEntry {
+                node_id: node.id.clone(),
+                kind: node.kind,
+                module: node.module_name.clone(),
+                source: node.source.clone(),
+                output: None,
+                reason,
+            });
+        }
+
+        for node in plan.nodes.iter().filter(|n| n.kind == NodeKind::Link) {
+            let output = node.outputs.first().cloned();
+            let reason = if self.force_rebuild {
+                Some(RebuildReason::Forced)
+            } else if !rebuilding.is_empty() || dependency_rebuilds {
+                Some(RebuildReason::LinkInputsChanged)
+            } else if !node.outputs.iter().all(|o| o.exists()) {
+                Some(RebuildReason::OutputMissing)
+            } else {
+                match self.link_key(plan, &state, &flags_hash) {
+                    Some(key) if state.link_key.as_deref() == Some(key.as_str()) => None,
+                    _ => Some(RebuildReason::LinkInputsChanged),
+                }
+            };
+            if let Some(out) = &output {
+                final_output = out.clone();
+            }
+            report.lock().push(DryRunEntry {
+                node_id: node.id.clone(),
+                kind: node.kind,
+                module: None,
+                source: None,
+                output,
+                reason,
+            });
+        }
+        final_output
     }
 
     /// Content hashes of the outputs of `node`'s dependencies, as they are on

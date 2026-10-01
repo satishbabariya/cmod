@@ -81,11 +81,14 @@ cmod build --force
 
 ### Understanding Rebuilds
 
-Use `cmod explain` to understand why a module would be rebuilt:
+See what a build would do, and why, without building:
 
 ```bash
-cmod explain local.math
+cmod build --dry-run        # every step: rebuild (with the reason) or up-to-date
+cmod explain local.math     # just one module
 ```
+
+A dry run reads the existing `cmod.lock` and never writes one, runs no hooks, and leaves build outputs and build state untouched.
 
 ## Link-Time Optimization (LTO)
 

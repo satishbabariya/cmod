@@ -16,8 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The first build after upgrading recompiles everything: old build state has no header lists, and cache keys changed. Lockfile format unchanged. See `docs/adr/0004-track-included-headers-and-dependency-bmis.md`.
 
+### Added
+
+- **`cmod build --dry-run` (`-n`)** — prints each build step (compile or link, for the package and its dependencies) and whether it would run, with the reason: source changed, an included header changed, an imported module will be rebuilt, flags changed, an output is missing, link inputs changed. It builds nothing, writes no build state or lockfile, and runs no hooks.
+
 ### Changed
 
+- **`cmod explain` reports the reason the build would act on** — it compared a cache key built from placeholder inputs (`compiler = "clang"`, no compiler version) and object paths that did not match the build's, so it reported "cache miss" and missing outputs for every module, even one fully up to date. It now runs a dry run and shows that module's reasons.
 - **Dependencies build incrementally, and unchanged links are skipped** — every build deleted each git dependency's `obj/` and `pcm/` directories, so all of its objects were rebuilt or restored from the cache and re-archived, and every build re-ran `ar` and the final link. Outputs that the current plan does not produce (from deleted sources, or from a checkout that moved) are now pruned instead, and a link is skipped when the objects, dependency archives and flags it would read are unchanged and its output exists. A no-op build of a Catch2 consumer (scanner time excluded) went from ~1.1 s to ~0.35 s. Pruning also stops `cmod test` from linking objects of deleted sources. Build state now also records which compiler executable and version built each object, so switching `CXX` to another installation, or upgrading one in place, rebuilds and relinks instead of keeping the old outputs.
 - **Module scanning runs in parallel** — `clang-scan-deps` ran once per source, one at a time, on every build, for the package and for each dependency. It now runs on all cores. A no-op build of a Catch2 consumer (107 sources) went from 5.2 s to 2.3 s on 4 cores; the build plan is byte-identical.
 - The `e2e_validation`, `example_projects` and `real_projects` compile tests also run on Linux with `clang++` on PATH. They had only looked for Homebrew LLVM, so the Linux E2E job skipped all of them.
