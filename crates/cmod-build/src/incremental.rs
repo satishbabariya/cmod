@@ -94,6 +94,13 @@ pub enum RebuildReason {
     HeaderChanged(PathBuf),
     /// The headers the source includes were not recorded.
     HeadersUnknown,
+    /// A module the source imports will be rebuilt first (dry runs).
+    DependencyWillRebuild(String),
+    /// An object, archive or flag a link reads changed since the last link.
+    LinkInputsChanged,
+    /// A dependency is not checked out at its locked commit, so a build
+    /// would fetch it first (dry runs do not).
+    DependencyNotFetched,
 }
 
 impl std::fmt::Display for RebuildReason {
@@ -109,6 +116,16 @@ impl std::fmt::Display for RebuildReason {
                 write!(f, "included header changed: {}", path.display())
             }
             RebuildReason::HeadersUnknown => write!(f, "included headers not recorded"),
+            RebuildReason::DependencyWillRebuild(module) => {
+                write!(f, "imports {}, which will be rebuilt", module)
+            }
+            RebuildReason::LinkInputsChanged => write!(f, "link inputs changed"),
+            RebuildReason::DependencyNotFetched => {
+                write!(
+                    f,
+                    "not checked out at the locked commit; a build would fetch it"
+                )
+            }
         }
     }
 }

@@ -104,6 +104,28 @@ pub fn find_dep_on_disk(vendor_dir: &Path, deps_dir: &Path, pkg_name: &str) -> O
 /// First checks `vendor/` and `build/deps/` via `find_dep_on_disk()`. If the dep
 /// is not found, clones it from the lockfile's `repo` URL and checks out the
 /// locked `commit` hash. Returns the path if the dep has a `cmod.toml`, or `None`.
+/// The dependency's checkout, if it is on disk at the locked commit (or
+/// vendored). Unlike [`ensure_dep_on_disk`], never fetches or removes
+/// anything: for dry runs.
+pub fn locked_checkout_on_disk(
+    pkg: &LockedPackage,
+    vendor_dir: &Path,
+    deps_dir: &Path,
+) -> Option<PathBuf> {
+    let d = find_dep_on_disk(vendor_dir, deps_dir, &pkg.name)?;
+    if !d.join("cmod.toml").exists() {
+        return None;
+    }
+    match &pkg.commit {
+        Some(expected) if d.starts_with(deps_dir) => git2::Repository::open(&d)
+            .and_then(|repo| repo.head()?.peel_to_commit().map(|c| c.id()))
+            .ok()
+            .filter(|head| head.to_string() == *expected)
+            .map(|_| d),
+        _ => Some(d),
+    }
+}
+
 pub fn ensure_dep_on_disk(
     pkg: &LockedPackage,
     vendor_dir: &Path,
@@ -411,6 +433,59 @@ pub fn collect_dep_artifacts(config: &Config, lockfile: &Lockfile, bmi_ext: &str
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn git_package(commit: &str) -> LockedPackage {
+        serde_json::from_value(serde_json::json!({
+            "name": "github.com/acme/dep",
+            "version": "1.0.0",
+            "source": "git",
+            "commit": commit,
+        }))
+        .unwrap()
+    }
+
+    /// A checkout of `github.com/acme/dep` in `deps_dir` with one commit.
+    fn checkout(deps_dir: &Path) -> (PathBuf, String) {
+        let dir = deps_dir.join("github.com_acme_dep");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cmod.toml"), "[package]\nname = \"dep\"\n").unwrap();
+        let repo = git2::Repository::init(&dir).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("cmod.toml")).unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let commit = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        (dir, commit.to_string())
+    }
+
+    #[test]
+    fn locked_checkout_on_disk_finds_the_locked_commit() {
+        let tmp = TempDir::new().unwrap();
+        let deps = tmp.path().join("deps");
+        let (dir, commit) = checkout(&deps);
+        assert_eq!(
+            locked_checkout_on_disk(&git_package(&commit), &tmp.path().join("vendor"), &deps),
+            Some(dir)
+        );
+    }
+
+    /// A dry run must neither fetch a missing checkout nor delete a stale
+    /// one, which `ensure_dep_on_disk` does.
+    #[test]
+    fn locked_checkout_on_disk_reports_missing_and_stale_without_touching_them() {
+        let tmp = TempDir::new().unwrap();
+        let deps = tmp.path().join("deps");
+        let vendor = tmp.path().join("vendor");
+        let pkg = git_package("0000000000000000000000000000000000000000");
+        assert_eq!(locked_checkout_on_disk(&pkg, &vendor, &deps), None);
+        assert!(!deps.exists());
+
+        let (dir, _) = checkout(&deps);
+        assert_eq!(locked_checkout_on_disk(&pkg, &vendor, &deps), None);
+        assert!(dir.join("cmod.toml").exists(), "stale checkout was removed");
+    }
 
     /// A root package with a path dependency `dep` whose build left one BMI,
     /// `build/debug/pcm/dep_core.<ext>`, for module `dep.core`.

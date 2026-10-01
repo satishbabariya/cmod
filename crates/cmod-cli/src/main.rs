@@ -148,6 +148,10 @@ enum Commands {
         /// Worker endpoints for distributed builds (comma-separated URLs)
         #[arg(long, value_delimiter = ',')]
         workers: Vec<String>,
+
+        /// Print what would be rebuilt and why, without building
+        #[arg(long, short = 'n')]
+        dry_run: bool,
     },
 
     /// Run module tests
@@ -560,24 +564,34 @@ fn main() {
             timings,
             distributed,
             workers,
-        } => commands::build::run(
-            release,
-            cli.locked,
-            cli.offline,
-            &shell,
-            cli.target,
-            jobs,
-            force,
-            remote_cache,
-            no_hooks,
-            verify,
-            timings,
-            &cli.features,
-            cli.no_default_features,
-            cli.no_cache,
-            distributed,
-            workers,
-        ),
+            dry_run,
+        } => {
+            let report = dry_run.then(|| std::sync::Arc::new(Default::default()));
+            commands::build::run(
+                release,
+                cli.locked,
+                cli.offline,
+                &shell,
+                cli.target,
+                jobs,
+                force,
+                remote_cache,
+                no_hooks,
+                verify,
+                timings,
+                &cli.features,
+                cli.no_default_features,
+                cli.no_cache,
+                distributed,
+                workers,
+                report.clone(),
+            )
+            .map(|()| {
+                if let Some(report) = &report {
+                    commands::build::print_dry_run(report);
+                }
+            })
+        }
         Commands::Test {
             release,
             name,
@@ -637,7 +651,18 @@ fn main() {
         } => commands::graph::run(format, filter, status, critical_path, timing, &shell),
         Commands::Audit => commands::audit::run(&shell),
         Commands::Status => commands::status::run(&shell),
-        Commands::Explain { module } => commands::explain::run(module, &shell),
+        Commands::Explain { module } => commands::explain::run(
+            module,
+            &shell,
+            &commands::explain::BuildFlags {
+                locked: cli.locked,
+                offline: cli.offline,
+                target: cli.target.clone(),
+                features: cli.features.clone(),
+                no_default_features: cli.no_default_features,
+                no_cache: cli.no_cache,
+            },
+        ),
         Commands::Toolchain { action } => match action {
             ToolchainAction::Show => commands::toolchain::show(&shell),
             ToolchainAction::Check => commands::toolchain::check(&shell),
