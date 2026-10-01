@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -477,13 +478,9 @@ fn compile_tests(
     let mut state = CommandState::load(&state_path);
     let compiler_version = backend.version();
     let mut jobs = Vec::new();
-    for test_source in test_sources {
-        let test_name = test_source
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("test")
-            .to_string();
-        let test_binary = build_dir.join(format!("test_{}", test_name));
+    let names = test_names(&config.root, test_sources);
+    for (test_source, (test_name, binary_name)) in test_sources.iter().zip(names) {
+        let test_binary = build_dir.join(binary_name);
         let test = TestBinary {
             source: test_source,
             output: &test_binary,
@@ -622,6 +619,43 @@ struct CompileOutcome {
     /// When the compile started, in epoch milliseconds.
     started: u64,
     duration: Duration,
+}
+
+/// Each test's name and binary file name. A test is named after its file
+/// stem, and built as `test_<stem>`. Tests whose stems clash (`a/foo.cpp`
+/// and `b/foo.cpp`) are named by their path relative to `root` instead, and
+/// their binaries get a hash of that path, so no two tests share a binary.
+fn test_names(root: &Path, test_sources: &[PathBuf]) -> Vec<(String, String)> {
+    let stem = |source: &Path| {
+        source
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("test")
+            .to_string()
+    };
+    let mut stem_counts: HashMap<String, usize> = HashMap::new();
+    for source in test_sources {
+        *stem_counts.entry(stem(source)).or_default() += 1;
+    }
+    test_sources
+        .iter()
+        .map(|source| {
+            let stem = stem(source);
+            if stem_counts[&stem] == 1 {
+                return (stem.clone(), format!("test_{}", stem));
+            }
+            let relative = source
+                .strip_prefix(root)
+                .unwrap_or(source)
+                .with_extension("")
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            let hash = hash_bytes(relative.as_bytes());
+            (relative, format!("test_{}-{}", stem, &hash[..8]))
+        })
+        .collect()
 }
 
 /// What a test binary is built from: the command line, the compiler's
@@ -1784,6 +1818,22 @@ mod tests {
                 "/p/build/obj/lib.o",
             ]
         );
+    }
+
+    #[test]
+    fn test_names_disambiguate_clashing_stems() {
+        let root = Path::new("/p");
+        let sources = [
+            PathBuf::from("/p/tests/a/foo.cpp"),
+            PathBuf::from("/p/tests/b/foo.cpp"),
+            PathBuf::from("/p/tests/bar.cpp"),
+        ];
+        let names = test_names(root, &sources);
+        assert_eq!(names[0].0, "tests/a/foo");
+        assert_eq!(names[1].0, "tests/b/foo");
+        assert!(names[0].1.starts_with("test_foo-"), "{:?}", names);
+        assert_ne!(names[0].1, names[1].1);
+        assert_eq!(names[2], ("bar".to_string(), "test_bar".to_string()));
     }
 
     #[test]

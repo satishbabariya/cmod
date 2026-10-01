@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Tests with the same file name in different directories run separately** — `tests/a/check.cpp` and `tests/b/check.cpp` were both built to `test_check`, so both results came from whichever compiled last. They now get distinct binaries and are reported by relative path.
 - **A no-op workspace build no longer relinks** — a member's upstream members' objects were collected in hash-set order, which changes from run to run, so the link inputs looked different every build: the member was relinked each time, and its binary was not reproducible. Members, and the archives and objects collected from every dependency's build directory, are now sorted.
 - **`cmod build --dry-run` no longer reports path dependencies as unfetched** — with a lockfile, every path dependency was reported as "not checked out at the locked commit; a build would fetch it", although a build never fetches them.
 

@@ -32,7 +32,7 @@ my-project/
     test_edge_cases.cpp
 ```
 
-Each `.cpp` file under `tests/` is compiled into its own test binary. There is no requirement for a shared `main()` harness -- each file is self-contained.
+Each `.cpp` file under `tests/` is compiled into its own test binary, `build/<profile>/test_<name>`. There is no requirement for a shared `main()` harness -- each file is self-contained. Tests whose file names clash across directories (`tests/a/check.cpp`, `tests/b/check.cpp`) are reported by their relative path (`tests/a/check`) and get distinct binaries.
 
 ## Configuration
 

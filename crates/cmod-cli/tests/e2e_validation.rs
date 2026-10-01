@@ -797,6 +797,39 @@ fn test_e2e_test_recompiles_only_changed_tests() {
     assert_eq!(compiled(&output), ["broken"], "{}", stderr(&output));
 }
 
+/// Tests with the same file name in different directories are built to
+/// different binaries. They used to share `test_<stem>`, so both ran
+/// whichever was compiled last.
+#[test]
+fn test_e2e_tests_with_the_same_name_run_separately() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    init_project_with_source(tmp.path(), "samename");
+    for (dir, code) in [("a", 0), ("b", 3)] {
+        let dir = tmp.path().join("tests").join(dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("check.cpp"),
+            format!("int main() {{ return {code}; }}\n"),
+        )
+        .unwrap();
+    }
+
+    let output = run_cmod_with_llvm(tmp.path(), &["test"]);
+    let err = stderr(&output);
+    assert!(!output.status.success(), "{}", err);
+    assert!(
+        err.contains("test result: FAILED. 2 passed, 1 failed"),
+        "{}",
+        err
+    );
+    assert!(err.contains("tests/b/check"), "{}", err);
+}
+
 #[test]
 fn test_e2e_test_no_tests_dir() {
     if !has_llvm_clang() {
