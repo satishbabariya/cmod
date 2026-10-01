@@ -18,6 +18,7 @@ The first build after upgrading recompiles everything: old build state has no he
 
 ### Changed
 
+- **Module scanning runs in parallel** — `clang-scan-deps` ran once per source, one at a time, on every build, for the package and for each dependency. It now runs on all cores. A no-op build of a Catch2 consumer (107 sources) went from 5.2 s to 2.3 s on 4 cores; the build plan is byte-identical.
 - The `e2e_validation`, `example_projects` and `real_projects` compile tests also run on Linux with `clang++` on PATH. They had only looked for Homebrew LLVM, so the Linux E2E job skipped all of them.
 
 ## [0.1.0-alpha.6] - 2026-10-01

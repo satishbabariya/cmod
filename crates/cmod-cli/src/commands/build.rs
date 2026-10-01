@@ -917,10 +917,9 @@ fn build_module_graph(
 ) -> Result<ModuleGraph, CmodError> {
     let mut graph = ModuleGraph::new();
 
-    // Try clang-scan-deps first for more accurate results
-    let use_scanner = is_clang_scan_deps_available();
+    let all_imports = scan_imports(sources)?;
 
-    for source in sources {
+    for (source, imports) in sources.iter().zip(all_imports) {
         let kind = runner::classify_source(source)?;
         let module_name = runner::extract_module_name(source)?.unwrap_or_else(|| {
             source
@@ -929,15 +928,6 @@ fn build_module_graph(
                 .unwrap_or("unknown")
                 .to_string()
         });
-
-        let imports = if use_scanner {
-            scan_deps_imports(source).unwrap_or_else(|_| {
-                // Fall back to regex on scan failure
-                extract_imports_from_source(source).unwrap_or_default()
-            })
-        } else {
-            extract_imports_from_source(source)?
-        };
 
         // Extract partition ownership for partition units
         let partition_of = runner::extract_partition_owner(source)?;
@@ -985,6 +975,55 @@ fn build_module_graph(
     }
 
     Ok(graph)
+}
+
+/// The modules each source imports, in `sources` order.
+///
+/// Uses `clang-scan-deps` when available, one process per source, run in
+/// parallel: sources are independent and scanning a large package one at a
+/// time dominated no-op builds (107 sources, ~4 s). A source the scanner
+/// fails on falls back to regex extraction, as does every source when the
+/// scanner is unavailable.
+fn scan_imports(sources: &[std::path::PathBuf]) -> Result<Vec<Vec<String>>, CmodError> {
+    if !is_clang_scan_deps_available() {
+        return sources
+            .iter()
+            .map(|source| extract_imports_from_source(source))
+            .collect();
+    }
+
+    let scan = |source: &std::path::Path| {
+        scan_deps_imports(source).unwrap_or_else(|_| {
+            // Fall back to regex on scan failure
+            extract_imports_from_source(source).unwrap_or_default()
+        })
+    };
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(sources.len());
+    if workers <= 1 {
+        return Ok(sources.iter().map(|s| scan(s)).collect());
+    }
+
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: Vec<std::sync::Mutex<Vec<String>>> =
+        sources.iter().map(|_| Default::default()).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(source) = sources.get(i) else {
+                    break;
+                };
+                let imports = scan(source);
+                *results[i].lock().unwrap_or_else(|e| e.into_inner()) = imports;
+            });
+        }
+    });
+    Ok(results
+        .into_iter()
+        .map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner()))
+        .collect())
 }
 
 /// Resolve the `clang-scan-deps` binary path, respecting the `SCAN_DEPS` env var.
