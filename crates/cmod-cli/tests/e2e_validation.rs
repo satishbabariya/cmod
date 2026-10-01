@@ -2871,6 +2871,69 @@ fn test_e2e_gcc_first_build_is_complete() {
     );
 }
 
+/// A shared library is compiled as position-independent code, and so are
+/// the dependencies linked into it. g++ compiles PIE objects by default,
+/// which cannot go into a shared object: every shared library with an
+/// object referring to external data failed to link.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_e2e_gcc_shared_lib_with_a_dependency_links() {
+    let Some(gxx) = gcc_with_scanner() else {
+        eprintln!("Skipping: no g++ 14+ found");
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    write_rebuild_manifest(
+        tmp.path(),
+        "shared",
+        "\n[dependencies]\ndep = { path = \"libs/dep\" }\n",
+    );
+    let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
+    fs::write(
+        tmp.path().join("cmod.toml"),
+        manifest
+            .replace("compiler = \"clang\"", "compiler = \"gcc\"")
+            .replace("type = \"binary\"", "type = \"shared-lib\""),
+    )
+    .unwrap();
+    let dep = tmp.path().join("libs/dep");
+    fs::create_dir_all(dep.join("src")).unwrap();
+    fs::write(
+        dep.join("cmod.toml"),
+        "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+         [module]\nname = \"local.dep\"\nroot = \"src/lib.cppm\"\n\n\
+         [toolchain]\ncompiler = \"gcc\"\ncxx_standard = \"20\"\n\n\
+         [build]\ntype = \"static-lib\"\n",
+    )
+    .unwrap();
+    // Both refer to `stdout`, data defined outside the library.
+    fs::write(
+        dep.join("src/lib.cppm"),
+        "module;\n#include <cstdio>\nexport module local.dep;\n\
+         export void say(const char* s) { std::fputs(s, stdout); }\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("src/lib.cppm"),
+        "module;\n#include <cstdio>\nexport module local.shared;\nimport local.dep;\n\
+         export void hello() { say(\"hello\\n\"); std::fflush(stdout); }\n",
+    )
+    .unwrap();
+    let cmod = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cmod"))
+            .args(args)
+            .current_dir(tmp.path())
+            .env("CXX", gxx)
+            .output()
+            .expect("failed to run cmod")
+    };
+    let output = cmod(&["resolve"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = cmod(&["build"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(tmp.path().join("build/debug/libshared.so").exists());
+}
+
 /// GCC packages are scanned by g++ itself: the `#if 0` import is not one,
 /// and results are kept until the source changes, as with clang-scan-deps.
 /// Linux only: CI covers the GCC backend there.
