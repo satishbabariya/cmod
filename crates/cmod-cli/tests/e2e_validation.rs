@@ -819,7 +819,9 @@ fn test_e2e_tests_with_the_same_name_run_separately() {
         .unwrap();
     }
 
-    let output = run_cmod_with_llvm(tmp.path(), &["test"]);
+    // --no-fail-fast: tests run in parallel, and without it the failing
+    // test can stop the run before `main` runs.
+    let output = run_cmod_with_llvm(tmp.path(), &["test", "--no-fail-fast"]);
     let err = stderr(&output);
     assert!(!output.status.success(), "{}", err);
     assert!(
