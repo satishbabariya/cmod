@@ -277,7 +277,7 @@ fn build_module(
     let build_dir = config.build_dir();
 
     // Build the module graph, scanning with the compile flags
-    let scan = ClangScan::for_backend(backend.as_ref(), &build_dir, dry_run.is_none());
+    let scan = SourceScan::for_backend(backend.as_ref(), &build_dir, dry_run.is_none());
     let graph = build_module_graph(&sources, &config.manifest.package.name, scan.as_ref())?;
 
     // Validate the module graph (imports, cycles, duplicates)
@@ -607,7 +607,7 @@ fn build_vendored_dependencies(
         let build_dir = dep_config.build_dir();
 
         // Build the module graph for this dependency
-        let scan = ClangScan::for_backend(backend.as_ref(), &build_dir, dry_run.is_none());
+        let scan = SourceScan::for_backend(backend.as_ref(), &build_dir, dry_run.is_none());
         let graph = build_module_graph(&sources, &dep_config.manifest.package.name, scan.as_ref())?;
         graph.validate()?;
 
@@ -944,7 +944,7 @@ fn build_workspace(
 
         let backend = cmod_build::compiler::make_backend(compiler_kind, &backend_cfg)?;
         let bmi_ext = backend.bmi_extension();
-        let scan = ClangScan::for_backend(backend.as_ref(), &build_dir, dry_run.is_none());
+        let scan = SourceScan::for_backend(backend.as_ref(), &build_dir, dry_run.is_none());
         let graph = build_module_graph(&sources, &member.name, scan.as_ref())?;
         graph.validate()?;
         let mut runner_instance = BuildRunner::new(backend, Some(cache))
@@ -1005,16 +1005,15 @@ fn build_workspace(
 
 /// Build a ModuleGraph from discovered source files.
 ///
-/// Imports come from `clang` (see [`ClangScan`]) when given, otherwise from
-/// the source text.
+/// Imports come from `scan` when given, otherwise from the source text.
 pub(crate) fn build_module_graph(
     sources: &[std::path::PathBuf],
     package_name: &str,
-    clang: Option<&ClangScan>,
+    scan: Option<&SourceScan>,
 ) -> Result<ModuleGraph, CmodError> {
     let mut graph = ModuleGraph::new();
 
-    let all_imports = scan_imports(sources, clang)?;
+    let all_imports = scan_imports(sources, scan)?;
 
     for (source, imports) in sources.iter().zip(all_imports) {
         let kind = runner::classify_source(source)?;
@@ -1081,92 +1080,69 @@ pub(crate) fn build_module_graph(
     Ok(graph)
 }
 
-/// How `build_module_graph` scans a Clang package: `clang-scan-deps` in
-/// P1689 mode, run with the command line the package compiles with, so
-/// include paths and macros decide which `import`s count. Each source's
-/// result is kept with the headers the scan read, and reused while the
-/// source, the command and those headers are unchanged.
-pub(crate) struct ClangScan {
-    scan_deps: std::ffi::OsString,
-    compiler: std::path::PathBuf,
-    /// `compiler --version`: an in-place upgrade can change predefined
+/// How `build_module_graph` scans a package: the backend's P1689 scanner
+/// (`clang-scan-deps`, or `g++ -fdeps-*` from GCC 14), run with the command
+/// line the package compiles with, so include paths and macros decide which
+/// `import`s count. Each source's result is kept with the headers the scan
+/// read, and reused while the source, the command and those headers are
+/// unchanged.
+pub(crate) struct SourceScan<'a> {
+    backend: &'a dyn cmod_build::compiler::CompilerBackend,
+    /// The compiler's version: an in-place upgrade can change predefined
     /// macros, and with them which imports count.
     compiler_version: String,
-    flags: Vec<String>,
     /// Where results are kept between builds.
     state_path: std::path::PathBuf,
     /// Save results: false for dry runs, which write nothing.
     persist: bool,
 }
 
-/// Results of `ClangScan`, in the build directory.
+/// Results of `SourceScan`, in the build directory.
 const SCAN_STATE_FILE: &str = ".cmod-scan-state.json";
 
-impl ClangScan {
+impl<'a> SourceScan<'a> {
     /// The scan for packages built by `backend`, or `None` (source-text
-    /// extraction) when the backend is not Clang or `clang-scan-deps` cannot
-    /// be run.
+    /// extraction) when the backend has no scanner or it cannot be run.
     pub(crate) fn for_backend(
-        backend: &dyn cmod_build::compiler::CompilerBackend,
+        backend: &'a dyn cmod_build::compiler::CompilerBackend,
         build_dir: &std::path::Path,
         persist: bool,
     ) -> Option<Self> {
-        if backend.kind() != Compiler::Clang || !is_clang_scan_deps_available() {
-            return None;
-        }
-        Some(ClangScan {
-            scan_deps: scan_deps_binary(),
-            compiler: backend.compiler_path().to_path_buf(),
+        let probe = backend.scan_command(
+            std::path::Path::new("probe.cpp"),
+            std::path::Path::new("probe.d"),
+            false,
+        )?;
+        let runs = std::process::Command::new(probe.command.get_program())
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        runs.then(|| SourceScan {
+            backend,
             compiler_version: backend.version(),
-            flags: backend.common_flags(),
             state_path: build_dir.join(SCAN_STATE_FILE),
             persist,
         })
     }
 
-    /// The scan command for `source`, writing the headers it reads to
-    /// `depfile`. `as_module` scans it as a module interface (`-x
-    /// c++-module`), as the backend compiles interfaces and partitions whose
-    /// extension is not `.cppm`.
-    fn command(
-        &self,
-        source: &std::path::Path,
-        depfile: &std::path::Path,
-        as_module: bool,
-    ) -> std::process::Command {
-        let mut cmd = std::process::Command::new(&self.scan_deps);
-        cmd.args(["--format=p1689", "--"])
-            .arg(&self.compiler)
-            .args(&self.flags);
-        if as_module {
-            cmd.args(["-x", "c++-module"]);
-        }
-        cmd.arg("-c")
-            .arg(source)
-            .arg("-o")
-            .arg(depfile.with_extension("o"))
-            .arg("-MD")
-            .arg("-MF")
-            .arg(depfile);
-        cmd
-    }
-
-    /// What a scan of `source` depends on, apart from headers: the scanner,
-    /// the command line and the source's content. `None` when the source
-    /// cannot be read.
+    /// What a scan of `source` depends on, apart from headers: the command
+    /// line, the compiler's version and the source's content. `None` when
+    /// the source cannot be read.
     fn key(&self, source: &std::path::Path, as_module: bool) -> Option<String> {
-        let mut inputs = self.scan_deps.to_string_lossy().into_owned();
-        inputs.push('\0');
-        inputs.push_str(&self.compiler.to_string_lossy());
+        // Scans write to a fresh directory each time: name a fixed depfile,
+        // so the command line is the same from one build to the next.
+        let scan = self
+            .backend
+            .scan_command(source, std::path::Path::new("scan.d"), as_module)?;
+        let mut inputs = scan.command.get_program().to_string_lossy().into_owned();
+        for arg in scan.command.get_args() {
+            inputs.push('\0');
+            inputs.push_str(&arg.to_string_lossy());
+        }
         inputs.push('\0');
         inputs.push_str(&self.compiler_version);
-        for flag in &self.flags {
-            inputs.push('\0');
-            inputs.push_str(flag);
-        }
-        if as_module {
-            inputs.push_str("\0-x\0c++-module");
-        }
         inputs.push('\0');
         inputs.push_str(&cmod_cache::key::hash_file(source).ok()?);
         Some(cmod_cache::key::hash_bytes(inputs.as_bytes()))
@@ -1180,23 +1156,34 @@ impl ClangScan {
         depfile: &std::path::Path,
         as_module: bool,
     ) -> Result<(Vec<String>, Option<Vec<HeaderState>>), CmodError> {
+        let Some(mut scan) = self.backend.scan_command(source, depfile, as_module) else {
+            return Err(CmodError::ModuleScanFailed {
+                reason: "no scanner for this compiler".to_string(),
+            });
+        };
+        let scanner = scan.command.get_program().to_string_lossy().into_owned();
         let started = epoch_millis();
-        let output = self
-            .command(source, depfile, as_module)
+        let output = scan
+            .command
             .output()
             .map_err(|e| CmodError::ModuleScanFailed {
-                reason: format!("failed to run clang-scan-deps: {}", e),
+                reason: format!("failed to run {}: {}", scanner, e),
             })?;
         if !output.status.success() {
             return Err(CmodError::ModuleScanFailed {
                 reason: format!(
-                    "clang-scan-deps failed for {}: {}",
+                    "{} failed for {}: {}",
+                    scanner,
                     source.display(),
                     String::from_utf8_lossy(&output.stderr)
                 ),
             });
         }
-        let imports = parse_p1689_imports(&String::from_utf8_lossy(&output.stdout))?;
+        let p1689 = match &scan.p1689_file {
+            Some(path) => std::fs::read_to_string(path)?,
+            None => String::from_utf8_lossy(&output.stdout).into_owned(),
+        };
+        let imports = cmod_build::compiler::parse_p1689_imports(&p1689)?;
         // A header that changed after the scan started may not be what the
         // scanner read: leave the headers unknown, so it scans again.
         let headers = std::fs::read_to_string(depfile).ok().and_then(|content| {
@@ -1223,25 +1210,25 @@ fn epoch_millis() -> u64 {
 
 /// The modules each source imports, in `sources` order.
 ///
-/// With a [`ClangScan`], each source is scanned by `clang-scan-deps` (in
-/// parallel: a large package scanned one source at a time dominated no-op
+/// With a [`SourceScan`], each source is scanned by the compiler's scanner
+/// (in parallel: a large package scanned one source at a time dominated no-op
 /// builds), unless its last result is still fresh. A source the scanner
 /// fails on falls back to source-text extraction, as does every source
 /// without a scan.
 fn scan_imports(
     sources: &[std::path::PathBuf],
-    clang: Option<&ClangScan>,
+    scan: Option<&SourceScan>,
 ) -> Result<Vec<Vec<String>>, CmodError> {
-    let Some(clang) = clang else {
+    let Some(scan) = scan else {
         return sources
             .iter()
             .map(|source| extract_imports_from_source(source))
             .collect();
     };
 
-    let mut state = cmod_build::incremental::CommandState::load(&clang.state_path);
-    // Interfaces and partitions not named `.cppm` are compiled with
-    // `-x c++-module` (see the Clang backend), so they are scanned that way.
+    let mut state = cmod_build::incremental::CommandState::load(&scan.state_path);
+    // Interfaces and partitions not named `.cppm`: Clang compiles them with
+    // `-x c++-module`, so they are scanned that way.
     let as_module: Vec<bool> = sources
         .iter()
         .map(|s| {
@@ -1256,7 +1243,7 @@ fn scan_imports(
     let keys: Vec<Option<String>> = sources
         .iter()
         .zip(&as_module)
-        .map(|(s, &m)| clang.key(s, m))
+        .map(|(s, &m)| scan.key(s, m))
         .collect();
     let mut results: Vec<Option<Vec<String>>> = sources
         .iter()
@@ -1285,7 +1272,7 @@ fn scan_imports(
                     pending.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
                 {
                     let depfile = depfiles.path().join(format!("{}.d", i));
-                    let result = clang.scan(&sources[i], &depfile, as_module[i]).ok();
+                    let result = scan.scan(&sources[i], &depfile, as_module[i]).ok();
                     *scanned[i].lock().unwrap_or_else(|e| e.into_inner()) = result;
                 }
             });
@@ -1314,50 +1301,10 @@ fn scan_imports(
     let current: std::collections::HashSet<String> =
         sources.iter().map(|s| s.display().to_string()).collect();
     state.outputs.retain(|path, _| current.contains(path));
-    if clang.persist {
-        let _ = state.save(&clang.state_path);
+    if scan.persist {
+        let _ = state.save(&scan.state_path);
     }
     Ok(results.into_iter().map(Option::unwrap_or_default).collect())
-}
-
-/// Resolve the `clang-scan-deps` binary path, respecting the `SCAN_DEPS` env var.
-fn scan_deps_binary() -> std::ffi::OsString {
-    std::env::var_os("SCAN_DEPS").unwrap_or_else(|| std::ffi::OsString::from("clang-scan-deps"))
-}
-
-/// Check if `clang-scan-deps` is available (respects `SCAN_DEPS` env var).
-fn is_clang_scan_deps_available() -> bool {
-    std::process::Command::new(scan_deps_binary())
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-/// Parse P1689 JSON format to extract required module names.
-fn parse_p1689_imports(json_str: &str) -> Result<Vec<String>, CmodError> {
-    let value: serde_json::Value =
-        serde_json::from_str(json_str).map_err(|e| CmodError::ModuleScanFailed {
-            reason: format!("failed to parse P1689 output: {}", e),
-        })?;
-
-    let mut imports = Vec::new();
-
-    // P1689 format: { "rules": [{ "requires": [{ "logical-name": "..." }] }] }
-    if let Some(rules) = value.get("rules").and_then(|r| r.as_array()) {
-        for rule in rules {
-            if let Some(requires) = rule.get("requires").and_then(|r| r.as_array()) {
-                for req in requires {
-                    if let Some(name) = req.get("logical-name").and_then(|n| n.as_str()) {
-                        imports.push(name.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(imports)
 }
 
 /// The compiler a manifest asks for: `[toolchain] compiler`, or clang.
@@ -2175,7 +2122,7 @@ mod tests {
             }]
         }"#;
 
-        let imports = parse_p1689_imports(json).unwrap();
+        let imports = cmod_build::compiler::parse_p1689_imports(json).unwrap();
         assert_eq!(imports, vec!["base", "utils"]);
     }
 
@@ -2189,20 +2136,20 @@ mod tests {
             }]
         }"#;
 
-        let imports = parse_p1689_imports(json).unwrap();
+        let imports = cmod_build::compiler::parse_p1689_imports(json).unwrap();
         assert!(imports.is_empty());
     }
 
     #[test]
     fn test_parse_p1689_empty_rules() {
         let json = r#"{"version": 1, "rules": []}"#;
-        let imports = parse_p1689_imports(json).unwrap();
+        let imports = cmod_build::compiler::parse_p1689_imports(json).unwrap();
         assert!(imports.is_empty());
     }
 
     #[test]
     fn test_parse_p1689_invalid_json() {
-        let result = parse_p1689_imports("not json");
+        let result = cmod_build::compiler::parse_p1689_imports("not json");
         assert!(result.is_err());
     }
 

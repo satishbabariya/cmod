@@ -6,15 +6,30 @@ use cmod_core::types::{Artifact, OptimizationLevel, Profile};
 
 use crate::depfile;
 
+/// A command from [`CompilerBackend::scan_command`].
+pub struct ScanCommand {
+    pub command: Command,
+    /// The file the P1689 JSON is written to, or `None` for stdout.
+    pub p1689_file: Option<PathBuf>,
+}
+
 /// Abstraction over a C++ compiler backend.
 ///
 /// Implemented by [`ClangBackend`] (reference), [`GccBackend`], and
 /// [`MsvcBackend`].
 pub trait CompilerBackend: Send + Sync {
-    /// Scan a source file for module dependencies.
+    /// The command that scans `source` for the modules it imports, run with
+    /// the flags this backend compiles with, so include paths and macros
+    /// decide which `import`s count. It writes P1689 JSON and lists the
+    /// headers it read in `depfile` (Make syntax). `as_module` marks a module
+    /// interface or partition whose extension does not say so.
     ///
-    /// Returns a list of module names that the source imports.
-    fn scan_deps(&self, source: &Path) -> Result<Vec<String>, CmodError>;
+    /// `None` when this backend has no such scanner; imports then come from
+    /// the source text.
+    fn scan_command(&self, source: &Path, depfile: &Path, as_module: bool) -> Option<ScanCommand> {
+        let _ = (source, depfile, as_module);
+        None
+    }
 
     /// Compile a module interface unit to produce a PCM (precompiled module)
     /// and an object file.
@@ -330,30 +345,28 @@ impl ClangBackend {
 }
 
 impl CompilerBackend for ClangBackend {
-    fn scan_deps(&self, source: &Path) -> Result<Vec<String>, CmodError> {
-        let output = Command::new(&self.scan_deps_path)
-            .arg("--format=p1689")
-            .arg("--")
-            .args(self.common_flags())
-            .arg(source)
-            .output()
-            .map_err(|e| CmodError::ModuleScanFailed {
-                reason: format!(
-                    "failed to run clang-scan-deps at {}: {}",
-                    self.scan_deps_path.display(),
-                    e
-                ),
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(CmodError::ModuleScanFailed {
-                reason: format!("clang-scan-deps failed: {}", stderr),
-            });
+    fn scan_command(&self, source: &Path, depfile: &Path, as_module: bool) -> Option<ScanCommand> {
+        let mut command = Command::new(&self.scan_deps_path);
+        command
+            .args(["--format=p1689", "--"])
+            .arg(&self.clang_path)
+            .args(self.common_flags());
+        // Interfaces not named `.cppm` compile with `-x c++-module`.
+        if as_module {
+            command.args(["-x", "c++-module"]);
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        parse_p1689_imports(&stdout)
+        command
+            .arg("-c")
+            .arg(source)
+            .arg("-o")
+            .arg(depfile.with_extension("o"))
+            .arg("-MD")
+            .arg("-MF")
+            .arg(depfile);
+        Some(ScanCommand {
+            command,
+            p1689_file: None,
+        })
     }
 
     fn compile_interface(
@@ -616,8 +629,9 @@ impl CompilerBackend for ClangBackend {
     }
 }
 
-/// Parse the P1689 JSON format from clang-scan-deps output to extract imports.
-fn parse_p1689_imports(output: &str) -> Result<Vec<String>, CmodError> {
+/// The modules a P1689 scan result (`clang-scan-deps`, `g++ -fdeps-*`)
+/// requires.
+pub fn parse_p1689_imports(output: &str) -> Result<Vec<String>, CmodError> {
     // P1689 format: JSON with "rules" array, each rule has "requires" array
     let value: serde_json::Value =
         serde_json::from_str(output).map_err(|e| CmodError::ModuleScanFailed {
@@ -652,7 +666,6 @@ fn parse_p1689_imports(output: &str) -> Result<Vec<String>, CmodError> {
     Ok(imports)
 }
 
-/// Find an executable on PATH, falling back to the name itself.
 /// GCC compiler backend (GCC 14+).
 ///
 /// Drives GCC's `-fmodules-ts` module model. CMIs (`.gcm`) are placed at the
@@ -669,6 +682,8 @@ pub struct GccBackend {
     /// Path to the g++ executable.
     pub gxx_path: PathBuf,
     config: BackendConfig,
+    /// `g++ --version`, once asked for.
+    version: std::sync::OnceLock<String>,
 }
 
 impl GccBackend {
@@ -679,6 +694,7 @@ impl GccBackend {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| find_executable("g++")),
             config: config.clone(),
+            version: std::sync::OnceLock::new(),
         }
     }
 
@@ -725,43 +741,33 @@ fn gcc_module_mapper<S: AsRef<str>>(entries: &[(S, PathBuf)]) -> String {
 }
 
 impl CompilerBackend for GccBackend {
-    fn scan_deps(&self, source: &Path) -> Result<Vec<String>, CmodError> {
-        let deps_file = std::env::temp_dir().join(format!(
-            "cmod-gcc-deps-{}-{}.json",
-            std::process::id(),
-            source.file_stem().and_then(|s| s.to_str()).unwrap_or("src")
-        ));
-
-        let output = Command::new(&self.gxx_path)
-            .args(self.config_flags())
-            .arg("-fdeps-format=p1689r5")
-            .arg(format!("-fdeps-file={}", deps_file.display()))
-            .arg("-fdeps-target=scan.o")
-            .arg("-E")
-            .arg("-x")
-            .arg("c++")
-            .arg(source)
-            .output()
-            .map_err(|e| CmodError::ModuleScanFailed {
-                reason: format!("failed to run g++ at {}: {}", self.gxx_path.display(), e),
-            })?;
-
-        if !output.status.success() {
-            let _ = std::fs::remove_file(&deps_file);
-            return Err(CmodError::ModuleScanFailed {
-                reason: format!(
-                    "g++ dependency scan failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                ),
-            });
+    fn scan_command(&self, source: &Path, depfile: &Path, _as_module: bool) -> Option<ScanCommand> {
+        // `-fdeps-*` arrived in GCC 14.
+        let major: u32 = self.version().split('.').next()?.parse().ok()?;
+        if major < 14 {
+            return None;
         }
-
-        let json =
-            std::fs::read_to_string(&deps_file).map_err(|e| CmodError::ModuleScanFailed {
-                reason: format!("failed to read g++ deps file: {}", e),
-            })?;
-        let _ = std::fs::remove_file(&deps_file);
-        parse_p1689_imports(&json)
+        let p1689 = depfile.with_extension("json");
+        let mut command = Command::new(&self.gxx_path);
+        command
+            .args(self.config_flags())
+            .args(["-E", "-x", "c++"])
+            .arg(source)
+            .arg("-o")
+            .arg(depfile.with_extension("ii"))
+            .arg("-fdeps-format=p1689r5")
+            .arg(format!("-fdeps-file={}", p1689.display()))
+            .arg(format!(
+                "-fdeps-target={}",
+                depfile.with_extension("o").display()
+            ))
+            .arg("-MD")
+            .arg("-MF")
+            .arg(depfile);
+        Some(ScanCommand {
+            command,
+            p1689_file: Some(p1689),
+        })
     }
 
     fn compile_interface(
@@ -889,16 +895,22 @@ impl CompilerBackend for GccBackend {
     }
 
     fn version(&self) -> String {
-        let out = Command::new(&self.gxx_path).arg("--version").output();
-        let stdout = match out {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
-            _ => return String::new(),
-        };
-        stdout
-            .split_whitespace()
-            .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()) && t.contains('.'))
-            .unwrap_or_default()
-            .to_string()
+        self.version
+            .get_or_init(|| {
+                let out = Command::new(&self.gxx_path).arg("--version").output();
+                let stdout = match out {
+                    Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+                    _ => return String::new(),
+                };
+                stdout
+                    .split_whitespace()
+                    .find(|t| {
+                        t.chars().next().is_some_and(|c| c.is_ascii_digit()) && t.contains('.')
+                    })
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .clone()
     }
 
     fn cxx_standard(&self) -> &str {
@@ -1054,15 +1066,6 @@ impl MsvcBackend {
         let _ = std::fs::remove_file(depfile::depfile_path(obj_output, "json"));
     }
 
-    /// Arguments for P1689 dependency scanning (`cl /scanDependencies`).
-    pub fn scan_args(&self, source: &Path, deps_file: &Path) -> Vec<String> {
-        let mut args = CompilerBackend::common_flags(self);
-        args.push("/scanDependencies".to_string());
-        args.push(deps_file.display().to_string());
-        args.push(source.display().to_string());
-        args
-    }
-
     /// Resolve a toolchain sibling of cl.exe (link.exe, lib.exe).
     ///
     /// Bare names are unsafe on PATH under Git Bash/MSYS, where coreutils'
@@ -1102,37 +1105,6 @@ impl MsvcBackend {
 }
 
 impl CompilerBackend for MsvcBackend {
-    fn scan_deps(&self, source: &Path) -> Result<Vec<String>, CmodError> {
-        let deps_file = std::env::temp_dir().join(format!(
-            "cmod-msvc-deps-{}-{}.json",
-            std::process::id(),
-            source.file_stem().and_then(|s| s.to_str()).unwrap_or("src")
-        ));
-        let mut args = self.scan_args(source, &deps_file);
-        args.push("/c".to_string());
-        let output = Command::new(&self.cl_path)
-            .args(&args)
-            .output()
-            .map_err(|e| CmodError::ModuleScanFailed {
-                reason: format!("failed to run cl at {}: {}", self.cl_path.display(), e),
-            })?;
-        if !output.status.success() {
-            let _ = std::fs::remove_file(&deps_file);
-            return Err(CmodError::ModuleScanFailed {
-                reason: format!(
-                    "cl dependency scan failed: {}",
-                    String::from_utf8_lossy(&output.stdout)
-                ),
-            });
-        }
-        let json =
-            std::fs::read_to_string(&deps_file).map_err(|e| CmodError::ModuleScanFailed {
-                reason: format!("failed to read cl deps file: {}", e),
-            })?;
-        let _ = std::fs::remove_file(&deps_file);
-        parse_p1689_imports(&json)
-    }
-
     fn compile_interface(
         &self,
         source: &Path,
@@ -1294,6 +1266,7 @@ impl CompilerBackend for MsvcBackend {
     }
 }
 
+/// Find an executable on PATH, falling back to the name itself.
 fn find_executable(name: &str) -> PathBuf {
     which(name).unwrap_or_else(|| PathBuf::from(name))
 }
@@ -1569,16 +1542,46 @@ mod tests {
     }
 
     #[test]
-    fn test_msvc_scan_args_shape() {
-        let cfg = BackendConfig {
+    fn test_clang_scan_command_shape() {
+        let backend = ClangBackend::from_config(&BackendConfig {
             cxx_standard: "20".to_string(),
             ..Default::default()
-        };
-        let backend = MsvcBackend::from_config(&cfg);
-        let args = backend.scan_args(Path::new("src/m.cppm"), Path::new("deps.json"));
-        assert!(args.contains(&"/scanDependencies".to_string()));
-        assert!(args.contains(&"deps.json".to_string()));
-        assert!(args.contains(&"src/m.cppm".to_string()));
+        });
+        let scan = backend
+            .scan_command(Path::new("src/m.ixx"), Path::new("out/0.d"), true)
+            .unwrap();
+        assert!(scan.p1689_file.is_none());
+        let args: Vec<String> = scan
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[..2], ["--format=p1689", "--"]);
+        assert_eq!(args[2], backend.clang_path.to_string_lossy());
+        assert!(args.contains(&"-std=c++20".to_string()), "{:?}", args);
+        assert!(
+            args.windows(2).any(|w| w == ["-x", "c++-module"]),
+            "{:?}",
+            args
+        );
+        assert!(
+            args.windows(2).any(|w| w == ["-MF", "out/0.d"]),
+            "{:?}",
+            args
+        );
+
+        let plain = backend
+            .scan_command(Path::new("src/main.cpp"), Path::new("out/0.d"), false)
+            .unwrap();
+        assert!(!plain.command.get_args().any(|a| a == "c++-module"));
+    }
+
+    #[test]
+    fn test_msvc_has_no_scan_command() {
+        let backend = MsvcBackend::from_config(&BackendConfig::default());
+        assert!(backend
+            .scan_command(Path::new("m.ixx"), Path::new("0.d"), true)
+            .is_none());
     }
 
     #[test]

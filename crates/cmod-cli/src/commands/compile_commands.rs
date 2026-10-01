@@ -12,7 +12,7 @@ use cmod_core::types::Compiler;
 use cmod_workspace::WorkspaceManager;
 
 use super::build::{
-    build_module_graph, member_build, member_include_dirs_of, setup_compiler, ClangScan,
+    build_module_graph, member_build, member_include_dirs_of, setup_compiler, SourceScan,
 };
 
 /// Run `cmod compile-commands` — generate a compile_commands.json without building.
@@ -97,7 +97,7 @@ fn package_commands(
     }
     let backend = make_backend(compiler_kind, &backend_cfg)?;
 
-    let scan = ClangScan::for_backend(backend.as_ref(), &build_dir, true);
+    let scan = SourceScan::for_backend(backend.as_ref(), &build_dir, true);
     let graph = build_module_graph(&sources, &config.manifest.package.name, scan.as_ref())?;
     graph.validate()?;
 
@@ -148,7 +148,7 @@ fn workspace_commands(config: &Config) -> Result<Vec<CompileCommand>, CmodError>
         add_module_files(&mut backend_cfg, &mb.compiler_kind, &pcms);
         let backend = make_backend(mb.compiler_kind, &backend_cfg)?;
 
-        let scan = ClangScan::for_backend(backend.as_ref(), &mb.build_dir, true);
+        let scan = SourceScan::for_backend(backend.as_ref(), &mb.build_dir, true);
         let graph = build_module_graph(&mb.sources, &member.name, scan.as_ref())?;
         graph.validate()?;
         let plan = BuildPlan::from_graph(

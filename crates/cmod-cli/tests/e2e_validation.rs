@@ -2771,6 +2771,101 @@ fn test_e2e_scan_handles_ixx_interfaces() {
     );
 }
 
+/// A g++ that writes P1689 (`-fdeps-*`, GCC 14+): `g++-14`, or `g++`.
+#[cfg(target_os = "linux")]
+fn gcc_with_scanner() -> Option<&'static str> {
+    ["g++-14", "g++"].into_iter().find(|gxx| {
+        Command::new(gxx)
+            .arg("-dumpversion")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| stdout(&o).trim().split('.').next()?.parse::<u32>().ok())
+            .is_some_and(|major| major >= 14)
+    })
+}
+
+/// GCC packages are scanned by g++ itself: the `#if 0` import is not one,
+/// and results are kept until the source changes, as with clang-scan-deps.
+/// Linux only: CI covers the GCC backend there.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_e2e_gcc_scan_follows_the_preprocessor_and_is_cached() {
+    let Some(gxx) = gcc_with_scanner() else {
+        eprintln!("Skipping: no g++ 14+ found");
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    write_rebuild_manifest(tmp.path(), "gscan", "");
+    let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
+    fs::write(
+        tmp.path().join("cmod.toml"),
+        manifest.replace("compiler = \"clang\"", "compiler = \"gcc\""),
+    )
+    .unwrap();
+    let src = tmp.path().join("src");
+    fs::write(src.join("config.h"), "#define USE_B 0\n").unwrap();
+    fs::write(
+        src.join("a.cppm"),
+        "module;\n#include \"config.h\"\nexport module local.a;\n\
+         #if USE_B\nimport local.b;\n#endif\nexport int a() { return 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("b.cppm"),
+        "export module local.b;\nimport local.a;\nexport int b() { return a() + 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("main.cpp"),
+        "import local.b;\nint main() { return b() == 2 ? 0 : 1; }\n",
+    )
+    .unwrap();
+
+    // Compile through a wrapper whose scans fail once `scan-off` exists:
+    // the second build can only succeed from cached results.
+    let wrapper = tmp.path().join("gxx-wrapper.sh");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nif [ -e {off:?} ]; then\n  for arg; do\n    \
+             case \"$arg\" in -fdeps-format=*) exit 97;; esac\n  done\nfi\n\
+             exec {gxx} \"$@\"\n",
+            off = tmp.path().join("scan-off"),
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let build = || {
+        Command::new(env!("CARGO_BIN_EXE_cmod"))
+            .args(["-v", "build"])
+            .current_dir(tmp.path())
+            .env("CXX", &wrapper)
+            .output()
+            .expect("failed to run cmod")
+    };
+
+    let output = build();
+    assert!(output.status.success(), "{}", stderr(&output));
+    fs::write(tmp.path().join("scan-off"), "").unwrap();
+    let output = build();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let run = Command::new(tmp.path().join("build/debug/gscan"))
+        .status()
+        .expect("failed to run built binary");
+    assert!(run.success());
+
+    // The header the scan read decides the imports: turning the import on
+    // scans again (and finds the cycle).
+    fs::remove_file(tmp.path().join("scan-off")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(src.join("config.h"), "#define USE_B 1\n").unwrap();
+    let output = build();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("circular"), "{}", stderr(&output));
+}
+
 /// Every entry of `compile_commands.json` compiles, after a build, for a
 /// package with a partition and a path dependency. Entries lacked the
 /// partition's BMI (`:part` imports were not resolved) and every path
