@@ -18,7 +18,7 @@ The first build after upgrading recompiles everything: old build state has no he
 
 ### Changed
 
-- The `e2e_validation` compile tests also run on Linux with `clang++` on PATH. They had only looked for Homebrew LLVM, so the Linux E2E job skipped all of them.
+- The `e2e_validation`, `example_projects` and `real_projects` compile tests also run on Linux with `clang++` on PATH. They had only looked for Homebrew LLVM, so the Linux E2E job skipped all of them.
 
 ## [0.1.0-alpha.6] - 2026-10-01
 

@@ -1,8 +1,9 @@
 //! End-to-end tests that compile the example projects using real clang++.
 //!
 //! These tests copy each example project to a temp directory, run `cmod build`,
-//! and verify the output. They are automatically skipped when Homebrew LLVM
-//! Clang is not available.
+//! and verify the output. They are automatically skipped when no Clang that
+//! builds modules is available: Homebrew LLVM on macOS, `clang++` on PATH on
+//! Linux.
 //!
 //! Run all tests:
 //!   cargo test --test example_projects
@@ -95,12 +96,17 @@ fn run_cmod_with_llvm(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("failed to run cmod")
 }
 
-/// Check if Homebrew LLVM Clang is available.
+/// Check if a Clang that builds C++20 modules is available: Homebrew LLVM,
+/// or on Linux any `clang++` on PATH (Apple's clang cannot build modules).
 fn has_llvm_clang() -> bool {
-    let llvm_clang = Path::new("/opt/homebrew/opt/llvm/bin/clang++");
-    if !llvm_clang.exists() {
+    let homebrew = Path::new("/opt/homebrew/opt/llvm/bin/clang++");
+    let llvm_clang = if homebrew.exists() {
+        homebrew
+    } else if cfg!(target_os = "linux") {
+        Path::new("clang++")
+    } else {
         return false;
-    }
+    };
     Command::new(llvm_clang)
         .arg("--version")
         .stdout(std::process::Stdio::null())
