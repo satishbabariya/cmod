@@ -2610,52 +2610,7 @@ fn test_e2e_workspace_noop_build_links_nothing() {
     }
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
-    fs::write(
-        root.join("cmod.toml"),
-        "[package]\nname = \"ws\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
-         [workspace]\nmembers = [\"a\", \"b\", \"c\", \"app\"]\n",
-    )
-    .unwrap();
-    let member = |name: &str, build_type: &str, deps: &str| {
-        let dir = root.join(name);
-        fs::create_dir_all(dir.join("src")).unwrap();
-        fs::write(
-            dir.join("cmod.toml"),
-            format!(
-                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
-                 [module]\nname = \"local.{name}\"\nroot = \"src/lib.cppm\"\n\n\
-                 [dependencies]\n{deps}\n\
-                 [toolchain]\ncompiler = \"clang\"\ncxx_standard = \"20\"\n\n\
-                 [build]\ntype = \"{build_type}\"\n"
-            ),
-        )
-        .unwrap();
-        dir
-    };
-    for name in ["a", "b", "c"] {
-        let dir = member(name, "static-lib", "");
-        fs::write(
-            dir.join("src/lib.cppm"),
-            format!("export module local.{name};\n\nexport int {name}() {{ return 1; }}\n"),
-        )
-        .unwrap();
-    }
-    let app = member(
-        "app",
-        "binary",
-        "a = { path = \"../a\" }\nb = { path = \"../b\" }\nc = { path = \"../c\" }\n",
-    );
-    fs::write(
-        app.join("src/lib.cppm"),
-        "export module local.app;\nimport local.a;\nimport local.b;\nimport local.c;\n\n\
-         export int total() { return a() + b() + c(); }\n",
-    )
-    .unwrap();
-    fs::write(
-        app.join("src/main.cpp"),
-        "import local.app;\n\nint main() { return total() == 3 ? 0 : 1; }\n",
-    )
-    .unwrap();
+    write_three_member_workspace(root);
 
     let output = run_cmod_with_llvm(root, &["build"]);
     assert!(output.status.success(), "{}", stderr(&output));
@@ -2853,8 +2808,64 @@ fn test_e2e_compile_commands_entries_compile() {
     )
     .unwrap();
     assert_eq!(db.len(), 3, "{:#?}", db);
-    let out = tmp.path().join("entry.o");
-    for entry in &db {
+    assert_entries_compile(&db, &tmp.path().join("entry.o"));
+}
+
+/// A workspace of library members `a`, `b` and `c`, and a binary member
+/// `app` that imports all three and returns 0 when they add up to 3.
+fn write_three_member_workspace(root: &Path) {
+    fs::write(
+        root.join("cmod.toml"),
+        "[package]\nname = \"ws\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+         [workspace]\nmembers = [\"a\", \"b\", \"c\", \"app\"]\n",
+    )
+    .unwrap();
+    let member = |name: &str, build_type: &str, deps: &str| {
+        let dir = root.join(name);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("cmod.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+                 [module]\nname = \"local.{name}\"\nroot = \"src/lib.cppm\"\n\n\
+                 [dependencies]\n{deps}\n\
+                 [toolchain]\ncompiler = \"clang\"\ncxx_standard = \"20\"\n\n\
+                 [build]\ntype = \"{build_type}\"\n"
+            ),
+        )
+        .unwrap();
+        dir
+    };
+    for name in ["a", "b", "c"] {
+        let dir = member(name, "static-lib", "");
+        fs::write(
+            dir.join("src/lib.cppm"),
+            format!("export module local.{name};\n\nexport int {name}() {{ return 1; }}\n"),
+        )
+        .unwrap();
+    }
+    let app = member(
+        "app",
+        "binary",
+        "a = { path = \"../a\" }\nb = { path = \"../b\" }\nc = { path = \"../c\" }\n",
+    );
+    fs::write(
+        app.join("src/lib.cppm"),
+        "export module local.app;\nimport local.a;\nimport local.b;\nimport local.c;\n\n\
+         export int total() { return a() + b() + c(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        app.join("src/main.cpp"),
+        "import local.app;\n\nint main() { return total() == 3 ? 0 : 1; }\n",
+    )
+    .unwrap();
+}
+
+/// Run every entry of a `compile_commands.json`, writing to `out`, and
+/// fail with the compiler's error if one does not compile.
+fn assert_entries_compile(db: &[serde_json::Value], out: &Path) {
+    for entry in db {
         let mut args: Vec<String> = entry["arguments"]
             .as_array()
             .unwrap()
@@ -2880,4 +2891,50 @@ fn test_e2e_compile_commands_entries_compile() {
             String::from_utf8_lossy(&run.stderr)
         );
     }
+}
+
+/// A workspace root gets one database with every member's entries, each
+/// compiling with the upstream members' BMIs. It used to warn "no source
+/// files" and write nothing.
+#[test]
+fn test_e2e_workspace_compile_commands() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_three_member_workspace(tmp.path());
+    let output = run_cmod_with_llvm(tmp.path(), &["build"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let output = run_cmod_with_llvm(tmp.path(), &["compile-commands"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let db: Vec<serde_json::Value> = serde_json::from_str(
+        &fs::read_to_string(tmp.path().join("compile_commands.json")).unwrap(),
+    )
+    .unwrap();
+    let mut files: Vec<String> = db
+        .iter()
+        .map(|e| {
+            let file = Path::new(e["file"].as_str().unwrap());
+            let member = file.parent().unwrap().parent().unwrap();
+            format!(
+                "{}/{}",
+                member.file_name().unwrap().to_string_lossy(),
+                file.file_name().unwrap().to_string_lossy()
+            )
+        })
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        [
+            "a/lib.cppm",
+            "app/lib.cppm",
+            "app/main.cpp",
+            "b/lib.cppm",
+            "c/lib.cppm"
+        ]
+    );
+    assert_entries_compile(&db, &tmp.path().join("entry.o"));
 }
