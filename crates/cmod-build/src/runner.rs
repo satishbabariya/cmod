@@ -7,13 +7,16 @@ use std::time::Instant;
 
 use crossbeam_channel::bounded;
 
-use cmod_cache::cache::{ArtifactCache, ArtifactMetadata, CachedArtifactEntry};
-use cmod_cache::key::{hash_file, CacheKey, CacheKeyInputs};
+use cmod_cache::cache::{
+    ArtifactCache, ArtifactMetadata, CachedArtifactEntry, IncludeManifest, INCLUDE_MANIFEST_FILE,
+};
+use cmod_cache::key::{hash_file, CacheKey, CacheKeyInputs, HeaderDigest};
 use cmod_core::error::CmodError;
 use cmod_core::shell::Shell;
 use cmod_core::types::{Artifact, BuildType, NodeKind, Profile};
 
 use crate::compiler::CompilerBackend;
+use crate::depfile;
 use crate::graph::ModuleGraph;
 use crate::incremental::BuildState;
 use crate::plan::{BuildNode, BuildPlan};
@@ -35,6 +38,18 @@ pub struct BuildStats {
     pub total_compile_time_ms: u64,
     /// Per-node compile times in milliseconds, keyed by node ID.
     pub node_timings: BTreeMap<String, u64>,
+}
+
+/// `(absolute path, content hash)` of each header a source included.
+type IncludedHeaders = Vec<(PathBuf, String)>;
+
+/// What a compiled or restored node was built against, for the next
+/// build's incremental check ([`BuildState::record_node`]).
+#[derive(Default)]
+struct NodeInputs {
+    dep_hashes: Vec<String>,
+    /// `None` when unknown.
+    headers: Option<IncludedHeaders>,
 }
 
 /// Build runner that executes a build plan.
@@ -61,6 +76,10 @@ pub struct BuildRunner {
     shell: Option<Arc<Shell>>,
     /// Optional distributed worker pool for remote compilation.
     worker_pool: Option<crate::distributed::WorkerPool>,
+    /// Content hashes of headers and dependency outputs read during the
+    /// current build (`None`: unreadable). Many sources include the same
+    /// headers and import the same BMIs.
+    file_hashes: Mutex<HashMap<PathBuf, Option<String>>>,
 }
 
 /// Outcome of executing a single build node.
@@ -98,6 +117,7 @@ impl BuildRunner {
             bmi_dirs: Vec::new(),
             shell: None,
             worker_pool: None,
+            file_hashes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -258,6 +278,13 @@ impl BuildRunner {
         format!("{:x}", hasher.finalize())
     }
 
+    fn clear_file_hashes(&self) {
+        match self.file_hashes.lock() {
+            Ok(mut guard) => guard.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+    }
+
     /// Get the effective parallelism level.
     pub fn effective_jobs(&self) -> usize {
         if self.max_jobs == 0 {
@@ -327,27 +354,45 @@ impl BuildRunner {
         self.execute_plan(&plan)
     }
 
-    /// Compute a cache key for a build node.
-    fn compute_cache_key(&self, node: &BuildNode, plan: &BuildPlan) -> Option<(String, CacheKey)> {
-        let source = node.source.as_ref()?;
-        let module_id = node.module_name.as_ref()?;
-
-        let source_hash = hash_file(source).ok()?;
-
-        // Gather dependency hashes from the dependency output files
-        let mut dep_hashes = Vec::new();
+    /// Content hashes of the outputs of `node`'s dependencies, as they are on
+    /// disk now: the plan's own dependency nodes in `node.dependencies`
+    /// order, then the BMIs of imported modules from other packages.
+    fn dep_output_hashes(&self, node: &BuildNode, plan: &BuildPlan) -> Vec<String> {
+        let mut hashes = Vec::new();
         for dep_id in &node.dependencies {
-            // Find the dependency node and hash its outputs
             if let Some(dep_node) = plan.nodes.iter().find(|n| &n.id == dep_id) {
                 for output in &dep_node.outputs {
-                    if output.exists() {
-                        if let Ok(h) = hash_file(output) {
-                            dep_hashes.push(h);
-                        }
+                    if let Some(hash) = self.hash_input(output) {
+                        hashes.push(hash);
                     }
                 }
             }
         }
+        for module in &node.external_imports {
+            if let Some(hash) = self
+                .extra_pcm_paths
+                .get(module)
+                .and_then(|bmi| self.hash_input(bmi))
+            {
+                hashes.push(hash);
+            }
+        }
+        hashes
+    }
+
+    /// Compute a node's cache key from everything but its headers. Artifacts
+    /// live under [`CacheKey::with_headers`] of this key; its include
+    /// manifest under [`CacheKey::include_manifest_key`].
+    fn compute_cache_key(
+        &self,
+        node: &BuildNode,
+        plan: &BuildPlan,
+        dep_hashes: &[String],
+    ) -> Option<(String, CacheKey)> {
+        let source = node.source.as_ref()?;
+        let module_id = node.module_name.as_ref()?;
+
+        let source_hash = hash_file(source).ok()?;
 
         let compiler_version = self.compiler_version().to_string();
 
@@ -356,7 +401,7 @@ impl BuildRunner {
         // codegen — so those no longer need individual fields here.
         let inputs = CacheKeyInputs {
             source_hash,
-            dependency_hashes: dep_hashes,
+            dependency_hashes: dep_hashes.to_vec(),
             compiler: self.backend.kind().to_string(),
             compiler_version,
             cxx_standard: self.backend.cxx_standard().to_string(),
@@ -366,6 +411,186 @@ impl BuildRunner {
         };
 
         Some((module_id.clone(), CacheKey::compute(&inputs)))
+    }
+
+    /// Content hash of a header or dependency output, computed once per
+    /// build. Only call it for a dependency output once that dependency has
+    /// finished: the scheduler guarantees this for a node's own
+    /// dependencies.
+    fn hash_input(&self, path: &Path) -> Option<String> {
+        let lock = || match self.file_hashes.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(hash) = lock().get(path) {
+            return hash.clone();
+        }
+        // Hash outside the lock: BMIs can be large, and workers hash in
+        // parallel. Two workers may hash the same file once each.
+        let hash = hash_file(path).ok();
+        lock().insert(path.to_path_buf(), hash.clone());
+        hash
+    }
+
+    /// The headers the compile that just wrote `obj_output` read, hashed:
+    /// absolute paths for build state, and package-relative digests for
+    /// cache keys. `None` when the compiler reported no header list or a
+    /// header can no longer be read.
+    fn hashed_headers(
+        &self,
+        source: &Path,
+        obj_output: &Path,
+    ) -> Option<(IncludedHeaders, Vec<HeaderDigest>)> {
+        let paths = self.backend.included_headers(source, obj_output)?;
+        let root = package_root(source);
+        let mut included = Vec::with_capacity(paths.len());
+        let mut digests = Vec::with_capacity(paths.len());
+        for path in paths {
+            let hash = self.hash_input(&path)?;
+            digests.push(HeaderDigest {
+                path: portable_header_path(&path, root.as_deref()),
+                hash: hash.clone(),
+            });
+            included.push((path, hash));
+        }
+        Some((included, digests))
+    }
+
+    /// Restore a node's outputs from the cache. `key` covers everything but
+    /// the headers; the include manifest stored under it names the header
+    /// sets seen before, and the first set whose headers all still have the
+    /// recorded content gives the artifacts' key. Local manifest first, then
+    /// the remote one. Returns the matched headers on a hit.
+    fn restore_from_cache(
+        &self,
+        module_id: &str,
+        key: &CacheKey,
+        node: &BuildNode,
+    ) -> Option<IncludedHeaders> {
+        if self.no_cache {
+            return None;
+        }
+        let source = node.source.as_ref()?;
+        let root = package_root(source);
+
+        let local = self
+            .cache
+            .as_ref()
+            .and_then(|cache| cache.get_include_manifest(module_id, key))
+            .unwrap_or_default();
+        for entry in &local.entries {
+            if let Some(headers) =
+                self.restore_header_set(module_id, key, entry, root.as_deref(), node)
+            {
+                return Some(headers);
+            }
+        }
+
+        let scratch = depfile::depfile_path(node.outputs.last()?, "remote-includes.json");
+        let remote = self.fetch_remote_include_manifest(module_id, key, &scratch)?;
+        for entry in remote.entries.iter().filter(|e| !local.entries.contains(e)) {
+            if let Some(headers) =
+                self.restore_header_set(module_id, key, entry, root.as_deref(), node)
+            {
+                if let Some(ref cache) = self.cache {
+                    let mut merged = local.clone();
+                    merged.record(entry.clone());
+                    let _ = cache.store_include_manifest(module_id, key, &merged);
+                }
+                return Some(headers);
+            }
+        }
+        None
+    }
+
+    /// Restore a node's outputs for one recorded header set, if every header
+    /// in it still has the recorded content.
+    fn restore_header_set(
+        &self,
+        module_id: &str,
+        key: &CacheKey,
+        entry: &[HeaderDigest],
+        root: Option<&Path>,
+        node: &BuildNode,
+    ) -> Option<IncludedHeaders> {
+        let mut headers = Vec::with_capacity(entry.len());
+        for digest in entry {
+            let path = resolve_header_path(&digest.path, root);
+            let hash = self.hash_input(&path)?;
+            if hash != digest.hash {
+                return None;
+            }
+            headers.push((path, hash));
+        }
+        self.try_cache_restore(module_id, &key.with_headers(entry), node)
+            .then_some(headers)
+    }
+
+    /// Download the remote include manifest for `key` via `scratch`.
+    fn fetch_remote_include_manifest(
+        &self,
+        module_id: &str,
+        key: &CacheKey,
+        scratch: &Path,
+    ) -> Option<IncludeManifest> {
+        let remote = self.remote_cache.as_ref()?;
+        let fetched = remote
+            .get(
+                module_id,
+                &key.include_manifest_key(),
+                INCLUDE_MANIFEST_FILE,
+                scratch,
+            )
+            .unwrap_or(false);
+        let manifest = if fetched {
+            fs::read_to_string(scratch)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+        } else {
+            None
+        };
+        let _ = fs::remove_file(scratch);
+        manifest
+    }
+
+    /// Add a compiled node's header set to the include manifest for `key`,
+    /// locally and, when configured, in the remote cache (merged with the
+    /// remote copy first, so other machines' sets are kept).
+    fn record_include_manifest(
+        &self,
+        module_id: &str,
+        key: &CacheKey,
+        headers: Vec<HeaderDigest>,
+        obj_output: &Path,
+    ) {
+        if self.no_cache {
+            return;
+        }
+        let Some(ref cache) = self.cache else {
+            return;
+        };
+        let mut manifest = cache
+            .get_include_manifest(module_id, key)
+            .unwrap_or_default();
+        let scratch = depfile::depfile_path(obj_output, "remote-includes.json");
+        if let Some(remote) = self.fetch_remote_include_manifest(module_id, key, &scratch) {
+            manifest.merge(remote);
+        }
+        manifest.record(headers);
+
+        let Ok(path) = cache.store_include_manifest(module_id, key, &manifest) else {
+            return;
+        };
+        if let Some(ref remote) = self.remote_cache {
+            let manifest_key = key.include_manifest_key();
+            let _ = remote.put(module_id, &manifest_key, INCLUDE_MANIFEST_FILE, &path);
+            let _ = remote.put(
+                module_id,
+                &manifest_key,
+                "metadata.json",
+                &path.with_file_name("metadata.json"),
+            );
+        }
     }
 
     /// Try to restore a node's outputs from cache. Returns true on hit.
@@ -538,10 +763,17 @@ impl BuildRunner {
             let _ = cache.store(module_id, key, &metadata, &file_refs);
         }
 
-        // Push to remote cache if configured
+        // Push to remote cache if configured. Metadata goes last: restores
+        // need it, so an entry is never visible before its artifacts are.
         if let Some(ref remote) = self.remote_cache {
             for (name, path) in &artifact_files {
                 let _ = remote.put(module_id, key, name, path);
+            }
+            if let Some(ref cache) = self.cache {
+                let meta_path = cache.entry_dir(module_id, key).join("metadata.json");
+                if meta_path.exists() {
+                    let _ = remote.put(module_id, key, "metadata.json", &meta_path);
+                }
             }
         }
     }
@@ -691,6 +923,9 @@ impl BuildRunner {
     /// The `build_state` and `flags_hash` enable incremental skip detection.
     /// If the node is unchanged since the last build, it is skipped without
     /// touching the cache at all.
+    ///
+    /// Also returns what the node was built against, for the next build's
+    /// incremental check.
     fn execute_node(
         &self,
         node: &BuildNode,
@@ -698,7 +933,7 @@ impl BuildRunner {
         pcm_map: &HashMap<String, PathBuf>,
         build_state: Option<&BuildState>,
         flags_hash: &str,
-    ) -> Result<NodeOutcome, CmodError> {
+    ) -> Result<(NodeOutcome, NodeInputs), CmodError> {
         let start = Instant::now();
 
         // Attempt distributed compilation for non-link nodes when a worker pool is configured.
@@ -713,44 +948,67 @@ impl BuildRunner {
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."));
             if let Some(outcome) = self.try_distribute_node(node, project_root)? {
-                return Ok(outcome);
+                // Remote workers report no header list.
+                return Ok((outcome, NodeInputs::default()));
             }
             // Fall through to local compilation
         }
 
         match node.kind {
-            NodeKind::Interface => {
+            NodeKind::Interface | NodeKind::Implementation | NodeKind::Object => {
                 let source = node.source.as_ref().unwrap();
-                let pcm_output = &node.outputs[0];
-                let obj_output = &node.outputs[1];
+                // Interface nodes output [BMI, object]; the others [object].
+                let obj_output = node.outputs.last().unwrap();
+                let label = match node.kind {
+                    NodeKind::Interface => format!("interface: {}", source.display()),
+                    NodeKind::Implementation => format!("impl: {}", source.display()),
+                    _ => source.display().to_string(),
+                };
+
+                let dep_hashes = self.dep_output_hashes(node, plan);
 
                 // Check incremental state first (cheapest check)
                 if !self.force_rebuild {
                     if let Some(state) = build_state {
-                        if state.needs_rebuild(node, flags_hash).is_none() {
+                        if state.needs_rebuild(node, flags_hash, &dep_hashes).is_none() {
                             self.emit_verbose("Up-to-date", source.display());
-                            return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
+                            return Ok((
+                                NodeOutcome::Skipped(start.elapsed().as_millis() as u64),
+                                NodeInputs::default(),
+                            ));
                         }
                     }
                 }
 
                 // Try cache next
-                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                    if self.try_cache_restore(&module_id, &key, node) {
-                        self.emit_verbose("Cached", format!("interface: {}", source.display()));
-                        return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
+                let base_key = self.compute_cache_key(node, plan, &dep_hashes);
+                if let Some((module_id, key)) = &base_key {
+                    if let Some(headers) = self.restore_from_cache(module_id, key, node) {
+                        self.emit_verbose("Cached", &label);
+                        return Ok((
+                            NodeOutcome::CacheHit(start.elapsed().as_millis() as u64),
+                            NodeInputs {
+                                dep_hashes,
+                                headers: Some(headers),
+                            },
+                        ));
                     }
                 }
 
                 // Try precompiled BMI from configured BMI directories
-                if let Some(module_name) = &node.module_name {
-                    if let Some(variant_dir) = self.find_precompiled_bmi(module_name) {
-                        if self.restore_bmi_from_dir(&variant_dir, node) {
-                            self.emit_verbose(
-                                "Precompiled",
-                                format!("interface: {}", source.display()),
-                            );
-                            return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
+                if node.kind == NodeKind::Interface {
+                    if let Some(module_name) = &node.module_name {
+                        if let Some(variant_dir) = self.find_precompiled_bmi(module_name) {
+                            if self.restore_bmi_from_dir(&variant_dir, node) {
+                                self.emit_verbose("Precompiled", &label);
+                                return Ok((
+                                    NodeOutcome::CacheHit(start.elapsed().as_millis() as u64),
+                                    NodeInputs {
+                                        dep_hashes,
+                                        headers: None,
+                                    },
+                                ));
+                            }
                         }
                     }
                 }
@@ -765,108 +1023,40 @@ impl BuildRunner {
                     .map(|(name, path)| (name.as_str(), path.as_path()))
                     .collect();
 
-                if let Some(parent) = pcm_output.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                if let Some(parent) = obj_output.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-
-                self.backend
-                    .compile_interface(source, pcm_output, obj_output, &all_pcms)?;
-
-                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                    self.cache_store(&module_id, &key, node);
-                }
-
-                self.emit("Compiled", format!("interface: {}", source.display()));
-                Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
-            }
-
-            NodeKind::Implementation => {
-                let source = node.source.as_ref().unwrap();
-                let obj_output = &node.outputs[0];
-
-                if !self.force_rebuild {
-                    if let Some(state) = build_state {
-                        if state.needs_rebuild(node, flags_hash).is_none() {
-                            self.emit_verbose("Up-to-date", source.display());
-                            return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
-                        }
+                for output in &node.outputs {
+                    if let Some(parent) = output.parent() {
+                        fs::create_dir_all(parent)?;
                     }
                 }
 
-                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                    if self.try_cache_restore(&module_id, &key, node) {
-                        self.emit_verbose("Cached", format!("impl: {}", source.display()));
-                        return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
-                    }
+                if node.kind == NodeKind::Interface {
+                    self.backend.compile_interface(
+                        source,
+                        &node.outputs[0],
+                        obj_output,
+                        &all_pcms,
+                    )?;
+                } else {
+                    self.backend
+                        .compile_implementation(source, obj_output, &all_pcms)?;
                 }
 
-                // Only pass PCMs that actually exist on disk to avoid races
-                // where a parallel Interface node is still writing a PCM file.
-                let all_pcms: Vec<(&str, &Path)> = pcm_map
-                    .iter()
-                    .filter(|(_, path)| path.exists())
-                    .map(|(name, path)| (name.as_str(), path.as_path()))
-                    .collect();
-
-                if let Some(parent) = obj_output.parent() {
-                    fs::create_dir_all(parent)?;
+                // Without the header list there is no correct key for the
+                // artifacts, so they are not cached.
+                let headers = self.hashed_headers(source, obj_output);
+                if let (Some((module_id, key)), Some((_, digests))) = (&base_key, &headers) {
+                    self.cache_store(module_id, &key.with_headers(digests), node);
+                    self.record_include_manifest(module_id, key, digests.clone(), obj_output);
                 }
 
-                self.backend
-                    .compile_implementation(source, obj_output, &all_pcms)?;
-
-                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                    self.cache_store(&module_id, &key, node);
-                }
-
-                self.emit("Compiled", format!("impl: {}", source.display()));
-                Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
-            }
-
-            NodeKind::Object => {
-                let source = node.source.as_ref().unwrap();
-                let obj_output = &node.outputs[0];
-
-                if !self.force_rebuild {
-                    if let Some(state) = build_state {
-                        if state.needs_rebuild(node, flags_hash).is_none() {
-                            self.emit_verbose("Up-to-date", source.display());
-                            return Ok(NodeOutcome::Skipped(start.elapsed().as_millis() as u64));
-                        }
-                    }
-                }
-
-                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                    if self.try_cache_restore(&module_id, &key, node) {
-                        self.emit_verbose("Cached", source.display());
-                        return Ok(NodeOutcome::CacheHit(start.elapsed().as_millis() as u64));
-                    }
-                }
-
-                if let Some(parent) = obj_output.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-
-                // Only pass PCMs that actually exist on disk to avoid races
-                // where a parallel Interface node is still writing a PCM file.
-                let all_pcms: Vec<(&str, &Path)> = pcm_map
-                    .iter()
-                    .filter(|(_, path)| path.exists())
-                    .map(|(name, path)| (name.as_str(), path.as_path()))
-                    .collect();
-
-                self.backend
-                    .compile_implementation(source, obj_output, &all_pcms)?;
-
-                if let Some((module_id, key)) = self.compute_cache_key(node, plan) {
-                    self.cache_store(&module_id, &key, node);
-                }
-
-                self.emit("Compiled", source.display());
-                Ok(NodeOutcome::Compiled(start.elapsed().as_millis() as u64))
+                self.emit("Compiled", &label);
+                Ok((
+                    NodeOutcome::Compiled(start.elapsed().as_millis() as u64),
+                    NodeInputs {
+                        dep_hashes,
+                        headers: headers.map(|(included, _)| included),
+                    },
+                ))
             }
 
             NodeKind::Link => {
@@ -881,7 +1071,10 @@ impl BuildRunner {
 
                 // Skip linking when there are no objects (e.g., header-only packages)
                 if obj_files.is_empty() {
-                    return Ok(NodeOutcome::Linked(start.elapsed().as_millis() as u64));
+                    return Ok((
+                        NodeOutcome::Linked(start.elapsed().as_millis() as u64),
+                        NodeInputs::default(),
+                    ));
                 }
 
                 let obj_refs: Vec<&Path> = obj_files.iter().map(|p| p.as_path()).collect();
@@ -905,7 +1098,10 @@ impl BuildRunner {
                 self.backend.link(&obj_refs, output, &artifact)?;
 
                 self.emit("Linked", output.display());
-                Ok(NodeOutcome::Linked(start.elapsed().as_millis() as u64))
+                Ok((
+                    NodeOutcome::Linked(start.elapsed().as_millis() as u64),
+                    NodeInputs::default(),
+                ))
             }
         }
     }
@@ -918,6 +1114,9 @@ impl BuildRunner {
     fn execute_plan(&self, plan: &BuildPlan) -> Result<(PathBuf, BuildStats), CmodError> {
         let wall_start = Instant::now();
         let jobs = self.effective_jobs();
+
+        // Headers may have changed since a previous build by this runner.
+        self.clear_file_hashes();
 
         // Load incremental build state
         let build_state = Arc::new(BuildState::load(&plan.build_dir));
@@ -1053,7 +1252,7 @@ impl BuildRunner {
                             Some(&build_state),
                             &flags_hash,
                         ) {
-                            Ok(outcome) => {
+                            Ok((outcome, inputs)) => {
                                 let ms = outcome.time_ms();
                                 total_compile_ms.fetch_add(ms as usize, Ordering::Relaxed);
                                 // Handle poisoned locks gracefully by recovering inner data
@@ -1069,37 +1268,46 @@ impl BuildRunner {
                                     NodeOutcome::CacheHit(_) => {
                                         cache_hits.fetch_add(1, Ordering::Relaxed);
                                         match new_build_state.lock() {
-                                            Ok(mut guard) => guard.record_node(node, &flags_hash),
-                                            Err(poisoned) => {
-                                                poisoned.into_inner().record_node(node, &flags_hash)
-                                            }
+                                            Ok(mut guard) => guard.record_node(
+                                                node,
+                                                &flags_hash,
+                                                &inputs.dep_hashes,
+                                                inputs.headers.as_deref(),
+                                            ),
+                                            Err(poisoned) => poisoned.into_inner().record_node(
+                                                node,
+                                                &flags_hash,
+                                                &inputs.dep_hashes,
+                                                inputs.headers.as_deref(),
+                                            ),
                                         }
                                     }
                                     NodeOutcome::Compiled(_) => {
                                         cache_misses.fetch_add(1, Ordering::Relaxed);
                                         match new_build_state.lock() {
-                                            Ok(mut guard) => guard.record_node(node, &flags_hash),
-                                            Err(poisoned) => {
-                                                poisoned.into_inner().record_node(node, &flags_hash)
-                                            }
+                                            Ok(mut guard) => guard.record_node(
+                                                node,
+                                                &flags_hash,
+                                                &inputs.dep_hashes,
+                                                inputs.headers.as_deref(),
+                                            ),
+                                            Err(poisoned) => poisoned.into_inner().record_node(
+                                                node,
+                                                &flags_hash,
+                                                &inputs.dep_hashes,
+                                                inputs.headers.as_deref(),
+                                            ),
                                         }
                                     }
                                     NodeOutcome::Skipped(_) => {
                                         incr_skipped.fetch_add(1, Ordering::Relaxed);
-                                        if let Some(prev) = build_state.nodes.get(&node.id) {
-                                            match new_build_state.lock() {
-                                                Ok(mut guard) => {
-                                                    guard
-                                                        .nodes
-                                                        .insert(node.id.clone(), prev.clone());
-                                                }
-                                                Err(poisoned) => {
-                                                    poisoned
-                                                        .into_inner()
-                                                        .nodes
-                                                        .insert(node.id.clone(), prev.clone());
-                                                }
+                                        match new_build_state.lock() {
+                                            Ok(mut guard) => {
+                                                guard.carry_over(&build_state, &node.id)
                                             }
+                                            Err(poisoned) => poisoned
+                                                .into_inner()
+                                                .carry_over(&build_state, &node.id),
                                         }
                                     }
                                     NodeOutcome::Linked(_) => {}
@@ -1195,6 +1403,7 @@ impl BuildRunner {
         plan: &BuildPlan,
     ) -> Result<(PathBuf, BuildStats), CmodError> {
         let wall_start = Instant::now();
+        self.clear_file_hashes();
         let build_state = BuildState::load(&plan.build_dir);
         let flags_hash = self.flags_hash();
         let mut pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
@@ -1204,7 +1413,7 @@ impl BuildRunner {
         let mut stats = BuildStats::default();
 
         for node in &plan.nodes {
-            let outcome =
+            let (outcome, inputs) =
                 self.execute_node(node, plan, &pcm_map, Some(&build_state), &flags_hash)?;
             let ms = outcome.time_ms();
             stats.node_timings.insert(node.id.clone(), ms);
@@ -1212,20 +1421,28 @@ impl BuildRunner {
                 NodeOutcome::CacheHit(ms) => {
                     stats.cache_hits += 1;
                     stats.total_compile_time_ms += ms;
-                    new_state.record_node(node, &flags_hash);
+                    new_state.record_node(
+                        node,
+                        &flags_hash,
+                        &inputs.dep_hashes,
+                        inputs.headers.as_deref(),
+                    );
                 }
                 NodeOutcome::Compiled(ms) => {
                     stats.cache_misses += 1;
                     stats.total_compile_time_ms += ms;
-                    new_state.record_node(node, &flags_hash);
+                    new_state.record_node(
+                        node,
+                        &flags_hash,
+                        &inputs.dep_hashes,
+                        inputs.headers.as_deref(),
+                    );
                 }
                 NodeOutcome::Skipped(ms) => {
                     stats.incremental_skipped += 1;
                     stats.total_compile_time_ms += ms;
                     // Preserve existing state for skipped nodes
-                    if let Some(prev) = build_state.nodes.get(&node.id) {
-                        new_state.nodes.insert(node.id.clone(), prev.clone());
-                    }
+                    new_state.carry_over(&build_state, &node.id);
                 }
                 NodeOutcome::Linked(ms) => {
                     stats.skipped += 1;
@@ -1243,6 +1460,39 @@ impl BuildRunner {
 
         stats.wall_time_ms = wall_start.elapsed().as_millis() as u64;
         Ok((final_output, stats))
+    }
+}
+
+/// The directory of the nearest `cmod.toml` above `source`: header paths
+/// inside it are cached relative to it, so checkouts in different places
+/// share cache entries.
+fn package_root(source: &Path) -> Option<PathBuf> {
+    source
+        .ancestors()
+        .skip(1)
+        .find(|dir| dir.join("cmod.toml").is_file())
+        .map(Path::to_path_buf)
+}
+
+/// A header path as recorded in an include manifest: relative to `root`
+/// (with `/` separators) when inside it, absolute otherwise.
+fn portable_header_path(path: &Path, root: Option<&Path>) -> String {
+    match root.and_then(|root| path.strip_prefix(root).ok()) {
+        Some(relative) => relative
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+        None => path.to_string_lossy().into_owned(),
+    }
+}
+
+/// Inverse of [`portable_header_path`].
+fn resolve_header_path(path: &str, root: Option<&Path>) -> PathBuf {
+    let path = Path::new(path);
+    match root {
+        Some(root) if path.is_relative() => root.join(path),
+        _ => path.to_path_buf(),
     }
 }
 

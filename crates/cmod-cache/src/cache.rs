@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 use cmod_core::error::CmodError;
 use serde::{Deserialize, Serialize};
 
-use crate::key::{hash_file, CacheKey};
+use crate::key::{hash_bytes, hash_file, CacheKey, HeaderDigest};
 
 /// Validate that a string is safe to use as a path component.
 ///
@@ -58,6 +58,49 @@ pub struct CachedArtifactEntry {
     pub name: String,
     pub hash: String,
     pub size: u64,
+}
+
+/// File name of an include manifest inside its cache entry.
+pub const INCLUDE_MANIFEST_FILE: &str = "includes.json";
+
+/// The header sets seen when compiling one source with one set of inputs
+/// (ccache's "direct mode" manifest).
+///
+/// A cached object's key covers the headers it included
+/// ([`CacheKey::with_headers`]), but which headers a source includes is only
+/// known after compiling it. The manifest, stored under
+/// [`CacheKey::include_manifest_key`], records each header set seen so far;
+/// a lookup re-hashes each set's headers on disk and tries the key of the
+/// first set that still matches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncludeManifest {
+    /// Header sets, most recently recorded first.
+    pub entries: Vec<Vec<HeaderDigest>>,
+}
+
+impl IncludeManifest {
+    /// How many header sets a manifest keeps. A source's header set changes
+    /// only when a header's own `#include`s or the files on the include path
+    /// change, so a few recent sets cover branch switching.
+    pub const MAX_ENTRIES: usize = 16;
+
+    /// Record `headers` as the most recent set, dropping an identical older
+    /// copy and the oldest sets beyond [`Self::MAX_ENTRIES`].
+    pub fn record(&mut self, headers: Vec<HeaderDigest>) {
+        self.entries.retain(|e| *e != headers);
+        self.entries.insert(0, headers);
+        self.entries.truncate(Self::MAX_ENTRIES);
+    }
+
+    /// Add every set in `other` this manifest lacks, after its own.
+    pub fn merge(&mut self, other: IncludeManifest) {
+        for entry in other.entries {
+            if !self.entries.contains(&entry) {
+                self.entries.push(entry);
+            }
+        }
+        self.entries.truncate(Self::MAX_ENTRIES);
+    }
 }
 
 /// Summary of cache state.
@@ -250,6 +293,61 @@ impl ArtifactCache {
         serde_json::from_str(&content).map_err(|e| CmodError::CacheError {
             reason: format!("invalid cache metadata: {}", e),
         })
+    }
+
+    /// Load the include manifest for sources whose inputs hash to `key`.
+    /// A missing or unreadable manifest is `None`: callers treat it as a
+    /// cache miss.
+    pub fn get_include_manifest(&self, module_id: &str, key: &CacheKey) -> Option<IncludeManifest> {
+        let dir = self
+            .validated_entry_dir(module_id, &key.include_manifest_key())
+            .ok()?;
+        let content = fs::read_to_string(dir.join(INCLUDE_MANIFEST_FILE)).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    /// Store the include manifest for sources whose inputs hash to `key`,
+    /// replacing any earlier one. Written to a temporary file and renamed,
+    /// so a concurrent reader never sees half a manifest. A `metadata.json`
+    /// beside it lets eviction, `cache inspect` and `cache push` treat it
+    /// like any other entry.
+    pub fn store_include_manifest(
+        &self,
+        module_id: &str,
+        key: &CacheKey,
+        manifest: &IncludeManifest,
+    ) -> Result<PathBuf, CmodError> {
+        let manifest_key = key.include_manifest_key();
+        let dir = self.validated_entry_dir(module_id, &manifest_key)?;
+        fs::create_dir_all(&dir)?;
+
+        let json = serde_json::to_vec_pretty(manifest).map_err(|e| CmodError::CacheError {
+            reason: format!("failed to serialize include manifest: {}", e),
+        })?;
+        let path = dir.join(INCLUDE_MANIFEST_FILE);
+        write_atomic(&path, &json)?;
+
+        let metadata = ArtifactMetadata {
+            module_name: module_id.to_string(),
+            cache_key: manifest_key.0.clone(),
+            source_hash: String::new(),
+            compiler: String::new(),
+            compiler_version: String::new(),
+            target: String::new(),
+            created_at: String::new(),
+            artifacts: vec![CachedArtifactEntry {
+                name: INCLUDE_MANIFEST_FILE.to_string(),
+                hash: hash_bytes(&json),
+                size: json.len() as u64,
+            }],
+        };
+        let meta_json =
+            serde_json::to_vec_pretty(&metadata).map_err(|e| CmodError::CacheError {
+                reason: format!("failed to serialize metadata: {}", e),
+            })?;
+        write_atomic(&dir.join("metadata.json"), &meta_json)?;
+
+        Ok(path)
     }
 
     /// Remove a single cache entry.
@@ -713,6 +811,18 @@ pub fn artifact_matches_metadata(metadata: &ArtifactMetadata, name: &str, path: 
     }
 }
 
+/// Write `data` to a temporary sibling of `path`, then rename it into place.
+fn write_atomic(path: &Path, data: &[u8]) -> Result<(), CmodError> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    let result = fs::write(&tmp, data).and_then(|_| fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result.map_err(CmodError::from)
+}
+
 /// Compress data using zstd.
 pub fn compress_zstd(data: &[u8]) -> Result<Vec<u8>, CmodError> {
     let mut encoder = zstd::Encoder::new(Vec::new(), 3).map_err(|e| CmodError::CacheError {
@@ -797,6 +907,79 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = ArtifactCache::new(tmp.path().to_path_buf());
         (tmp, cache)
+    }
+
+    fn header_set(hash: &str) -> Vec<HeaderDigest> {
+        vec![HeaderDigest {
+            path: "include/value.h".to_string(),
+            hash: hash.to_string(),
+        }]
+    }
+
+    #[test]
+    fn test_include_manifest_roundtrip() {
+        let (_tmp, cache) = test_cache();
+        let key = CacheKey("base".repeat(16));
+        assert_eq!(cache.get_include_manifest("local.app", &key), None);
+
+        let mut manifest = IncludeManifest::default();
+        manifest.record(header_set("h1"));
+        let path = cache
+            .store_include_manifest("local.app", &key, &manifest)
+            .unwrap();
+        assert!(path.ends_with(INCLUDE_MANIFEST_FILE));
+
+        assert_eq!(
+            cache.get_include_manifest("local.app", &key),
+            Some(manifest)
+        );
+        // Stored under its own key, with metadata, like any entry.
+        assert!(cache.has("local.app", &key.include_manifest_key()));
+        assert!(!cache.has("local.app", &key));
+        let info = cache
+            .inspect("local.app", &key.include_manifest_key())
+            .unwrap();
+        assert!(info.metadata.is_some());
+    }
+
+    #[test]
+    fn test_include_manifest_corrupt_is_none() {
+        let (_tmp, cache) = test_cache();
+        let key = CacheKey("base".repeat(16));
+        let dir = cache.entry_dir("local.app", &key.include_manifest_key());
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(INCLUDE_MANIFEST_FILE), "{\"entries\": [[{").unwrap();
+        assert_eq!(cache.get_include_manifest("local.app", &key), None);
+    }
+
+    #[test]
+    fn test_include_manifest_record_orders_and_dedupes() {
+        let mut manifest = IncludeManifest::default();
+        manifest.record(header_set("h1"));
+        manifest.record(header_set("h2"));
+        manifest.record(header_set("h1"));
+        assert_eq!(manifest.entries, vec![header_set("h1"), header_set("h2")]);
+
+        for i in 0..IncludeManifest::MAX_ENTRIES + 5 {
+            manifest.record(header_set(&format!("x{}", i)));
+        }
+        assert_eq!(manifest.entries.len(), IncludeManifest::MAX_ENTRIES);
+        assert_eq!(
+            manifest.entries[0],
+            header_set(&format!("x{}", IncludeManifest::MAX_ENTRIES + 4))
+        );
+    }
+
+    #[test]
+    fn test_include_manifest_merge() {
+        let mut local = IncludeManifest::default();
+        local.record(header_set("h1"));
+        let mut remote = IncludeManifest::default();
+        remote.record(header_set("h2"));
+        remote.record(header_set("h1"));
+
+        local.merge(remote);
+        assert_eq!(local.entries, vec![header_set("h1"), header_set("h2")]);
     }
 
     // --- remote-restore verification (#62 phase 1) ---

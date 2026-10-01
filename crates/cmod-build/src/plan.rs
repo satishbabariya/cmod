@@ -24,6 +24,10 @@ pub struct BuildNode {
     pub dependencies: Vec<String>,
     /// Output artifact paths.
     pub outputs: Vec<PathBuf>,
+    /// Modules this node imports that this plan does not build (those of
+    /// git, path and workspace dependencies). Their BMIs are inputs too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_imports: Vec<String>,
 }
 
 /// A complete build plan — an ordered sequence of build nodes.
@@ -91,6 +95,11 @@ impl BuildPlan {
                         source: Some(graph_node.source.clone()),
                         dependencies: deps,
                         outputs: vec![pcm_path.clone(), obj_path.clone()],
+                        external_imports: graph
+                            .external_imports
+                            .get(node_id)
+                            .cloned()
+                            .unwrap_or_default(),
                     };
 
                     pcm_paths.insert(module_name.clone(), pcm_path);
@@ -125,6 +134,11 @@ impl BuildPlan {
                         source: Some(graph_node.source.clone()),
                         dependencies: deps,
                         outputs: vec![obj_path.clone()],
+                        external_imports: graph
+                            .external_imports
+                            .get(node_id)
+                            .cloned()
+                            .unwrap_or_default(),
                     };
 
                     obj_paths.push(obj_path);
@@ -149,6 +163,11 @@ impl BuildPlan {
                         source: Some(graph_node.source.clone()),
                         dependencies: deps,
                         outputs: vec![obj_path.clone()],
+                        external_imports: graph
+                            .external_imports
+                            .get(node_id)
+                            .cloned()
+                            .unwrap_or_default(),
                     };
 
                     obj_paths.push(obj_path);
@@ -186,6 +205,7 @@ impl BuildPlan {
                 source: None,
                 dependencies: link_deps,
                 outputs: vec![link_output],
+                external_imports: Vec::new(),
             });
         }
 

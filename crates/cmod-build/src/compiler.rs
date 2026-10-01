@@ -4,6 +4,8 @@ use std::process::Command;
 use cmod_core::error::CmodError;
 use cmod_core::types::{Artifact, OptimizationLevel, Profile};
 
+use crate::depfile;
+
 /// Abstraction over a C++ compiler backend.
 ///
 /// Implemented by [`ClangBackend`] (reference), [`GccBackend`], and
@@ -82,6 +84,44 @@ pub trait CompilerBackend: Send + Sync {
     fn coverage_flags(&self) -> Option<Vec<String>> {
         None
     }
+
+    /// Headers the last successful compile of `source` into `obj_output`
+    /// read, from the dependency file the compile wrote next to the object.
+    /// `None` when there is no such file (it was compiled elsewhere, or the
+    /// compiler did not write one): callers must then treat the header set
+    /// as unknown, never as empty.
+    fn included_headers(&self, source: &Path, obj_output: &Path) -> Option<Vec<PathBuf>> {
+        let content = std::fs::read_to_string(depfile::depfile_path(obj_output, "d")).ok()?;
+        let cwd = std::env::current_dir().ok()?;
+        Some(depfile::header_list(
+            source,
+            depfile::parse_make_depfile(&content),
+            &cwd,
+        ))
+    }
+}
+
+/// `/sourceDependencies <obj>.json`: MSVC's list of the files a compile read.
+fn msvc_source_dependencies_args(obj_output: &Path) -> [String; 2] {
+    [
+        "/sourceDependencies".to_string(),
+        depfile::depfile_path(obj_output, "json")
+            .display()
+            .to_string(),
+    ]
+}
+
+/// `-MD -MF <obj>.d` for Clang and GCC. Removes a depfile left by an earlier
+/// compile first, so a compile that writes none can never report stale
+/// headers.
+fn make_depfile_args(obj_output: &Path) -> [String; 3] {
+    let path = depfile::depfile_path(obj_output, "d");
+    let _ = std::fs::remove_file(&path);
+    [
+        "-MD".to_string(),
+        "-MF".to_string(),
+        path.display().to_string(),
+    ]
 }
 
 /// One test binary for [`CompilerBackend::test_binary_command`].
@@ -346,6 +386,9 @@ impl CompilerBackend for ClangBackend {
         if needs_lang_override {
             pcm_cmd.args(["-x", "c++-module"]);
         }
+        // The precompile step is the one that reads the headers; the second
+        // pass only reads the PCM.
+        pcm_cmd.args(make_depfile_args(obj_output));
         let pcm_status = pcm_cmd
             .arg("--precompile")
             .arg("-o")
@@ -426,6 +469,7 @@ impl CompilerBackend for ClangBackend {
         }
 
         let status = cmd
+            .args(make_depfile_args(obj_output))
             .arg("-c")
             .arg("-o")
             .arg(obj_output)
@@ -752,6 +796,7 @@ impl CompilerBackend for GccBackend {
         let mut cmd = Command::new(&self.gxx_path);
         cmd.args(self.config_flags())
             .arg(format!("-fmodule-mapper={}", mapper.display()))
+            .args(make_depfile_args(obj_output))
             .arg("-x")
             .arg("c++")
             .arg("-c")
@@ -776,6 +821,7 @@ impl CompilerBackend for GccBackend {
         let mut cmd = Command::new(&self.gxx_path);
         cmd.args(self.config_flags())
             .arg(format!("-fmodule-mapper={}", mapper.display()))
+            .args(make_depfile_args(obj_output))
             .arg("-c")
             .arg("-o")
             .arg(obj_output)
@@ -971,6 +1017,7 @@ impl MsvcBackend {
         args.push("/ifcOutput".to_string());
         args.push(ifc_output.display().to_string());
         args.push(format!("/Fo{}", obj_output.display()));
+        args.extend(msvc_source_dependencies_args(obj_output));
         for (name, path) in dep_ifcs {
             args.push("/reference".to_string());
             args.push(format!("{}={}", name, path.display()));
@@ -989,12 +1036,19 @@ impl MsvcBackend {
         let mut args = CompilerBackend::common_flags(self);
         args.push("/c".to_string());
         args.push(format!("/Fo{}", obj_output.display()));
+        args.extend(msvc_source_dependencies_args(obj_output));
         for (name, path) in dep_ifcs {
             args.push("/reference".to_string());
             args.push(format!("{}={}", name, path.display()));
         }
         args.push(source.display().to_string());
         args
+    }
+
+    /// Remove the `/sourceDependencies` file an earlier compile of
+    /// `obj_output` left, so a compile that writes none reports no headers.
+    fn clear_source_dependencies(obj_output: &Path) {
+        let _ = std::fs::remove_file(depfile::depfile_path(obj_output, "json"));
     }
 
     /// Arguments for P1689 dependency scanning (`cl /scanDependencies`).
@@ -1089,6 +1143,7 @@ impl CompilerBackend for MsvcBackend {
         if let Some(parent) = obj_output.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        Self::clear_source_dependencies(obj_output);
         let args = self.interface_args(source, pcm_output, obj_output, dep_pcms);
         self.run_cl(&args, source)
     }
@@ -1102,6 +1157,7 @@ impl CompilerBackend for MsvcBackend {
         if let Some(parent) = obj_output.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        Self::clear_source_dependencies(obj_output);
         let args = self.implementation_args(source, obj_output, dep_pcms);
         self.run_cl(&args, source)
     }
@@ -1222,6 +1278,16 @@ impl CompilerBackend for MsvcBackend {
 
     fn bmi_extension(&self) -> &'static str {
         "ifc"
+    }
+
+    fn included_headers(&self, source: &Path, obj_output: &Path) -> Option<Vec<PathBuf>> {
+        let content = std::fs::read_to_string(depfile::depfile_path(obj_output, "json")).ok()?;
+        let cwd = std::env::current_dir().ok()?;
+        Some(depfile::header_list(
+            source,
+            depfile::parse_msvc_source_dependencies(&content)?,
+            &cwd,
+        ))
     }
 }
 
@@ -1436,6 +1502,14 @@ mod tests {
             .iter()
             .any(|a| a.contains("dep=") && a.contains("dep.ifc")));
         assert!(args.contains(&"src/m.cppm".to_string()));
+        let deps = args
+            .iter()
+            .position(|a| a == "/sourceDependencies")
+            .unwrap();
+        assert_eq!(
+            args[deps + 1],
+            Path::new("build/obj/m.o.json").display().to_string()
+        );
     }
 
     #[test]
@@ -1456,6 +1530,7 @@ mod tests {
             .iter()
             .any(|a| a.contains("dep=") && a.contains("dep.ifc")));
         assert!(args.contains(&"src/main.cpp".to_string()));
+        assert!(args.contains(&"/sourceDependencies".to_string()));
     }
 
     #[test]

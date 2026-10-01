@@ -39,12 +39,17 @@ pub struct ModuleNode {
 pub struct ModuleGraph {
     /// All nodes, keyed by unique node ID.
     pub nodes: BTreeMap<String, ModuleNode>,
+    /// Per node ID, imported modules that are not in this graph: those of
+    /// dependencies, built separately. Not graph edges, but their BMIs are
+    /// still inputs of the importing node.
+    pub external_imports: BTreeMap<String, Vec<String>>,
 }
 
 impl ModuleGraph {
     pub fn new() -> Self {
         ModuleGraph {
             nodes: BTreeMap::new(),
+            external_imports: BTreeMap::new(),
         }
     }
 

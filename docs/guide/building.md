@@ -65,7 +65,8 @@ incremental = true  # Enable incremental builds (default)
 
 A module is rebuilt when any of these change:
 - Source file content
-- Imported BMIs (upstream dependencies)
+- Content of any header it includes, as reported by the compiler (touching a header without changing it rebuilds nothing)
+- Imported BMIs, from this package or from dependencies, including ones rebuilt earlier in the same build
 - Compiler version or flags
 - Target triple
 - Standard library

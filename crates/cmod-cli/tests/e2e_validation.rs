@@ -1,8 +1,9 @@
 //! Comprehensive end-to-end validation tests for the cmod CLI.
 //!
 //! Tests are grouped by command/feature area. Tests requiring LLVM Clang
-//! (for actual C++20 module compilation) check for `/opt/homebrew/opt/llvm/bin/clang++`
-//! and skip gracefully if it is not available.
+//! (for actual C++20 module compilation) look for `/opt/homebrew/opt/llvm/bin/clang++`
+//! on macOS and `clang++` on PATH on Linux, and skip gracefully if neither
+//! is available.
 //!
 //! Run all tests:
 //!   cargo test --test e2e_validation
@@ -43,12 +44,17 @@ fn run_cmod_with_llvm(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("failed to run cmod")
 }
 
-/// Check if Homebrew LLVM Clang is available.
+/// Check if a Clang that builds C++20 modules is available: Homebrew LLVM,
+/// or on Linux any `clang++` on PATH (Apple's clang cannot build modules).
 fn has_llvm_clang() -> bool {
-    let llvm_clang = Path::new("/opt/homebrew/opt/llvm/bin/clang++");
-    if !llvm_clang.exists() {
+    let homebrew = Path::new("/opt/homebrew/opt/llvm/bin/clang++");
+    let llvm_clang = if homebrew.exists() {
+        homebrew
+    } else if cfg!(target_os = "linux") {
+        Path::new("clang++")
+    } else {
         return false;
-    }
+    };
     Command::new(llvm_clang)
         .arg("--version")
         .stdout(std::process::Stdio::null())
@@ -2059,4 +2065,209 @@ fn test_e2e_resolve_with_path_dep() {
 
     let lockfile = fs::read_to_string(tmp.path().join("cmod.lock")).unwrap();
     assert!(lockfile.contains("pathlib"));
+}
+
+// ─── Group 29: Rebuild Correctness ──────────────────────────────────────────
+//
+// Each of these failed on v0.1.0-alpha.6: the build succeeded and linked a
+// binary built from old inputs.
+
+/// Write a manifest for a binary package with its own cache directory, so
+/// cache hits come only from this test's builds.
+fn write_rebuild_manifest(dir: &Path, name: &str, extra: &str) {
+    fs::create_dir_all(dir.join("src")).unwrap();
+    let cache = dir.join(".test-cache");
+    fs::write(
+        dir.join("cmod.toml"),
+        format!(
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+             [toolchain]\ncompiler = \"clang\"\ncxx_standard = \"20\"\n\n\
+             [build]\ntype = \"binary\"\n{extra}\n\
+             [cache]\nlocal_path = {cache:?}\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// Build with `args`, then run the binary and return its stdout.
+fn build_and_run(dir: &Path, name: &str, args: &[&str]) -> String {
+    let output = run_cmod_with_llvm(dir, args);
+    assert!(
+        output.status.success(),
+        "{:?} failed: {}",
+        args,
+        stderr(&output)
+    );
+    let run = Command::new(dir.join("build/debug").join(name))
+        .output()
+        .expect("failed to run built binary");
+    assert!(run.status.success(), "binary failed: {}", stderr(&run));
+    stdout(&run).trim().to_string()
+}
+
+/// A module interface and a plain TU that both include `include/value.h`.
+fn write_header_project(dir: &Path) {
+    write_rebuild_manifest(dir, "hdr", "include_dirs = [\"include\"]\n");
+    fs::create_dir_all(dir.join("include")).unwrap();
+    fs::write(dir.join("include/value.h"), "#define VALUE 1\n").unwrap();
+    fs::write(
+        dir.join("src/lib.cppm"),
+        "module;\n#include \"value.h\"\nexport module local.hdr;\n\
+         export int module_value() { return VALUE; }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("src/plain.cpp"),
+        "#include \"value.h\"\nint plain_value() { return VALUE * 10; }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("src/main.cpp"),
+        "import local.hdr;\n#include <cstdio>\nint plain_value();\n\
+         int main() { std::printf(\"%d %d\\n\", module_value(), plain_value()); }\n",
+    )
+    .unwrap();
+}
+
+/// Rewrite a file so its mtime moves even on coarse-grained filesystems.
+fn rewrite(path: &Path, content: &str) {
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::write(path, content).unwrap();
+}
+
+#[test]
+fn test_e2e_header_change_rebuilds_includers() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_header_project(tmp.path());
+    assert_eq!(build_and_run(tmp.path(), "hdr", &["build"]), "1 10");
+
+    rewrite(&tmp.path().join("include/value.h"), "#define VALUE 2\n");
+    assert_eq!(build_and_run(tmp.path(), "hdr", &["build"]), "2 20");
+
+    // Touching a header without changing it rebuilds nothing.
+    rewrite(&tmp.path().join("include/value.h"), "#define VALUE 2\n");
+    let output = run_cmod_with_llvm(tmp.path(), &["build"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        !stderr(&output).contains("compiled"),
+        "touch should not recompile: {}",
+        stderr(&output)
+    );
+}
+
+/// `--force` skips build state and goes to the cache, whose keys used to
+/// cover only the source file: it handed back the object built with the old
+/// header.
+#[test]
+fn test_e2e_cache_key_covers_included_headers() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_header_project(tmp.path());
+    assert_eq!(build_and_run(tmp.path(), "hdr", &["build"]), "1 10");
+
+    rewrite(&tmp.path().join("include/value.h"), "#define VALUE 2\n");
+    assert_eq!(
+        build_and_run(tmp.path(), "hdr", &["build", "--force"]),
+        "2 20"
+    );
+
+    // Back to the first header: every object comes from the cache.
+    rewrite(&tmp.path().join("include/value.h"), "#define VALUE 1\n");
+    fs::remove_dir_all(tmp.path().join("build")).unwrap();
+    let output = run_cmod_with_llvm(tmp.path(), &["build"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("3 cached"),
+        "expected all cache hits: {}",
+        stderr(&output)
+    );
+    let run = Command::new(tmp.path().join("build/debug/hdr"))
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&run).trim(), "1 10");
+}
+
+/// A TU that imports a module rebuilt earlier in the same build was checked
+/// against the previous build's state, so it stayed "up-to-date" and kept
+/// the old inlined body until the next build.
+#[test]
+fn test_e2e_module_change_rebuilds_importer_in_same_build() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_rebuild_manifest(tmp.path(), "inl", "");
+    let lib = tmp.path().join("src/lib.cppm");
+    fs::write(
+        &lib,
+        "export module local.inl;\n\nexport inline int f() { return 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("src/main.cpp"),
+        "import local.inl;\n#include <cstdio>\nint main() { std::printf(\"%d\\n\", f()); }\n",
+    )
+    .unwrap();
+    assert_eq!(build_and_run(tmp.path(), "inl", &["build"]), "1");
+
+    rewrite(
+        &lib,
+        "export module local.inl;\n\nexport inline int f() { return 2; }\n",
+    );
+    assert_eq!(build_and_run(tmp.path(), "inl", &["build"]), "2");
+}
+
+/// A path dependency's BMI was not an input of the TUs importing it: after
+/// the dependency changed, they stayed "up-to-date" for good.
+#[test]
+fn test_e2e_path_dependency_change_rebuilds_importer() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_rebuild_manifest(
+        tmp.path(),
+        "pd",
+        "\n[dependencies]\ndep = { path = \"libs/dep\" }\n",
+    );
+    let dep = tmp.path().join("libs/dep");
+    fs::create_dir_all(dep.join("src")).unwrap();
+    fs::write(
+        dep.join("cmod.toml"),
+        "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+         [module]\nname = \"local.dep\"\nroot = \"src/lib.cppm\"\n\n\
+         [toolchain]\ncompiler = \"clang\"\ncxx_standard = \"20\"\n\n\
+         [build]\ntype = \"static-lib\"\n",
+    )
+    .unwrap();
+    let lib = dep.join("src/lib.cppm");
+    fs::write(
+        &lib,
+        "export module local.dep;\n\nexport inline int f() { return 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("src/main.cpp"),
+        "import local.dep;\n#include <cstdio>\nint main() { std::printf(\"%d\\n\", f()); }\n",
+    )
+    .unwrap();
+
+    let output = run_cmod_with_llvm(tmp.path(), &["resolve"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(build_and_run(tmp.path(), "pd", &["build"]), "1");
+
+    rewrite(
+        &lib,
+        "export module local.dep;\n\nexport inline int f() { return 2; }\n",
+    );
+    assert_eq!(build_and_run(tmp.path(), "pd", &["build"]), "2");
 }
