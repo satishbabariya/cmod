@@ -284,8 +284,25 @@ fn dep_dir_on_disk(
 /// include directories (`#include <fmt/format.h>`), as most dependencies
 /// wrapping a header library are used.
 fn dep_is_used(dep_dir: &Path, imports: &BTreeSet<String>, includes: &BTreeSet<String>) -> bool {
+    let provides_header = |include_dirs: &[std::path::PathBuf]| {
+        includes
+            .iter()
+            .any(|header| include_dirs.iter().any(|dir| dir.join(header).is_file()))
+    };
+    // Without its own manifest, `Config::load` would find the package's;
+    // such a directory provides headers only.
+    if !dep_dir.join("cmod.toml").is_file() {
+        let dirs: Vec<_> = ["include", "inc"]
+            .iter()
+            .map(|d| dep_dir.join(d))
+            .filter(|d| d.is_dir())
+            .collect();
+        return provides_header(&dirs);
+    }
+    // A manifest that cannot be read leaves what it provides unknown: keep
+    // the dependency rather than remove one that may be in use.
     let Ok(dep_config) = Config::load(dep_dir) else {
-        return false;
+        return true;
     };
     // The modules it provides: the one its manifest names, and those its
     // interfaces declare (`nlohmann.json`, in a package named otherwise).
@@ -316,10 +333,7 @@ fn dep_is_used(dep_dir: &Path, imports: &BTreeSet<String>, includes: &BTreeSet<S
     }) {
         return true;
     }
-    let include_dirs = super::common::detect_include_dirs(dep_dir, &dep_config);
-    includes
-        .iter()
-        .any(|header| include_dirs.iter().any(|dir| dir.join(header).is_file()))
+    provides_header(&super::common::detect_include_dirs(dep_dir, &dep_config))
 }
 
 /// The package's own include directories (`include/`, `inc/`, `[build]
@@ -456,6 +470,31 @@ mod tests {
             no_default_features: false,
             no_cache: false,
         }
+    }
+
+    #[test]
+    fn test_dep_is_used_keeps_unreadable_manifest() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("cmod.toml"), "not [valid toml").unwrap();
+        assert!(dep_is_used(tmp.path(), &BTreeSet::new(), &BTreeSet::new()));
+    }
+
+    #[test]
+    fn test_dep_is_used_without_manifest_checks_its_headers() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("include/lib")).unwrap();
+        std::fs::write(tmp.path().join("include/lib/a.h"), "").unwrap();
+        let includes = |names: &[&str]| names.iter().map(|n| n.to_string()).collect();
+        assert!(dep_is_used(
+            tmp.path(),
+            &BTreeSet::new(),
+            &includes(&["lib/a.h"])
+        ));
+        assert!(!dep_is_used(
+            tmp.path(),
+            &BTreeSet::new(),
+            &includes(&["other.h"])
+        ));
     }
 
     #[test]
