@@ -272,11 +272,20 @@ impl BuildRunner {
         }
     }
 
-    /// Compute a hash representing the current compiler configuration.
+    /// Compute a hash representing the current compiler configuration:
+    /// the backend fingerprint plus the compiler executable and its
+    /// version. The fingerprint covers flags but not which compiler runs
+    /// them, so without the latter, pointing `CXX` at another installation
+    /// or upgrading one in place left objects and links "up-to-date". MSVC's
+    /// `link`/`lib` are resolved next to `cl`, so its path covers them.
     fn flags_hash(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(self.backend.fingerprint().as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.backend.compiler_path().to_string_lossy().as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.compiler_version().as_bytes());
         format!("{:x}", hasher.finalize())
     }
 
@@ -2223,6 +2232,25 @@ mod tests {
         // Outside the package: absolute, unchanged.
         let portable = portable_header_path(&outside, Some(root));
         assert_eq!(resolve_header_path(&portable, Some(root)), outside);
+    }
+
+    /// Same flags, different compiler executable: incremental state and
+    /// link keys must not carry over.
+    #[test]
+    fn test_flags_hash_covers_compiler_executable() {
+        let make = |path: &str| {
+            let mut backend =
+                crate::compiler::ClangBackend::new("20", cmod_core::types::Profile::Debug);
+            backend.clang_path = PathBuf::from(path);
+            BuildRunner::new(Box::new(backend), None)
+        };
+        let a = make("/opt/llvm-17/bin/clang++");
+        let b = make("/opt/llvm-18/bin/clang++");
+        assert_eq!(
+            a.flags_hash(),
+            make("/opt/llvm-17/bin/clang++").flags_hash()
+        );
+        assert_ne!(a.flags_hash(), b.flags_hash());
     }
 
     #[test]
