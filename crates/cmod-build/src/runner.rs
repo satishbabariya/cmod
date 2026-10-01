@@ -272,11 +272,20 @@ impl BuildRunner {
         }
     }
 
-    /// Compute a hash representing the current compiler configuration.
+    /// Compute a hash representing the current compiler configuration:
+    /// the backend fingerprint plus the compiler executable and its
+    /// version. The fingerprint covers flags but not which compiler runs
+    /// them, so without the latter, pointing `CXX` at another installation
+    /// or upgrading one in place left objects and links "up-to-date". MSVC's
+    /// `link`/`lib` are resolved next to `cl`, so its path covers them.
     fn flags_hash(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(self.backend.fingerprint().as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.backend.compiler_path().to_string_lossy().as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.compiler_version().as_bytes());
         format!("{:x}", hasher.finalize())
     }
 
@@ -325,6 +334,10 @@ impl BuildRunner {
         // Ensure output directories exist
         fs::create_dir_all(build_dir.join("pcm"))?;
         fs::create_dir_all(build_dir.join("obj"))?;
+        let pruned = plan.prune_stale_outputs();
+        if pruned > 0 {
+            self.emit_verbose("Pruned", format!("{} stale build outputs", pruned));
+        }
 
         // Execute the plan
         let (output, _stats) = self.execute_plan(&plan)?;
@@ -353,6 +366,10 @@ impl BuildRunner {
         )?;
         fs::create_dir_all(build_dir.join("pcm"))?;
         fs::create_dir_all(build_dir.join("obj"))?;
+        let pruned = plan.prune_stale_outputs();
+        if pruned > 0 {
+            self.emit_verbose("Pruned", format!("{} stale build outputs", pruned));
+        }
         self.execute_plan(&plan)
     }
 
@@ -1123,6 +1140,91 @@ impl BuildRunner {
         }
     }
 
+    /// Hash of everything a link of `plan` reads: the objects (by the
+    /// output hashes `state` recorded for the nodes that wrote them), the
+    /// dependency objects and archives linked in, the configuration and the
+    /// output path. `None` when an object's hash is unknown.
+    fn link_key(&self, plan: &BuildPlan, state: &BuildState, flags_hash: &str) -> Option<String> {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(flags_hash.as_bytes());
+        hasher.update(format!("{:?}", plan.build_type).as_bytes());
+        for node in plan.nodes.iter().filter(|n| n.kind == NodeKind::Link) {
+            for output in &node.outputs {
+                hasher.update(output.to_string_lossy().as_bytes());
+            }
+        }
+        for obj in plan.object_paths() {
+            let name = obj.file_name()?.to_string_lossy();
+            let hash = plan
+                .nodes
+                .iter()
+                .find(|n| n.outputs.contains(&obj))
+                .and_then(|n| state.nodes.get(&n.id))
+                .and_then(|s| s.output_hashes.iter().find(|(n, _)| *n == name))
+                .map(|(_, h)| h.clone())
+                .filter(|h| !h.is_empty())?;
+            hasher.update(obj.to_string_lossy().as_bytes());
+            hasher.update(hash.as_bytes());
+        }
+        // Mirrors the Link arm of `execute_node`: static libraries archive
+        // only the package's own objects.
+        if plan.build_type != BuildType::StaticLib {
+            for obj in &self.extra_obj_paths {
+                hasher.update(obj.to_string_lossy().as_bytes());
+                hasher.update(self.hash_input(obj)?.as_bytes());
+            }
+        }
+        Some(format!("{:x}", hasher.finalize()))
+    }
+
+    /// Save `state` and run the link nodes, unless nothing they read changed
+    /// since the last successful link and their outputs are still there.
+    /// The link key is saved only after the link succeeds, so a failed link
+    /// is retried. Returns the final output path.
+    fn link_phase(
+        &self,
+        plan: &BuildPlan,
+        link_nodes: &[&BuildNode],
+        state: &mut BuildState,
+        prev_state: &BuildState,
+        flags_hash: &str,
+    ) -> Result<PathBuf, CmodError> {
+        if link_nodes.is_empty() {
+            // Header-only package: nothing to link.
+            let _ = state.save(&plan.build_dir);
+            return Ok(PathBuf::new());
+        }
+        let final_output = link_nodes
+            .last()
+            .and_then(|n| n.outputs.first())
+            .cloned()
+            .unwrap_or_default();
+        let key = self.link_key(plan, state, flags_hash);
+        let up_to_date = !self.force_rebuild
+            && key.is_some()
+            && key == prev_state.link_key
+            && link_nodes
+                .iter()
+                .all(|n| n.outputs.iter().all(|o| o.exists()));
+        if up_to_date {
+            self.emit_verbose("Up-to-date", final_output.display());
+            state.link_key = key;
+            let _ = state.save(&plan.build_dir);
+            return Ok(final_output);
+        }
+
+        state.link_key = None;
+        let _ = state.save(&plan.build_dir);
+        let pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
+        for node in link_nodes {
+            self.execute_node(node, plan, &pcm_map, None, flags_hash)?;
+        }
+        state.link_key = key;
+        let _ = state.save(&plan.build_dir);
+        Ok(final_output)
+    }
+
     /// Execute the build plan with parallel compilation.
     ///
     /// Uses a work-stealing scheduler: nodes whose dependencies are all
@@ -1371,32 +1473,24 @@ impl BuildRunner {
         }
         drop(errs);
 
-        // Save the new build state with node timings - handle poisoned locks
-        {
-            let mut final_state = match new_build_state.lock() {
-                Ok(guard) => guard.clone(),
-                Err(poisoned) => poisoned.into_inner().clone(),
-            };
-            let timings = match node_timings.lock() {
-                Ok(guard) => guard.clone(),
-                Err(poisoned) => poisoned.into_inner().clone(),
-            };
-            final_state.node_timings = timings;
-            let _ = final_state.save(&plan.build_dir);
-        }
-
-        // Rebuild pcm_map for link phase (Arc was shared with threads)
-        let link_pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
-
-        // Execute link node(s) on main thread
-        let mut final_output = PathBuf::new();
-        for &(idx, _) in &link_nodes {
-            let node = &plan.nodes[idx];
-            self.execute_node(node, plan, &link_pcm_map, None, &flags_hash)?;
-            if let Some(out) = node.outputs.first() {
-                final_output = out.clone();
-            }
-        }
+        // Save the new build state with node timings, then link on the
+        // main thread - handle poisoned locks
+        let mut final_state = match new_build_state.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        final_state.node_timings = match node_timings.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        let link_nodes: Vec<&BuildNode> = link_nodes.iter().map(|&(_, n)| n).collect();
+        let final_output = self.link_phase(
+            plan,
+            &link_nodes,
+            &mut final_state,
+            &build_state,
+            &flags_hash,
+        )?;
 
         let stats = BuildStats {
             cache_hits: cache_hits.load(Ordering::Relaxed),
@@ -1426,10 +1520,14 @@ impl BuildRunner {
         let mut pcm_map: HashMap<String, PathBuf> = plan.pcm_paths().into_iter().collect();
         pcm_map.extend(self.extra_pcm_paths.clone());
         let mut new_state = BuildState::default();
-        let mut final_output = PathBuf::new();
         let mut stats = BuildStats::default();
+        let mut link_nodes = Vec::new();
 
         for node in &plan.nodes {
+            if node.kind == NodeKind::Link {
+                link_nodes.push(node);
+                continue;
+            }
             let (outcome, inputs) =
                 self.execute_node(node, plan, &pcm_map, Some(&build_state), &flags_hash)?;
             let ms = outcome.time_ms();
@@ -1462,18 +1560,16 @@ impl BuildRunner {
                     new_state.carry_over(&build_state, &node.id);
                 }
                 NodeOutcome::Linked(ms) => {
-                    stats.skipped += 1;
                     stats.total_compile_time_ms += ms;
-                    if let Some(out) = node.outputs.first() {
-                        final_output = out.clone();
-                    }
                 }
             }
         }
 
-        // Save updated build state with node timings
+        // Save updated build state with node timings, and link
         new_state.node_timings = stats.node_timings.clone();
-        let _ = new_state.save(&plan.build_dir);
+        stats.skipped += link_nodes.len();
+        let final_output =
+            self.link_phase(plan, &link_nodes, &mut new_state, &build_state, &flags_hash)?;
 
         stats.wall_time_ms = wall_start.elapsed().as_millis() as u64;
         Ok((final_output, stats))
@@ -2136,6 +2232,25 @@ mod tests {
         // Outside the package: absolute, unchanged.
         let portable = portable_header_path(&outside, Some(root));
         assert_eq!(resolve_header_path(&portable, Some(root)), outside);
+    }
+
+    /// Same flags, different compiler executable: incremental state and
+    /// link keys must not carry over.
+    #[test]
+    fn test_flags_hash_covers_compiler_executable() {
+        let make = |path: &str| {
+            let mut backend =
+                crate::compiler::ClangBackend::new("20", cmod_core::types::Profile::Debug);
+            backend.clang_path = PathBuf::from(path);
+            BuildRunner::new(Box::new(backend), None)
+        };
+        let a = make("/opt/llvm-17/bin/clang++");
+        let b = make("/opt/llvm-18/bin/clang++");
+        assert_eq!(
+            a.flags_hash(),
+            make("/opt/llvm-17/bin/clang++").flags_hash()
+        );
+        assert_ne!(a.flags_hash(), b.flags_hash());
     }
 
     #[test]

@@ -18,6 +18,7 @@ The first build after upgrading recompiles everything: old build state has no he
 
 ### Changed
 
+- **Dependencies build incrementally, and unchanged links are skipped** — every build deleted each git dependency's `obj/` and `pcm/` directories, so all of its objects were rebuilt or restored from the cache and re-archived, and every build re-ran `ar` and the final link. Outputs that the current plan does not produce (from deleted sources, or from a checkout that moved) are now pruned instead, and a link is skipped when the objects, dependency archives and flags it would read are unchanged and its output exists. A no-op build of a Catch2 consumer (scanner time excluded) went from ~1.1 s to ~0.35 s. Pruning also stops `cmod test` from linking objects of deleted sources. Build state now also records which compiler executable and version built each object, so switching `CXX` to another installation, or upgrading one in place, rebuilds and relinks instead of keeping the old outputs.
 - **Module scanning runs in parallel** — `clang-scan-deps` ran once per source, one at a time, on every build, for the package and for each dependency. It now runs on all cores. A no-op build of a Catch2 consumer (107 sources) went from 5.2 s to 2.3 s on 4 cores; the build plan is byte-identical.
 - The `e2e_validation`, `example_projects` and `real_projects` compile tests also run on Linux with `clang++` on PATH. They had only looked for Homebrew LLVM, so the Linux E2E job skipped all of them.
 
