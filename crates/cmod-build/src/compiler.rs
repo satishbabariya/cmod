@@ -727,6 +727,15 @@ impl GccBackend {
     }
 }
 
+/// A CMI (`.gcm`), or the module mapper of a compile writing `obj_output`
+/// or a CMI (`<output>.map`, see `GccBackend::write_mapper`).
+fn is_gcc_build_file(path: &Path, obj_output: &Path) -> bool {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let mut obj_mapper = obj_output.file_name().unwrap_or_default().to_owned();
+    obj_mapper.push(".map");
+    name.ends_with(".gcm") || name.ends_with(".gcm.map") || *name == *obj_mapper.to_string_lossy()
+}
+
 /// Render module-mapper file content: one `<module-name> <cmi-path>` line
 /// per entry.
 fn gcc_module_mapper<S: AsRef<str>>(entries: &[(S, PathBuf)]) -> String {
@@ -959,6 +968,24 @@ impl CompilerBackend for GccBackend {
 
     fn bmi_extension(&self) -> &'static str {
         "gcm"
+    }
+
+    /// As for Clang, less the module mapper and the CMIs g++ also lists.
+    /// cmod writes the mapper for each compile, just before it starts: its
+    /// mtime often falls in the millisecond the compile started, which
+    /// marks every header as possibly read mid-change, so nothing was
+    /// recorded or cached. Both are already inputs: the CMIs it names are
+    /// the imported modules' BMIs.
+    fn included_headers(&self, source: &Path, obj_output: &Path) -> Option<Vec<PathBuf>> {
+        let content = std::fs::read_to_string(depfile::depfile_path(obj_output, "d")).ok()?;
+        let cwd = std::env::current_dir().ok()?;
+        let headers = depfile::header_list(source, depfile::parse_make_depfile(&content), &cwd);
+        Some(
+            headers
+                .into_iter()
+                .filter(|path| !is_gcc_build_file(path, obj_output))
+                .collect(),
+        )
     }
 }
 
@@ -1574,6 +1601,30 @@ mod tests {
             .scan_command(Path::new("src/main.cpp"), Path::new("out/0.d"), false)
             .unwrap();
         assert!(!plain.command.get_args().any(|a| a == "c++-module"));
+    }
+
+    #[test]
+    fn test_gcc_included_headers_skip_mapper_and_cmis() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        let obj = dir.join("obj/main.o");
+        std::fs::create_dir_all(obj.parent().unwrap()).unwrap();
+        std::fs::write(
+            depfile::depfile_path(&obj, "d"),
+            format!(
+                "{obj}: {src} {hdr} {obj}.map {dir}/pcm/m.gcm {dir}/pcm/m.gcm.map\n",
+                obj = obj.display(),
+                src = dir.join("src/main.cpp").display(),
+                hdr = dir.join("include/a.h").display(),
+                dir = dir.display(),
+            ),
+        )
+        .unwrap();
+        let backend = GccBackend::from_config(&BackendConfig::default());
+        let headers = backend
+            .included_headers(&dir.join("src/main.cpp"), &obj)
+            .unwrap();
+        assert_eq!(headers, vec![dir.join("include/a.h")]);
     }
 
     #[test]

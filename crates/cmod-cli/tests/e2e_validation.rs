@@ -2785,6 +2785,60 @@ fn gcc_with_scanner() -> Option<&'static str> {
     })
 }
 
+/// A fresh GCC build records every unit's headers, so the next build has
+/// nothing to do. g++ lists the module mapper cmod writes just before each
+/// compile, whose mtime often fell in the compile's first millisecond:
+/// headers went unrecorded, and every unit compiled twice.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_e2e_gcc_first_build_is_complete() {
+    let Some(gxx) = gcc_with_scanner() else {
+        eprintln!("Skipping: no g++ 14+ found");
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    write_rebuild_manifest(tmp.path(), "gfirst", "");
+    let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
+    fs::write(
+        tmp.path().join("cmod.toml"),
+        manifest.replace("compiler = \"clang\"", "compiler = \"gcc\""),
+    )
+    .unwrap();
+    let src = tmp.path().join("src");
+    for i in 0..4 {
+        fs::write(
+            src.join(format!("m{i}.cppm")),
+            format!("export module local.m{i};\nexport int f{i}() {{ return {i}; }}\n"),
+        )
+        .unwrap();
+    }
+    fs::write(
+        src.join("main.cpp"),
+        "import local.m0;\nimport local.m1;\nimport local.m2;\nimport local.m3;\n\
+         int main() { return f0() + f1() + f2() + f3() == 6 ? 0 : 1; }\n",
+    )
+    .unwrap();
+    let cmod = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cmod"))
+            .args(args)
+            .current_dir(tmp.path())
+            .env("CXX", gxx)
+            .output()
+            .expect("failed to run cmod")
+    };
+
+    let output = cmod(&["build", "--no-cache"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = cmod(&["build", "--dry-run"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(
+        report.contains("0 of 6 build steps would run"),
+        "{}",
+        report
+    );
+}
+
 /// GCC packages are scanned by g++ itself: the `#if 0` import is not one,
 /// and results are kept until the source changes, as with clang-scan-deps.
 /// Linux only: CI covers the GCC backend there.
