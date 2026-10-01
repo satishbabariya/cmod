@@ -2815,3 +2815,69 @@ fn test_e2e_scan_handles_ixx_interfaces() {
         state
     );
 }
+
+/// Every entry of `compile_commands.json` compiles, after a build, for a
+/// package with a partition and a path dependency. Entries lacked the
+/// partition's BMI (`:part` imports were not resolved) and every path
+/// dependency's, so clangd reported "module not found" on code that built.
+#[test]
+fn test_e2e_compile_commands_entries_compile() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_impl_dep_project(tmp.path());
+    let src = tmp.path().join("src");
+    fs::write(
+        src.join("lib.cppm"),
+        "export module local.app;\nexport import :part;\nexport int app() { return part() + 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("part.cppm"),
+        "export module local.app:part;\nexport int part() { return 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("main.cpp"),
+        "import local.app;\nimport local.dep;\n#include <cstdio>\nint main() { std::printf(\"%d\\n\", app() + f()); }\n",
+    )
+    .unwrap();
+    assert_eq!(build_and_run(tmp.path(), "app", &["build"]), "3");
+
+    let output = run_cmod_with_llvm(tmp.path(), &["compile-commands"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let db: Vec<serde_json::Value> = serde_json::from_str(
+        &fs::read_to_string(tmp.path().join("compile_commands.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(db.len(), 3, "{:#?}", db);
+    let out = tmp.path().join("entry.o");
+    for entry in &db {
+        let mut args: Vec<String> = entry["arguments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap().to_string())
+            .collect();
+        let o = args.iter().position(|a| a == "-o").unwrap();
+        args[o + 1] = out.display().to_string();
+        let path = format!(
+            "/opt/homebrew/opt/llvm/bin:{}",
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let run = Command::new(&args[0])
+            .args(&args[1..])
+            .current_dir(entry["directory"].as_str().unwrap())
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{}: {}",
+            entry["file"],
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}

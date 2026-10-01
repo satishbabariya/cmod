@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -302,6 +302,28 @@ impl BuildPlan {
         objs
     }
 
+    /// Module names of the interfaces `node` depends on, directly or
+    /// transitively, in sorted order.
+    fn interface_closure(&self, node: &BuildNode) -> BTreeSet<String> {
+        let by_id: HashMap<&str, &BuildNode> =
+            self.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        let mut seen = HashSet::new();
+        let mut names = BTreeSet::new();
+        let mut stack: Vec<&str> = node.dependencies.iter().map(String::as_str).collect();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if let Some(name) = id.strip_prefix("interface:") {
+                names.insert(name.to_string());
+            }
+            if let Some(dep) = by_id.get(id) {
+                stack.extend(dep.dependencies.iter().map(String::as_str));
+            }
+        }
+        names
+    }
+
     /// Generate a compile_commands.json-compatible list from this build plan.
     ///
     /// Each entry corresponds to a compilation step (interface, implementation,
@@ -327,12 +349,12 @@ impl BuildPlan {
             let mut arguments = vec![backend.compiler_path().display().to_string()];
             arguments.extend(backend.common_flags());
 
-            // Add dependency PCM references
-            for dep_id in &node.dependencies {
-                if let Some(name) = dep_id.strip_prefix("interface:") {
-                    if let Some(pcm_path) = pcm_paths.get(name) {
-                        arguments.push(format!("-fmodule-file={}={}", name, pcm_path.display()));
-                    }
+            // Add the BMIs of every interface the node depends on, directly
+            // or through one: importing a module that re-exports another
+            // (`export import :part;`) needs that one's BMI too.
+            for name in self.interface_closure(node) {
+                if let Some(pcm_path) = pcm_paths.get(&name) {
+                    arguments.push(format!("-fmodule-file={}={}", name, pcm_path.display()));
                 }
             }
 
@@ -945,6 +967,53 @@ mod tests {
         assert!(commands[0].arguments.contains(&"--precompile".to_string()));
         assert_eq!(commands[1].file, "src/app.cpp");
         assert!(commands[1].arguments.contains(&"-c".to_string()));
+    }
+
+    /// A TU importing `mid`, which imports `base`, gets both BMIs: clang
+    /// needs the BMIs of re-exported modules too.
+    #[test]
+    fn test_compile_commands_pass_transitive_bmis() {
+        let mut graph = ModuleGraph::new();
+        for (name, kind, imports) in [
+            ("base", ModuleUnitKind::InterfaceUnit, vec![]),
+            (
+                "mid",
+                ModuleUnitKind::InterfaceUnit,
+                vec!["base".to_string()],
+            ),
+            ("app", ModuleUnitKind::LegacyUnit, vec!["mid".to_string()]),
+        ] {
+            graph.add_node(ModuleNode {
+                id: name.to_string(),
+                name: name.to_string(),
+                kind,
+                source: PathBuf::from(format!("src/{}.cppm", name)),
+                package: "test".to_string(),
+                imports,
+                partition_of: None,
+            });
+        }
+        let plan = BuildPlan::from_graph(
+            &graph,
+            &PathBuf::from("/tmp/build"),
+            "x86_64-unknown-linux-gnu",
+            Profile::Debug,
+            BuildType::Binary,
+            None,
+            "pcm",
+        )
+        .unwrap();
+        let backend = crate::compiler::ClangBackend::new("20", Profile::Debug);
+        let commands = plan.compile_commands(&backend, Path::new("/project"));
+        let app = commands.iter().find(|c| c.file == "src/app.cppm").unwrap();
+        let module_files: Vec<&String> = app
+            .arguments
+            .iter()
+            .filter(|a| a.starts_with("-fmodule-file="))
+            .collect();
+        assert_eq!(module_files.len(), 2, "{:?}", app.arguments);
+        assert!(module_files[0].starts_with("-fmodule-file=base="));
+        assert!(module_files[1].starts_with("-fmodule-file=mid="));
     }
 
     #[test]
