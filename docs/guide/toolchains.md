@@ -26,7 +26,7 @@ All fields are optional. Defaults are sensible for most projects.
 | GCC | `"gcc"` | `g++` | GNU Compiler Collection |
 | MSVC | `"msvc"` | `cl` | Microsoft Visual C++ |
 
-cmod defaults to Clang and uses `clang-scan-deps` for module dependency discovery.
+cmod defaults to Clang and uses `clang-scan-deps` for module dependency discovery (see [The Module Graph](modules.md#the-module-graph)). If it is not found, cmod reads imports from the source text instead.
 
 ## C++ Standard
 

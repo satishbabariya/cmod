@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use cmod_build::compiler::BackendConfig;
 use cmod_build::graph::{ModuleGraph, ModuleNode};
+use cmod_build::incremental::HeaderState;
 use cmod_build::runner::{self, BuildRunner, BuildStats, DryRunReport};
 use cmod_cache::{ArtifactCache, RemoteCacheMode};
 use cmod_core::config::Config;
@@ -263,17 +264,6 @@ fn build_module(
         shell.verbose("Source", format!("{}", s.display()));
     }
 
-    // Build the module graph
-    let graph = build_module_graph(&sources, &config.manifest.package.name)?;
-
-    // Validate the module graph (imports, cycles, duplicates)
-    graph.validate()?;
-
-    if shell.verbosity() == Verbosity::Verbose {
-        let order = graph.topological_order()?;
-        shell.verbose("Build order", order.join(" -> "));
-    }
-
     // Set up the compiler backend (with feature flags as -D defines)
     let (mut backend_cfg, compiler_kind, target) = setup_compiler(config, activated_features);
 
@@ -284,12 +274,22 @@ fn build_module(
             .push(format!("-I{}", inc_dir.display()));
     }
     let backend = cmod_build::compiler::make_backend(compiler_kind, &backend_cfg)?;
+    let build_dir = config.build_dir();
+
+    // Build the module graph, scanning with the compile flags
+    let scan = ClangScan::for_backend(backend.as_ref(), &build_dir, dry_run.is_none());
+    let graph = build_module_graph(&sources, &config.manifest.package.name, scan.as_ref())?;
+
+    // Validate the module graph (imports, cycles, duplicates)
+    graph.validate()?;
+
+    if shell.verbosity() == Verbosity::Verbose {
+        let order = graph.topological_order()?;
+        shell.verbose("Build order", order.join(" -> "));
+    }
 
     // Set up cache
     let cache = ArtifactCache::new(config.cache_dir());
-
-    // Execute the build
-    let build_dir = config.build_dir();
 
     let build_type = config
         .manifest
@@ -583,10 +583,6 @@ fn build_vendored_dependencies(
             format!("{} sources in {}", sources.len(), pkg.name),
         );
 
-        // Build the module graph for this dependency
-        let graph = build_module_graph(&sources, &dep_config.manifest.package.name)?;
-        graph.validate()?;
-
         // Set up compiler from the dependency's toolchain config, which now
         // names the root's compiler
         let (mut backend_cfg, compiler_kind, target) = setup_compiler(&dep_config, &[]);
@@ -608,11 +604,15 @@ fn build_vendored_dependencies(
         }
         let backend = cmod_build::compiler::make_backend(compiler_kind, &backend_cfg)?;
         let bmi_ext = backend.bmi_extension();
+        let build_dir = dep_config.build_dir();
+
+        // Build the module graph for this dependency
+        let scan = ClangScan::for_backend(backend.as_ref(), &build_dir, dry_run.is_none());
+        let graph = build_module_graph(&sources, &dep_config.manifest.package.name, scan.as_ref())?;
+        graph.validate()?;
 
         // Set up cache
         let cache = ArtifactCache::new(dep_config.cache_dir());
-
-        let build_dir = dep_config.build_dir();
         let build_type = dep_config
             .manifest
             .build
@@ -789,8 +789,6 @@ fn build_workspace(
             continue;
         }
 
-        let graph = build_module_graph(&sources, &member.name)?;
-        graph.validate()?;
         let (mut backend_cfg, compiler_kind, target) = setup_compiler(config, &[]);
 
         // Add member-specific include dirs and extra flags from [build] section
@@ -877,6 +875,9 @@ fn build_workspace(
 
         let backend = cmod_build::compiler::make_backend(compiler_kind, &backend_cfg)?;
         let bmi_ext = backend.bmi_extension();
+        let scan = ClangScan::for_backend(backend.as_ref(), &build_dir, dry_run.is_none());
+        let graph = build_module_graph(&sources, &member.name, scan.as_ref())?;
+        graph.validate()?;
         let mut runner_instance = BuildRunner::new(backend, Some(cache))
             .with_jobs(jobs)
             .with_force(force)
@@ -948,15 +949,16 @@ fn build_workspace(
 
 /// Build a ModuleGraph from discovered source files.
 ///
-/// Attempts to use `clang-scan-deps` for accurate module dependency scanning.
-/// Falls back to regex-based import extraction if `clang-scan-deps` is unavailable.
+/// Imports come from `clang` (see [`ClangScan`]) when given, otherwise from
+/// the source text.
 fn build_module_graph(
     sources: &[std::path::PathBuf],
     package_name: &str,
+    clang: Option<&ClangScan>,
 ) -> Result<ModuleGraph, CmodError> {
     let mut graph = ModuleGraph::new();
 
-    let all_imports = scan_imports(sources)?;
+    let all_imports = scan_imports(sources, clang)?;
 
     for (source, imports) in sources.iter().zip(all_imports) {
         let kind = runner::classify_source(source)?;
@@ -974,6 +976,12 @@ fn build_module_graph(
         // Resolve relative partition imports (`:foo`) to fully-qualified names
         // (e.g., `module_name:foo`). This is needed because `export import :vec2;`
         // inside module `local.geometry` should resolve to `local.geometry:vec2`.
+        // A scanner lists an implementation unit's own module (`module m;`
+        // requires `m`). The graph already orders implementation units
+        // after their interface, so that is not an edge. Only there: a
+        // non-module TU is named after its file, and `math.cpp` importing
+        // `math` is a real edge.
+        let is_impl_unit = kind == cmod_core::types::ModuleUnitKind::ImplementationUnit;
         let imports = imports
             .into_iter()
             .map(|imp| {
@@ -983,6 +991,7 @@ fn build_module_graph(
                     imp
                 }
             })
+            .filter(|imp| !(is_impl_unit && *imp == module_name))
             .collect();
 
         // Use source path as unique node ID to support multi-TU modules
@@ -1016,53 +1025,243 @@ fn build_module_graph(
     Ok(graph)
 }
 
+/// How `build_module_graph` scans a Clang package: `clang-scan-deps` in
+/// P1689 mode, run with the command line the package compiles with, so
+/// include paths and macros decide which `import`s count. Each source's
+/// result is kept with the headers the scan read, and reused while the
+/// source, the command and those headers are unchanged.
+struct ClangScan {
+    scan_deps: std::ffi::OsString,
+    compiler: std::path::PathBuf,
+    /// `compiler --version`: an in-place upgrade can change predefined
+    /// macros, and with them which imports count.
+    compiler_version: String,
+    flags: Vec<String>,
+    /// Where results are kept between builds.
+    state_path: std::path::PathBuf,
+    /// Save results: false for dry runs, which write nothing.
+    persist: bool,
+}
+
+/// Results of `ClangScan`, in the build directory.
+const SCAN_STATE_FILE: &str = ".cmod-scan-state.json";
+
+impl ClangScan {
+    /// The scan for packages built by `backend`, or `None` (source-text
+    /// extraction) when the backend is not Clang or `clang-scan-deps` cannot
+    /// be run.
+    fn for_backend(
+        backend: &dyn cmod_build::compiler::CompilerBackend,
+        build_dir: &std::path::Path,
+        persist: bool,
+    ) -> Option<Self> {
+        if backend.kind() != Compiler::Clang || !is_clang_scan_deps_available() {
+            return None;
+        }
+        Some(ClangScan {
+            scan_deps: scan_deps_binary(),
+            compiler: backend.compiler_path().to_path_buf(),
+            compiler_version: backend.version(),
+            flags: backend.common_flags(),
+            state_path: build_dir.join(SCAN_STATE_FILE),
+            persist,
+        })
+    }
+
+    /// The scan command for `source`, writing the headers it reads to
+    /// `depfile`. `as_module` scans it as a module interface (`-x
+    /// c++-module`), as the backend compiles interfaces and partitions whose
+    /// extension is not `.cppm`.
+    fn command(
+        &self,
+        source: &std::path::Path,
+        depfile: &std::path::Path,
+        as_module: bool,
+    ) -> std::process::Command {
+        let mut cmd = std::process::Command::new(&self.scan_deps);
+        cmd.args(["--format=p1689", "--"])
+            .arg(&self.compiler)
+            .args(&self.flags);
+        if as_module {
+            cmd.args(["-x", "c++-module"]);
+        }
+        cmd.arg("-c")
+            .arg(source)
+            .arg("-o")
+            .arg(depfile.with_extension("o"))
+            .arg("-MD")
+            .arg("-MF")
+            .arg(depfile);
+        cmd
+    }
+
+    /// What a scan of `source` depends on, apart from headers: the scanner,
+    /// the command line and the source's content. `None` when the source
+    /// cannot be read.
+    fn key(&self, source: &std::path::Path, as_module: bool) -> Option<String> {
+        let mut inputs = self.scan_deps.to_string_lossy().into_owned();
+        inputs.push('\0');
+        inputs.push_str(&self.compiler.to_string_lossy());
+        inputs.push('\0');
+        inputs.push_str(&self.compiler_version);
+        for flag in &self.flags {
+            inputs.push('\0');
+            inputs.push_str(flag);
+        }
+        if as_module {
+            inputs.push_str("\0-x\0c++-module");
+        }
+        inputs.push('\0');
+        inputs.push_str(&cmod_cache::key::hash_file(source).ok()?);
+        Some(cmod_cache::key::hash_bytes(inputs.as_bytes()))
+    }
+
+    /// Scan `source`, writing its depfile to `depfile`. Returns the imports
+    /// and the headers the scan read (`None` when unknown).
+    fn scan(
+        &self,
+        source: &std::path::Path,
+        depfile: &std::path::Path,
+        as_module: bool,
+    ) -> Result<(Vec<String>, Option<Vec<HeaderState>>), CmodError> {
+        let started = epoch_millis();
+        let output = self
+            .command(source, depfile, as_module)
+            .output()
+            .map_err(|e| CmodError::ModuleScanFailed {
+                reason: format!("failed to run clang-scan-deps: {}", e),
+            })?;
+        if !output.status.success() {
+            return Err(CmodError::ModuleScanFailed {
+                reason: format!(
+                    "clang-scan-deps failed for {}: {}",
+                    source.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            });
+        }
+        let imports = parse_p1689_imports(&String::from_utf8_lossy(&output.stdout))?;
+        // A header that changed after the scan started may not be what the
+        // scanner read: leave the headers unknown, so it scans again.
+        let headers = std::fs::read_to_string(depfile).ok().and_then(|content| {
+            let cwd = std::env::current_dir().ok()?;
+            cmod_build::depfile::header_list(
+                source,
+                cmod_build::depfile::parse_make_depfile(&content),
+                &cwd,
+            )
+            .iter()
+            .map(|path| HeaderState::observe(path).filter(|h| h.mtime.is_some_and(|m| m < started)))
+            .collect()
+        });
+        Ok((imports, headers))
+    }
+}
+
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// The modules each source imports, in `sources` order.
 ///
-/// Uses `clang-scan-deps` when available, one process per source, run in
-/// parallel: sources are independent and scanning a large package one at a
-/// time dominated no-op builds (107 sources, ~4 s). A source the scanner
-/// fails on falls back to regex extraction, as does every source when the
-/// scanner is unavailable.
-fn scan_imports(sources: &[std::path::PathBuf]) -> Result<Vec<Vec<String>>, CmodError> {
-    if !is_clang_scan_deps_available() {
+/// With a [`ClangScan`], each source is scanned by `clang-scan-deps` (in
+/// parallel: a large package scanned one source at a time dominated no-op
+/// builds), unless its last result is still fresh. A source the scanner
+/// fails on falls back to source-text extraction, as does every source
+/// without a scan.
+fn scan_imports(
+    sources: &[std::path::PathBuf],
+    clang: Option<&ClangScan>,
+) -> Result<Vec<Vec<String>>, CmodError> {
+    let Some(clang) = clang else {
         return sources
             .iter()
             .map(|source| extract_imports_from_source(source))
             .collect();
-    }
-
-    let scan = |source: &std::path::Path| {
-        scan_deps_imports(source).unwrap_or_else(|_| {
-            // Fall back to regex on scan failure
-            extract_imports_from_source(source).unwrap_or_default()
-        })
     };
+
+    let mut state = cmod_build::incremental::CommandState::load(&clang.state_path);
+    // Interfaces and partitions not named `.cppm` are compiled with
+    // `-x c++-module` (see the Clang backend), so they are scanned that way.
+    let as_module: Vec<bool> = sources
+        .iter()
+        .map(|s| {
+            s.extension().and_then(|e| e.to_str()) != Some("cppm")
+                && matches!(
+                    runner::classify_source(s),
+                    Ok(cmod_core::types::ModuleUnitKind::InterfaceUnit
+                        | cmod_core::types::ModuleUnitKind::PartitionUnit)
+                )
+        })
+        .collect();
+    let keys: Vec<Option<String>> = sources
+        .iter()
+        .zip(&as_module)
+        .map(|(s, &m)| clang.key(s, m))
+        .collect();
+    let mut results: Vec<Option<Vec<String>>> = sources
+        .iter()
+        .zip(&keys)
+        .map(|(source, key)| {
+            let key = key.as_ref()?;
+            state.fresh(source, key).map(|record| record.data.clone())
+        })
+        .collect();
+
+    let pending: Vec<usize> = (0..sources.len())
+        .filter(|&i| results[i].is_none())
+        .collect();
+    let depfiles = tempfile::TempDir::new()?;
+    type Scanned = Option<(Vec<String>, Option<Vec<HeaderState>>)>;
+    let scanned: Vec<std::sync::Mutex<Scanned>> =
+        sources.iter().map(|_| Default::default()).collect();
     let workers = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
-        .min(sources.len());
-    if workers <= 1 {
-        return Ok(sources.iter().map(|s| scan(s)).collect());
-    }
-
+        .clamp(1, pending.len().max(1));
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let results: Vec<std::sync::Mutex<Vec<String>>> =
-        sources.iter().map(|_| Default::default()).collect();
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            scope.spawn(|| loop {
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(source) = sources.get(i) else {
-                    break;
-                };
-                let imports = scan(source);
-                *results[i].lock().unwrap_or_else(|e| e.into_inner()) = imports;
+            scope.spawn(|| {
+                while let Some(&i) =
+                    pending.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                {
+                    let depfile = depfiles.path().join(format!("{}.d", i));
+                    let result = clang.scan(&sources[i], &depfile, as_module[i]).ok();
+                    *scanned[i].lock().unwrap_or_else(|e| e.into_inner()) = result;
+                }
             });
         }
     });
-    Ok(results
-        .into_iter()
-        .map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner()))
-        .collect())
+
+    for (i, cell) in scanned.into_iter().enumerate() {
+        if results[i].is_some() {
+            continue;
+        }
+        let imports = match cell.into_inner().unwrap_or_else(|e| e.into_inner()) {
+            Some((imports, headers)) => {
+                if let Some(key) = keys[i].clone() {
+                    state.record(&sources[i], key, headers, imports.clone());
+                }
+                imports
+            }
+            None => {
+                state.record(&sources[i], String::new(), None, Vec::new());
+                extract_imports_from_source(&sources[i])?
+            }
+        };
+        results[i] = Some(imports);
+    }
+    // Forget sources that are gone.
+    let current: std::collections::HashSet<String> =
+        sources.iter().map(|s| s.display().to_string()).collect();
+    state.outputs.retain(|path, _| current.contains(path));
+    if clang.persist {
+        let _ = state.save(&clang.state_path);
+    }
+    Ok(results.into_iter().map(Option::unwrap_or_default).collect())
 }
 
 /// Resolve the `clang-scan-deps` binary path, respecting the `SCAN_DEPS` env var.
@@ -1078,33 +1277,6 @@ fn is_clang_scan_deps_available() -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
-}
-
-/// Use `clang-scan-deps` to discover module dependencies via P1689 format.
-/// Respects the `SCAN_DEPS` env var for the binary path.
-fn scan_deps_imports(source: &std::path::Path) -> Result<Vec<String>, CmodError> {
-    let output = std::process::Command::new(scan_deps_binary())
-        .args(["--format=p1689", "--"])
-        .arg(source)
-        .arg("-std=c++20")
-        .output()
-        .map_err(|e| CmodError::ModuleScanFailed {
-            reason: format!("failed to run clang-scan-deps: {}", e),
-        })?;
-
-    if !output.status.success() {
-        return Err(CmodError::ModuleScanFailed {
-            reason: format!(
-                "clang-scan-deps failed for {}: {}",
-                source.display(),
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        });
-    }
-
-    // Parse P1689 JSON output
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_p1689_imports(&stdout)
 }
 
 /// Parse P1689 JSON format to extract required module names.
@@ -1671,7 +1843,7 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
             }
 
             if let Ok(dep_graph) =
-                build_module_graph(&dep_sources, &dep_config.manifest.package.name)
+                build_module_graph(&dep_sources, &dep_config.manifest.package.name, None)
             {
                 let dep_build_dir = dep_config.build_dir();
                 let dep_build_type = dep_config
@@ -1697,7 +1869,7 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
     }
 
     // Add the main project's plan nodes
-    let graph = build_module_graph(&sources, &config.manifest.package.name)?;
+    let graph = build_module_graph(&sources, &config.manifest.package.name, None)?;
     let plan = cmod_build::plan::BuildPlan::from_graph(
         &graph,
         &build_dir,
@@ -1888,7 +2060,7 @@ mod tests {
         std::fs::write(&file, "export module mymod;\n\nvoid hello() {}\n").unwrap();
 
         let sources = vec![file];
-        let graph = build_module_graph(&sources, "test_pkg").unwrap();
+        let graph = build_module_graph(&sources, "test_pkg", None).unwrap();
 
         assert_eq!(graph.nodes.len(), 1);
         // Nodes are keyed by source path, find by module name
@@ -1911,7 +2083,7 @@ mod tests {
         .unwrap();
 
         let sources = vec![base, app];
-        let graph = build_module_graph(&sources, "test").unwrap();
+        let graph = build_module_graph(&sources, "test", None).unwrap();
 
         // app should only import base (external_lib filtered out)
         let app_node = graph.nodes.values().find(|n| n.name == "app").unwrap();
@@ -1925,7 +2097,7 @@ mod tests {
         std::fs::write(&file, "#include <stdio.h>\nint main() {}\n").unwrap();
 
         let sources = vec![file];
-        let graph = build_module_graph(&sources, "test").unwrap();
+        let graph = build_module_graph(&sources, "test", None).unwrap();
 
         // Legacy files use filename as module name, nodes keyed by source path
         assert_eq!(graph.nodes.len(), 1);

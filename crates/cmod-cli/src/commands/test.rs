@@ -558,11 +558,11 @@ fn compile_tests(
         if output.status.success() {
             let headers = test_headers(backend.as_ref(), &job, outcome.started);
             if let Some(key) = job.key {
-                state.record(&job.binary, key, headers);
+                state.record(&job.binary, key, headers, Vec::new());
             }
             compiled.push(test);
         } else {
-            state.record(&job.binary, String::new(), None);
+            state.record(&job.binary, String::new(), None, Vec::new());
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             shell.error(format!("compilation failed: {}", job.name));
             if !stderr.is_empty() {
