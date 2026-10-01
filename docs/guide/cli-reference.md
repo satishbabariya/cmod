@@ -269,6 +269,8 @@ Detect and optionally remove unused dependencies.
 cmod tidy [--apply]
 ```
 
+A dependency is used when a source imports a module it provides (its manifest's `[module] name`, or a module one of its interfaces declares), or when a source or one of the package's own headers includes a header from its include directories (`#include <fmt/format.h>`). A git dependency that is not checked out cannot be checked: tidy warns about it and never removes it, so run `cmod build` first.
+
 | Option | Description |
 |--------|-------------|
 | `--apply` | Actually remove unused dependencies (default is dry run) |

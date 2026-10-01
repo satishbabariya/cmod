@@ -376,14 +376,6 @@ impl CompilerBackend for ClangBackend {
         obj_output: &Path,
         dep_pcms: &[(&str, &Path)],
     ) -> Result<(), CmodError> {
-        let mut cmd = Command::new(&self.clang_path);
-        cmd.args(self.common_flags());
-
-        // Add dependency PCM references
-        for (name, pcm_path) in dep_pcms {
-            cmd.arg(format!("-fmodule-file={}={}", name, pcm_path.display()));
-        }
-
         // First pass: compile to PCM
         // For .cc/.cpp/.cxx files, clang doesn't auto-detect module interface —
         // we must explicitly specify the language with -x c++-module.
@@ -419,7 +411,10 @@ impl CompilerBackend for ClangBackend {
         }
 
         // Second pass: PCM to object file
-        // Dependency PCMs are still needed for modules that import other modules
+        // Dependency PCMs are still needed for modules that import other modules.
+        // This pass does not preprocess: include paths and macros in the
+        // common flags go unused, and clang warned about each one for every
+        // interface.
         let obj_status = Command::new(&self.clang_path)
             .args(self.common_flags())
             .args(
@@ -427,6 +422,7 @@ impl CompilerBackend for ClangBackend {
                     .iter()
                     .map(|(name, path)| format!("-fmodule-file={}={}", name, path.display())),
             )
+            .arg("-Wno-unused-command-line-argument")
             .arg("-c")
             .arg("-o")
             .arg(obj_output)
