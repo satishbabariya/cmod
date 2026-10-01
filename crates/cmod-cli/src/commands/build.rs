@@ -696,6 +696,133 @@ fn build_vendored_dependencies(
 }
 
 /// Build all members of a workspace.
+/// What a workspace member is built from, as `cmod build` sees it:
+/// shared by the build and `cmod compile-commands`.
+pub(crate) struct MemberBuild {
+    pub sources: Vec<std::path::PathBuf>,
+    pub backend_cfg: BackendConfig,
+    pub compiler_kind: Compiler,
+    pub target: String,
+    pub build_dir: std::path::PathBuf,
+    pub build_type: cmod_core::types::BuildType,
+    /// Workspace members it depends on, directly or not, sorted: the
+    /// order reaches its link command.
+    pub transitive_deps: Vec<String>,
+}
+
+/// The sources and compiler configuration of `member`, or `None` when it
+/// has no sources. `git_include_dirs` are the git dependencies' include
+/// directories; `upstream_include_dirs` the include directories of the
+/// members already set up (see [`member_include_dirs_of`]).
+pub(crate) fn member_build(
+    config: &Config,
+    ws: &WorkspaceManager,
+    member: &cmod_workspace::workspace::WorkspaceMember,
+    git_include_dirs: &[std::path::PathBuf],
+    upstream_include_dirs: &std::collections::HashMap<String, Vec<std::path::PathBuf>>,
+) -> Result<Option<MemberBuild>, CmodError> {
+    let member_src_dirs: Vec<std::path::PathBuf> = match member
+        .manifest
+        .build
+        .as_ref()
+        .map(|b| &b.sources)
+        .filter(|s| !s.is_empty())
+    {
+        Some(dirs) => dirs.iter().map(|s| member.path.join(s)).collect(),
+        None => vec![member.path.join("src")],
+    };
+    let member_exclude: Vec<String> = member
+        .manifest
+        .build
+        .as_ref()
+        .map(|b| b.exclude.clone())
+        .unwrap_or_default();
+    let sources = runner::discover_sources_multi(&member_src_dirs, &member_exclude)?;
+    let sources = runner::filter_included_sources(&sources);
+    if sources.is_empty() {
+        return Ok(None);
+    }
+
+    let (mut backend_cfg, compiler_kind, target) = setup_compiler(config, &[]);
+
+    // Member-specific include dirs and extra flags from its [build] section
+    if let Some(ref build) = member.manifest.build {
+        for dir in &build.include_dirs {
+            let abs = member.path.join(dir);
+            backend_cfg.extra_flags.push(format!("-I{}", abs.display()));
+        }
+        backend_cfg.extra_flags.extend(build.extra_flags.clone());
+    }
+
+    // Auto-detect include/ directory for this member
+    let member_include = member.path.join("include");
+    if member_include.is_dir() {
+        let flag = format!("-I{}", member_include.display());
+        if !backend_cfg.extra_flags.contains(&flag) {
+            backend_cfg.extra_flags.push(flag);
+        }
+    }
+
+    for inc_dir in git_include_dirs {
+        backend_cfg
+            .extra_flags
+            .push(format!("-I{}", inc_dir.display()));
+    }
+
+    // Sorted: the order sets the link command, and with it the link key.
+    let mut transitive_deps: Vec<String> = ws
+        .transitive_member_deps(&member.name)
+        .into_iter()
+        .collect();
+    transitive_deps.sort();
+    for dep_name in &transitive_deps {
+        for inc_dir in upstream_include_dirs.get(dep_name).into_iter().flatten() {
+            let flag = format!("-I{}", inc_dir.display());
+            if !backend_cfg.extra_flags.contains(&flag) {
+                backend_cfg.extra_flags.push(flag);
+            }
+        }
+    }
+
+    let build_type = member
+        .manifest
+        .build
+        .as_ref()
+        .and_then(|b| b.build_type)
+        .unwrap_or_default();
+
+    Ok(Some(MemberBuild {
+        sources,
+        backend_cfg,
+        compiler_kind,
+        target,
+        build_dir: config.build_dir().join(&member.name),
+        build_type,
+        transitive_deps,
+    }))
+}
+
+/// Include directories a member offers the members that depend on it:
+/// its `include/` and its `[build] include_dirs` that exist.
+pub(crate) fn member_include_dirs_of(
+    member: &cmod_workspace::workspace::WorkspaceMember,
+) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    let inc = member.path.join("include");
+    if inc.is_dir() {
+        dirs.push(inc);
+    }
+    if let Some(ref build) = member.manifest.build {
+        for dir in &build.include_dirs {
+            let abs = member.path.join(dir);
+            if abs.is_dir() && !dirs.contains(&abs) {
+                dirs.push(abs);
+            }
+        }
+    }
+    dirs
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_workspace(
     config: &Config,
@@ -763,96 +890,38 @@ fn build_workspace(
             &member.name,
         );
 
-        let member_src_dirs: Vec<std::path::PathBuf> = {
-            let srcs = member
-                .manifest
-                .build
-                .as_ref()
-                .map(|b| &b.sources)
-                .filter(|s| !s.is_empty());
-            match srcs {
-                Some(dirs) => dirs.iter().map(|s| member.path.join(s)).collect(),
-                None => vec![member.path.join("src")],
-            }
-        };
-        let member_exclude: Vec<String> = member
-            .manifest
-            .build
-            .as_ref()
-            .map(|b| b.exclude.clone())
-            .unwrap_or_default();
-        let sources = runner::discover_sources_multi(&member_src_dirs, &member_exclude)?;
-        let sources = runner::filter_included_sources(&sources);
-
-        if sources.is_empty() {
+        let Some(MemberBuild {
+            sources,
+            backend_cfg,
+            compiler_kind,
+            target,
+            build_dir,
+            build_type,
+            transitive_deps,
+        }) = member_build(
+            config,
+            &ws,
+            member,
+            &git_dep_artifacts.include_dirs,
+            &member_include_dirs,
+        )?
+        else {
             shell.verbose("Skipping", format!("{} (no source files)", member.name));
             continue;
-        }
-
-        let (mut backend_cfg, compiler_kind, target) = setup_compiler(config, &[]);
-
-        // Add member-specific include dirs and extra flags from [build] section
-        if let Some(ref build) = member.manifest.build {
-            for dir in &build.include_dirs {
-                let abs = member.path.join(dir);
-                backend_cfg.extra_flags.push(format!("-I{}", abs.display()));
-            }
-            backend_cfg.extra_flags.extend(build.extra_flags.clone());
-        }
-
-        // Auto-detect include/ directory for this member
-        let member_include = member.path.join("include");
-        if member_include.is_dir() {
-            let flag = format!("-I{}", member_include.display());
-            if !backend_cfg.extra_flags.contains(&flag) {
-                backend_cfg.extra_flags.push(flag);
-            }
-        }
-
-        // Add git dependency include dirs to the compiler
-        for inc_dir in &git_dep_artifacts.include_dirs {
-            backend_cfg
-                .extra_flags
-                .push(format!("-I{}", inc_dir.display()));
-        }
+        };
 
         let cache = ArtifactCache::new(config.cache_dir());
 
-        let build_dir = config.build_dir().join(&member.name);
-
-        let build_type = member
-            .manifest
-            .build
-            .as_ref()
-            .and_then(|b| b.build_type)
-            .unwrap_or_default();
-
         // Start with git dep artifacts, then layer workspace member deps on top
-        // Sorted: the order sets the link command, and with it the link key.
-        let mut transitive_deps: Vec<String> = ws
-            .transitive_member_deps(&member.name)
-            .into_iter()
-            .collect();
-        transitive_deps.sort();
         let mut extra_pcms: std::collections::HashMap<String, std::path::PathBuf> =
             git_dep_artifacts.pcms.clone();
         let mut extra_objs: Vec<std::path::PathBuf> = git_dep_artifacts.objs.clone();
-
         for dep_name in &transitive_deps {
             if let Some(dep_pcms) = member_pcm_paths.get(dep_name) {
                 extra_pcms.extend(dep_pcms.clone());
             }
             if let Some(dep_objs) = member_obj_paths.get(dep_name) {
                 extra_objs.extend(dep_objs.clone());
-            }
-            // Add include dirs from upstream members
-            if let Some(dep_incs) = member_include_dirs.get(dep_name) {
-                for inc_dir in dep_incs {
-                    let flag = format!("-I{}", inc_dir.display());
-                    if !backend_cfg.extra_flags.contains(&flag) {
-                        backend_cfg.extra_flags.push(flag);
-                    }
-                }
             }
         }
 
@@ -913,20 +982,7 @@ fn build_workspace(
                 member_obj_paths.insert(member.name.clone(), this_objs);
 
                 // Store include dirs from this member for downstream members
-                let mut this_inc_dirs = Vec::new();
-                let inc = member.path.join("include");
-                if inc.is_dir() {
-                    this_inc_dirs.push(inc);
-                }
-                if let Some(ref build) = member.manifest.build {
-                    for dir in &build.include_dirs {
-                        let abs = member.path.join(dir);
-                        if abs.is_dir() && !this_inc_dirs.contains(&abs) {
-                            this_inc_dirs.push(abs);
-                        }
-                    }
-                }
-                member_include_dirs.insert(member.name.clone(), this_inc_dirs);
+                member_include_dirs.insert(member.name.clone(), member_include_dirs_of(member));
             }
             Err(e) => {
                 shell.error(format!("{}: {}", member.name, e));
