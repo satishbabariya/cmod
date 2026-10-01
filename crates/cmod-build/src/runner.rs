@@ -1534,8 +1534,18 @@ impl BuildRunner {
                             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                         };
+                        // A node failed while this worker waited: start no
+                        // more work, as `execute_plan_sequential` does.
+                        let has_errors = match errors.lock() {
+                            Ok(guard) => !guard.is_empty(),
+                            Err(poisoned) => !poisoned.into_inner().is_empty(),
+                        };
+                        if has_errors {
+                            break;
+                        }
 
                         let node = &plan.nodes[idx];
+                        let mut failed = false;
                         match self.execute_node(
                             node,
                             plan,
@@ -1604,15 +1614,20 @@ impl BuildRunner {
                                     NodeOutcome::Linked(_) => {}
                                 }
                             }
-                            Err(e) => match errors.lock() {
-                                Ok(mut guard) => guard.push(e),
-                                Err(poisoned) => poisoned.into_inner().push(e),
-                            },
+                            Err(e) => {
+                                failed = true;
+                                match errors.lock() {
+                                    Ok(mut guard) => guard.push(e),
+                                    Err(poisoned) => poisoned.into_inner().push(e),
+                                }
+                            }
                         }
 
-                        // Signal completion and enqueue newly-ready nodes
+                        // Signal completion and enqueue newly-ready nodes:
+                        // none after a failure. Its importers would only
+                        // fail again, each reporting the module as missing.
                         let c = completed.fetch_add(1, Ordering::SeqCst) + 1;
-                        {
+                        if !failed {
                             let mut in_deg = match in_degree.lock() {
                                 Ok(guard) => guard,
                                 Err(poisoned) => poisoned.into_inner(),

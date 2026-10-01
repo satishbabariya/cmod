@@ -471,6 +471,38 @@ fn test_e2e_build_compile_error() {
     );
 }
 
+/// A module that fails to compile stops the build there: its importers are
+/// not compiled. Idle workers used to pick them up, and each failed again,
+/// reporting the module as not found.
+#[test]
+fn test_e2e_build_compile_error_stops_at_the_module() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    init_project(tmp.path(), "broken");
+    fs::write(
+        tmp.path().join("src/lib.cppm"),
+        "export module local.broken;\nexport int broken() { return not_declared; }\n",
+    )
+    .unwrap();
+    for name in ["a", "b", "c"] {
+        fs::write(
+            tmp.path().join(format!("src/{name}.cpp")),
+            format!("import local.broken;\nint {name}() {{ return broken(); }}\n"),
+        )
+        .unwrap();
+    }
+
+    let output = run_cmod_with_llvm(tmp.path(), &["build", "--jobs", "4"]);
+    assert!(!output.status.success());
+    let err = stderr(&output);
+    assert!(err.contains("not_declared"), "{}", err);
+    assert!(!err.contains("not found"), "{}", err);
+}
+
 #[test]
 fn test_e2e_build_no_source_files() {
     let tmp = TempDir::new().unwrap();
