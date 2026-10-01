@@ -88,7 +88,7 @@ cmod build --dry-run        # every step: rebuild (with the reason) or up-to-dat
 cmod explain local.math     # just one module
 ```
 
-A dry run reads the existing `cmod.lock` and never writes one, runs no hooks, and leaves build outputs and build state untouched.
+A dry run only looks: it runs no hooks, never resolves or writes `cmod.lock`, never fetches or removes a dependency checkout (one missing or not at its locked commit is reported as "not checked out at the locked commit"), and leaves build outputs and build state untouched. Without a `cmod.lock` it still examines path dependencies. An importer of a module that will be rebuilt is reported as rebuilt; the real build may skip it if the new BMI is byte-identical.
 
 ## Link-Time Optimization (LTO)
 

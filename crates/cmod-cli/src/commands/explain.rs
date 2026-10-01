@@ -7,8 +7,20 @@ use cmod_core::error::CmodError;
 use cmod_core::shell::{Shell, Verbosity};
 use cmod_core::types::Profile;
 
+/// Global flags that change what a build would do, passed through to the
+/// dry run so it matches the build the user runs.
+#[derive(Debug, Default, Clone)]
+pub struct BuildFlags {
+    pub locked: bool,
+    pub offline: bool,
+    pub target: Option<String>,
+    pub features: Vec<String>,
+    pub no_default_features: bool,
+    pub no_cache: bool,
+}
+
 /// Run `cmod explain <module>` — explain why a module would be rebuilt.
-pub fn run(module_name: String, shell: &Shell) -> Result<(), CmodError> {
+pub fn run(module_name: String, shell: &Shell, flags: &BuildFlags) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
     let config = Config::load(&cwd)?;
     let verbose = shell.verbosity() == Verbosity::Verbose;
@@ -68,27 +80,30 @@ pub fn run(module_name: String, shell: &Shell) -> Result<(), CmodError> {
     let report = Arc::new(DryRunReport::default());
     super::build::run(
         false,
-        false,
-        false,
+        flags.locked,
+        flags.offline,
         shell,
-        None,
+        flags.target.clone(),
         0,
         false,
         None,
         true,
         false,
         false,
-        &[],
-        false,
-        false,
+        &flags.features,
+        flags.no_default_features,
+        flags.no_cache,
         false,
         vec![],
         Some(report.clone()),
     )?;
 
+    // This package's own steps for the module: dependencies can have
+    // sources whose (file-stem) module names collide with ours.
     let entries: Vec<DryRunEntry> = report
         .entries()
         .into_iter()
+        .filter(|e| e.source.as_ref().is_some_and(|s| sources.contains(s)))
         .filter(|e| {
             e.module.as_deref() == Some(module_name.as_str())
                 || e.source.as_ref() == Some(&node.source)
@@ -105,8 +120,8 @@ pub fn run(module_name: String, shell: &Shell) -> Result<(), CmodError> {
             let reason = e.reason.as_ref()?;
             let source = e
                 .source
-                .as_ref()
-                .map(|s| s.strip_prefix(&cwd).unwrap_or(s).display().to_string())
+                .as_deref()
+                .map(super::build::display_relative)
                 .unwrap_or_default();
             Some(format!("{}: {}", source, reason))
         })
@@ -147,7 +162,11 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let shell = Shell::new(Verbosity::Normal);
-        let result = run("nonexistent_module".to_string(), &shell);
+        let result = run(
+            "nonexistent_module".to_string(),
+            &shell,
+            &BuildFlags::default(),
+        );
         assert!(result.is_err());
 
         std::env::set_current_dir(original).unwrap();

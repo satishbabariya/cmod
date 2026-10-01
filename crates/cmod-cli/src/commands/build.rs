@@ -41,9 +41,14 @@ pub fn run(
     } else {
         Profile::Debug
     };
-    // A dry run reports on the existing lockfile; it never writes one.
-    config.locked = locked || dry_run.is_some();
+    config.locked = locked;
     let no_hooks = no_hooks || dry_run.is_some();
+    // Present tense for what a dry run does instead of building.
+    let building = if dry_run.is_some() {
+        "Checking"
+    } else {
+        "Building"
+    };
     config.offline = offline;
     if let Some(t) = target_override {
         config.target = Some(t);
@@ -78,12 +83,12 @@ pub fn run(
     }
 
     shell.status(
-        "Building",
+        building,
         format!("{} ({})", config.manifest.package.name, profile_name),
     );
 
     // Step 1: Ensure dependencies are resolved (with target-specific filtering)
-    let lockfile = ensure_resolved(&config, shell)?;
+    let lockfile = resolved_lockfile(&config, shell, dry_run.is_some())?;
 
     // Step 1.5: Verify lockfile integrity if --verify is set
     if verify {
@@ -165,18 +170,18 @@ pub fn run(
 /// Print a dry run's findings to stdout, one line per build step in build
 /// order: what would be rebuilt or relinked and why, and what is up to date.
 pub fn print_dry_run(report: &DryRunReport) {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let show = |p: &std::path::Path| p.strip_prefix(&cwd).unwrap_or(p).display().to_string();
     let entries = report.entries();
     for entry in &entries {
-        let what = match (&entry.source, &entry.output) {
-            (Some(source), _) => format!(
+        let what = match (&entry.source, entry.kind, entry.outputs.first()) {
+            (Some(source), _, _) => format!(
                 "{} ({})",
                 entry.module.as_deref().unwrap_or("?"),
-                show(source)
+                display_relative(source)
             ),
-            (None, Some(output)) => format!("link {}", show(output)),
-            (None, None) => entry.node_id.clone(),
+            (None, cmod_core::types::NodeKind::Link, Some(output)) => {
+                format!("link {}", display_relative(output))
+            }
+            _ => entry.node_id.clone(),
         };
         match &entry.reason {
             Some(reason) => println!("rebuild     {}: {}", what, reason),
@@ -185,6 +190,15 @@ pub fn print_dry_run(report: &DryRunReport) {
     }
     let stale = entries.iter().filter(|e| e.reason.is_some()).count();
     println!("{} of {} build steps would run", stale, entries.len());
+}
+
+/// `path` relative to the current directory when inside it, for output.
+pub fn display_relative(path: &std::path::Path) -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    path.strip_prefix(&cwd)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 /// Create a remote cache instance from a URL, if provided, honoring the
@@ -529,11 +543,29 @@ fn build_vendored_dependencies(
             continue;
         }
 
-        // Find (or fetch) the dependency on disk
-        let dep_dir = match super::common::ensure_dep_on_disk(pkg, &vendor_dir, &deps_dir, shell) {
-            Ok(Some(d)) => d,
-            Ok(None) => continue,
-            Err(e) => return Err(e),
+        // Find (or fetch) the dependency on disk. A dry run only looks: a
+        // missing or stale checkout is reported, never cloned or removed.
+        let dep_dir = if let Some(report) = dry_run {
+            match super::common::locked_checkout_on_disk(pkg, &vendor_dir, &deps_dir) {
+                Some(d) => d,
+                None => {
+                    report.push(cmod_build::runner::DryRunEntry {
+                        node_id: pkg.name.clone(),
+                        kind: cmod_core::types::NodeKind::Link,
+                        module: None,
+                        source: None,
+                        outputs: vec![],
+                        reason: Some(cmod_build::incremental::RebuildReason::DependencyNotFetched),
+                    });
+                    continue;
+                }
+            }
+        } else {
+            match super::common::ensure_dep_on_disk(pkg, &vendor_dir, &deps_dir, shell) {
+                Ok(Some(d)) => d,
+                Ok(None) => continue,
+                Err(e) => return Err(e),
+            }
         };
 
         shell.verbose(
@@ -722,7 +754,11 @@ fn build_workspace(
     let ws = WorkspaceManager::load(&config.root)?;
 
     shell.status(
-        "Building",
+        if dry_run.is_some() {
+            "Checking"
+        } else {
+            "Building"
+        },
         format!(
             "workspace ({} members, {})",
             ws.members.len(),
@@ -734,7 +770,7 @@ fn build_workspace(
     );
 
     // Ensure dependencies are resolved
-    let lockfile = ensure_resolved(config, shell)?;
+    let lockfile = resolved_lockfile(config, shell, dry_run.is_some())?;
 
     // Build external git dependencies first (shared across all workspace members)
     let git_dep_artifacts = if !lockfile.packages.is_empty() {
@@ -762,7 +798,14 @@ fn build_workspace(
     let mut failed = Vec::new();
 
     for member in &ordered_members {
-        shell.status("Compiling", &member.name);
+        shell.status(
+            if dry_run.is_some() {
+                "Checking"
+            } else {
+                "Compiling"
+            },
+            &member.name,
+        );
 
         let member_src_dirs: Vec<std::path::PathBuf> = {
             let srcs = member
@@ -1298,6 +1341,17 @@ fn resolve_build_features(
 ///
 /// If a `vendor/` directory exists and the build is in offline mode (or
 /// `vendor/config.toml` is present), the resolver uses vendored sources.
+/// The lockfile a build uses. A dry run never resolves (which can clone and
+/// would write `cmod.lock`): without a lockfile it proceeds with an empty
+/// one, so path dependencies are still examined and git dependencies show up
+/// as changed inputs of their importers.
+fn resolved_lockfile(config: &Config, shell: &Shell, dry_run: bool) -> Result<Lockfile, CmodError> {
+    if dry_run && !config.lockfile_path.exists() {
+        return Ok(Lockfile::new());
+    }
+    ensure_resolved(config, shell)
+}
+
 fn ensure_resolved(config: &Config, shell: &Shell) -> Result<Lockfile, CmodError> {
     // Check for vendored dependencies
     let vendor_dir = config.root.join("vendor");

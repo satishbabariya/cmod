@@ -2457,3 +2457,33 @@ fn test_e2e_explain_reports_header_change() {
     assert!(out.contains("NEEDS REBUILD"), "{}", out);
     assert!(out.contains("included header changed"), "{}", out);
 }
+
+/// A dry run never resolves: without `cmod.lock` it still examines path
+/// dependencies (a locked-mode dry run used to fail here), and it does not
+/// write a lockfile.
+#[test]
+fn test_e2e_dry_run_without_lockfile_examines_path_deps() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let imp = write_impl_dep_project(tmp.path());
+    assert_eq!(build_and_run(tmp.path(), "app", &["build"]), "1");
+    fs::remove_file(tmp.path().join("cmod.lock")).unwrap();
+
+    rewrite(&imp, "module local.dep;\n\nint f() { return 2; }\n");
+    let output = run_cmod_with_llvm(tmp.path(), &["build", "--dry-run"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains("impl.cpp): source file changed"), "{}", out);
+    assert!(
+        out.contains("link build/debug/app: link inputs changed"),
+        "{}",
+        out
+    );
+    assert!(!tmp.path().join("cmod.lock").exists());
+
+    let output = run_cmod_with_llvm(tmp.path(), &["explain", "main"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}

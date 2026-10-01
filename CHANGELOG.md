@@ -18,7 +18,7 @@ The first build after upgrading recompiles everything: old build state has no he
 
 ### Added
 
-- **`cmod build --dry-run` (`-n`)** — prints each build step (compile or link, for the package and its dependencies) and whether it would run, with the reason: source changed, an included header changed, an imported module will be rebuilt, flags changed, an output is missing, link inputs changed. It builds nothing, writes no build state or lockfile, and runs no hooks.
+- **`cmod build --dry-run` (`-n`)** — prints each build step (compile or link, for the package and its dependencies) and whether it would run, with the reason: source changed, an included header changed, an imported module will be rebuilt, flags changed, an output is missing, link inputs changed. It builds nothing, writes no build state or lockfile, fetches no dependencies, and runs no hooks.
 
 ### Changed
 

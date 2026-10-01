@@ -651,7 +651,18 @@ fn main() {
         } => commands::graph::run(format, filter, status, critical_path, timing, &shell),
         Commands::Audit => commands::audit::run(&shell),
         Commands::Status => commands::status::run(&shell),
-        Commands::Explain { module } => commands::explain::run(module, &shell),
+        Commands::Explain { module } => commands::explain::run(
+            module,
+            &shell,
+            &commands::explain::BuildFlags {
+                locked: cli.locked,
+                offline: cli.offline,
+                target: cli.target.clone(),
+                features: cli.features.clone(),
+                no_default_features: cli.no_default_features,
+                no_cache: cli.no_cache,
+            },
+        ),
         Commands::Toolchain { action } => match action {
             ToolchainAction::Show => commands::toolchain::show(&shell),
             ToolchainAction::Check => commands::toolchain::check(&shell),
