@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use cmod_build::compiler::{make_backend, BackendConfig, CompilerBackend, TestBinary};
+use cmod_build::incremental::{CommandState, HeaderState};
+use cmod_cache::key::{hash_bytes, hash_file};
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
 use cmod_core::shell::Shell;
@@ -469,56 +472,122 @@ fn compile_tests(
         .chain(coverage_flags)
         .collect();
 
-    let mut compiled = Vec::new();
-    let mut compile_failures = Vec::new();
-
+    // Build every command first, then compile the tests whose inputs
+    // changed since their binary was built, `jobs` at a time.
+    let state_path = build_dir.join(TEST_STATE_FILE);
+    let mut state = CommandState::load(&state_path);
+    let compiler_version = backend.version();
+    let mut jobs = Vec::new();
     for test_source in test_sources {
         let test_name = test_source
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("test")
             .to_string();
-
         let test_binary = build_dir.join(format!("test_{}", test_name));
-
-        let mut cmd = backend.test_binary_command(&TestBinary {
+        let test = TestBinary {
             source: test_source,
             output: &test_binary,
             bmis: &bmis,
             flags: &flags,
             objects: &obj_files,
-        })?;
+        };
+        let cmd = backend.test_binary_command(&test)?;
+        let key = test_binary_key(&cmd, &compiler_version, &test);
+        let fresh = key
+            .as_ref()
+            .is_some_and(|key| state.is_fresh(&test_binary, key));
+        jobs.push(TestCompile {
+            name: test_name,
+            source: test_source.clone(),
+            binary: test_binary,
+            cmd: std::sync::Mutex::new(cmd),
+            key,
+            fresh,
+        });
+    }
 
-        shell.verbose("Compiling", format!("test: {}", test_name));
+    let pending: Vec<&TestCompile> = jobs.iter().filter(|job| !job.fresh).collect();
+    let workers = if opts.jobs == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+    } else {
+        opts.jobs
+    }
+    .clamp(1, pending.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let outcomes: std::sync::Mutex<HashMap<String, CompileOutcome>> = Default::default();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                while let Some(job) = pending.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    shell.verbose("Compiling", format!("test: {}", job.name));
+                    let started = epoch_millis();
+                    let start = Instant::now();
+                    let output = job.cmd.lock().unwrap_or_else(|e| e.into_inner()).output();
+                    let outcome = CompileOutcome {
+                        output,
+                        started,
+                        duration: start.elapsed(),
+                    };
+                    outcomes
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(job.name.clone(), outcome);
+                }
+            });
+        }
+    });
+    let mut outcomes = outcomes.into_inner().unwrap_or_else(|e| e.into_inner());
 
-        let start = Instant::now();
-        let output = cmd.output().map_err(|e| CmodError::TestFailed {
-            reason: format!("failed to compile test '{}': {}", test_name, e),
+    let mut compiled = Vec::new();
+    let mut compile_failures = Vec::new();
+    for job in jobs {
+        let test = CompiledTest {
+            name: job.name.clone(),
+            source: job.source.clone(),
+            binary_path: job.binary.clone(),
+        };
+        if job.fresh {
+            shell.verbose("Fresh", format!("test: {}", job.name));
+            compiled.push(test);
+            continue;
+        }
+        let Some(outcome) = outcomes.remove(&job.name) else {
+            continue;
+        };
+        let output = outcome.output.map_err(|e| CmodError::TestFailed {
+            reason: format!("failed to compile test '{}': {}", job.name, e),
         })?;
 
         if output.status.success() {
-            compiled.push(CompiledTest {
-                name: test_name,
-                source: test_source.clone(),
-                binary_path: test_binary,
-            });
+            let headers = test_headers(backend.as_ref(), &job, outcome.started);
+            if let Some(key) = job.key {
+                state.record(&job.binary, key, headers);
+            }
+            compiled.push(test);
         } else {
+            state.record(&job.binary, String::new(), None);
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            shell.error(format!("compilation failed: {}", test_name));
+            shell.error(format!("compilation failed: {}", job.name));
             if !stderr.is_empty() {
                 shell.error(&stderr);
             }
             compile_failures.push(TestResult {
-                name: test_name,
+                name: job.name,
                 status: TestStatus::CompileFailed {
                     reason: "compilation failed".to_string(),
                 },
-                duration: start.elapsed(),
+                duration: outcome.duration,
                 stdout: String::new(),
                 stderr,
-                source: test_source.clone(),
+                source: job.source,
             });
         }
+    }
+    if let Err(e) = state.save(&state_path) {
+        shell.warn(format!("failed to save {}: {}", state_path.display(), e));
     }
 
     if !compile_failures.is_empty() {
@@ -534,6 +603,77 @@ fn compile_tests(
     }
 
     Ok((compiled, compile_failures))
+}
+
+/// Records which test binaries are up to date, in the build directory.
+const TEST_STATE_FILE: &str = ".cmod-test-state.json";
+
+/// One test binary to build.
+struct TestCompile {
+    name: String,
+    source: PathBuf,
+    binary: PathBuf,
+    cmd: std::sync::Mutex<std::process::Command>,
+    /// `None` when an input could not be read: the binary is always built.
+    key: Option<String>,
+    /// Built from the same inputs already: skip the compile.
+    fresh: bool,
+}
+
+struct CompileOutcome {
+    output: std::io::Result<std::process::Output>,
+    /// When the compile started, in epoch milliseconds.
+    started: u64,
+    duration: Duration,
+}
+
+/// What a test binary is built from: the command line, the compiler's
+/// version, and the content of the source, BMIs and objects it names.
+/// Headers are checked separately (see [`CommandState::is_fresh`]). `None`
+/// when one of the files cannot be read.
+fn test_binary_key(
+    cmd: &std::process::Command,
+    compiler_version: &str,
+    test: &TestBinary<'_>,
+) -> Option<String> {
+    let mut inputs = cmd.get_program().to_string_lossy().into_owned();
+    for arg in cmd.get_args() {
+        inputs.push('\0');
+        inputs.push_str(&arg.to_string_lossy());
+    }
+    inputs.push('\0');
+    inputs.push_str(compiler_version);
+    let files = std::iter::once(test.source)
+        .chain(test.bmis.iter().map(|(_, path)| path.as_path()))
+        .chain(test.objects.iter().map(PathBuf::as_path));
+    for file in files {
+        inputs.push('\0');
+        inputs.push_str(&hash_file(file).ok()?);
+    }
+    Some(hash_bytes(inputs.as_bytes()))
+}
+
+/// The headers a successful test compile read, from its dependency file.
+/// `None` (unknown, so the test is compiled again next time) when there is
+/// none, or when a header changed after the compile started: the compiler
+/// may have read the old content.
+fn test_headers(
+    backend: &dyn CompilerBackend,
+    job: &TestCompile,
+    started: u64,
+) -> Option<Vec<HeaderState>> {
+    backend
+        .included_headers(&job.source, &job.binary)?
+        .iter()
+        .map(|path| HeaderState::observe(path).filter(|h| h.mtime.is_some_and(|m| m < started)))
+        .collect()
+}
+
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// The compiler backend that builds test binaries: `[toolchain] compiler`,
@@ -615,6 +755,8 @@ fn collect_bmis(config: &Config, pcm_dir: &Path, bmi_ext: &str) -> Vec<(String, 
         }
     }
 
+    // Sorted: the order reaches the test command line, and its key.
+    bmis.sort();
     bmis
 }
 
@@ -653,6 +795,7 @@ fn collect_obj_files(config: &Config, obj_dir: &Path) -> Vec<PathBuf> {
         }
     }
 
+    obj_files.sort();
     obj_files
 }
 
@@ -1635,6 +1778,9 @@ mod tests {
                 "-fmodule-file=local.demo=/p/build/pcm/local_demo.pcm",
                 "-Iinclude",
                 "-fsanitize=address",
+                "-MD",
+                "-MF",
+                "/p/build/test_main.d",
                 "-o",
                 "/p/build/test_main",
                 "/p/tests/main.cpp",

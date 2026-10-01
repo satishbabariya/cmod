@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`cmod test` compiles only the tests that changed, in parallel** — every run compiled and linked every test binary again, one after another, even when nothing had changed: with a test framework like Catch2, each run paid for every test's full compile. A test is now compiled again only when its source, a header it includes, the package's BMIs and objects, or the compile command changed (recorded in `.cmod-test-state.json`), and the compiles run `--jobs` at a time. `cmod -v test` prints `Fresh` for the tests it skipped.
+
 ### Fixed
 
 - **A no-op workspace build no longer relinks** — a member's upstream members' objects were collected in hash-set order, which changes from run to run, so the link inputs looked different every build: the member was relinked each time, and its binary was not reproducible. Members, and the archives and objects collected from every dependency's build directory, are now sorted.

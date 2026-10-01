@@ -741,6 +741,62 @@ fn test_e2e_test_partial_compile_failure_fails() {
     );
 }
 
+/// A second `cmod test` compiles only the tests whose inputs changed:
+/// the test source, a header it includes, or the package it links.
+#[test]
+fn test_e2e_test_recompiles_only_changed_tests() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    init_project_with_source(tmp.path(), "incr");
+    let header = tmp.path().join("tests/value.h");
+    fs::write(&header, "#define VALUE 1\n").unwrap();
+    fs::write(
+        tmp.path().join("tests/uses_header.cpp"),
+        "#include \"value.h\"\nint main() { return VALUE == 2 ? 0 : 1; }\n",
+    )
+    .unwrap();
+
+    let compiled = |output: &std::process::Output| -> Vec<String> {
+        stderr(output)
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("Compiling test: "))
+            .map(str::to_string)
+            .collect()
+    };
+
+    // VALUE is 1: uses_header fails.
+    let output = run_cmod_with_llvm(tmp.path(), &["-v", "test"]);
+    assert!(!output.status.success(), "{}", stderr(&output));
+    let mut first = compiled(&output);
+    first.sort();
+    assert_eq!(first, ["main", "uses_header"], "{}", stderr(&output));
+
+    // Nothing changed: nothing compiles, and the failure is still reported.
+    let output = run_cmod_with_llvm(tmp.path(), &["-v", "test"]);
+    assert!(!output.status.success(), "{}", stderr(&output));
+    assert!(compiled(&output).is_empty(), "{}", stderr(&output));
+
+    // The header changes: only its includer is rebuilt, and now passes.
+    rewrite(&header, "#define VALUE 2\n");
+    let output = run_cmod_with_llvm(tmp.path(), &["-v", "test"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(compiled(&output), ["uses_header"], "{}", stderr(&output));
+
+    // A test that fails to compile is compiled again once fixed.
+    let broken = tmp.path().join("tests/broken.cpp");
+    fs::write(&broken, "int main() { return not_declared; }\n").unwrap();
+    let output = run_cmod_with_llvm(tmp.path(), &["-v", "test"]);
+    assert!(!output.status.success(), "{}", stderr(&output));
+    rewrite(&broken, "int main() { return 0; }\n");
+    let output = run_cmod_with_llvm(tmp.path(), &["-v", "test"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(compiled(&output), ["broken"], "{}", stderr(&output));
+}
+
 #[test]
 fn test_e2e_test_no_tests_dir() {
     if !has_llvm_clang() {

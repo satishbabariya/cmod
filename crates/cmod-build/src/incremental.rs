@@ -77,6 +77,78 @@ pub struct HeaderState {
     pub mtime: Option<u64>,
 }
 
+/// Outputs built outside the build plan, one command each: `cmod test`'s
+/// test binaries. An output is fresh when the command that would build it
+/// has the key recorded for it, and the headers that command read last time
+/// are unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommandState {
+    /// Per output path.
+    #[serde(default)]
+    pub outputs: BTreeMap<String, CommandRecord>,
+}
+
+/// How one output was last built.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandRecord {
+    /// Hash of the command line and of the content of every file it names.
+    pub key: String,
+    /// Headers the command read, each with the mtime read before its hash.
+    pub headers: Vec<HeaderState>,
+}
+
+impl CommandState {
+    /// Load from `path`; empty when the file is missing or unreadable.
+    pub fn load(path: &Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|content| serde_json::from_str(&content).ok())
+            .unwrap_or_default()
+    }
+
+    /// Save to `path`.
+    pub fn save(&self, path: &Path) -> Result<(), CmodError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| CmodError::Other(format!("failed to serialize build state: {}", e)))?;
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// Whether `output` exists and was built by a command with `key`, and
+    /// no header that command read has changed since.
+    pub fn is_fresh(&self, output: &Path, key: &str) -> bool {
+        output.exists()
+            && self
+                .outputs
+                .get(&output.display().to_string())
+                .is_some_and(|record| {
+                    record.key == key
+                        && record
+                            .headers
+                            .iter()
+                            .all(|h| h.check() != HeaderCheck::Changed)
+                })
+    }
+
+    /// Record that `output` was built by a command with `key` that read
+    /// `headers`; `None` (headers unknown) forgets the output instead, so
+    /// it is built again next time.
+    pub fn record(&mut self, output: &Path, key: String, headers: Option<Vec<HeaderState>>) {
+        let output = output.display().to_string();
+        match headers {
+            Some(headers) => {
+                self.outputs.insert(output, CommandRecord { key, headers });
+            }
+            None => {
+                self.outputs.remove(&output);
+            }
+        }
+    }
+}
+
 /// How a recorded header compares with the file on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeaderCheck {
@@ -834,6 +906,38 @@ mod tests {
             state.needs_rebuild(&node, "flags", &[]),
             Some(RebuildReason::HeadersUnknown)
         );
+    }
+
+    #[test]
+    fn test_command_state_freshness() {
+        let tmp = TempDir::new().unwrap();
+        let output = tmp.path().join("test_main");
+        let header = tmp.path().join("value.h");
+        std::fs::write(&header, "#define VALUE 1").unwrap();
+        let state_path = tmp.path().join("state.json");
+
+        let mut state = CommandState::default();
+        let headers = vec![HeaderState::observe(&header).unwrap()];
+        state.record(&output, "k1".into(), Some(headers));
+        // No output yet.
+        assert!(!state.is_fresh(&output, "k1"));
+
+        std::fs::write(&output, "bin").unwrap();
+        state.save(&state_path).unwrap();
+        let state = CommandState::load(&state_path);
+        assert!(state.is_fresh(&output, "k1"));
+        assert!(!state.is_fresh(&output, "k2"));
+
+        // Touched, same content: still fresh. Edited: not.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&header, "#define VALUE 1").unwrap();
+        assert!(state.is_fresh(&output, "k1"));
+        std::fs::write(&header, "#define VALUE 2").unwrap();
+        assert!(!state.is_fresh(&output, "k1"));
+
+        let mut state = state;
+        state.record(&output, "k1".into(), None);
+        assert!(!state.is_fresh(&output, "k1"));
     }
 
     #[test]

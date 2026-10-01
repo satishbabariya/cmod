@@ -11,7 +11,7 @@ cmod treats testing as a first-class workflow. The `cmod test` command discovers
 1. Resolve dependencies (including `[dev-dependencies]`).
 2. Build the project module and its dependencies.
 3. Discover test sources matching `[test].test_patterns` (minus `[test].exclude_patterns`).
-4. Compile each test source into a separate binary, linking against the project module.
+4. Compile each test source into a separate binary, linking against the project module (in parallel when `--jobs` > 1). A test whose inputs are unchanged since its binary was built is not compiled again (see [Incremental Test Builds](#incremental-test-builds)).
 5. Execute test binaries (in parallel when `--jobs` > 1).
 6. Collect exit codes: `0` = pass, non-zero = fail.
 7. Print summary and exit with `0` if all tests passed, `1` otherwise.
@@ -228,9 +228,19 @@ cmod test --filter "*edge*"
 
 Both filters can be combined. A test must match both to be selected.
 
+## Incremental Test Builds
+
+cmod records what built each test binary in `build/<profile>/.cmod-test-state.json`. On the next `cmod test`, a test is compiled again only when one of these changed:
+
+- the test source, or a header it includes (reported by the compiler's dependency file, as in `cmod build`);
+- the module interfaces (BMIs) and objects it links, so a change to the package rebuilds every test;
+- the compile command: flags, `[test]` settings, sanitizers, coverage, the compiler or its version.
+
+`cmod -v test` prints `Fresh test: <name>` for each test it skipped compiling. A test that failed to compile is always compiled again. Tests are still run every time.
+
 ## Parallel Execution
 
-By default (`--jobs 0`), cmod auto-detects the number of CPU cores and runs that many test binaries concurrently. Override with an explicit count:
+By default (`--jobs 0`), cmod auto-detects the number of CPU cores and compiles, then runs, that many test binaries concurrently. Override with an explicit count:
 
 ```bash
 cmod test -j 1          # Sequential execution

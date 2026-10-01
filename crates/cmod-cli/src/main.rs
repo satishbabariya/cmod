@@ -168,7 +168,7 @@ enum Commands {
         #[arg(long, short = 'f')]
         filter: Option<String>,
 
-        /// Maximum parallel test execution jobs (0 = auto)
+        /// Test binaries to compile and run in parallel (0 = auto)
         #[arg(long, short, default_value = "0")]
         jobs: usize,
 
