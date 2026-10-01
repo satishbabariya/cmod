@@ -22,17 +22,19 @@ pub struct BuildState {
     /// Per-node compilation time in milliseconds from the last build.
     #[serde(default)]
     pub node_timings: BTreeMap<String, u64>,
-    /// Every header any node included, once: nodes refer to it by index
-    /// (most headers are included by many nodes).
+    /// Every header version any node was built against, once: nodes refer
+    /// to it by index (most headers are included by many nodes). A header
+    /// edited during a build can appear twice, once per version, because
+    /// nodes compiled before and after the edit must not share a record.
     #[serde(default)]
     pub headers: Vec<HeaderState>,
-    /// Path → index into `headers`. Rebuilt on load.
+    /// Record → index into `headers`. Rebuilt on load.
     #[serde(skip)]
-    header_index: HashMap<PathBuf, usize>,
-    /// Per index into `headers`: whether the header changed since it was
-    /// recorded. Checked once per header, on first use.
+    header_index: HashMap<HeaderState, usize>,
+    /// Per index into `headers`: how the header compares with disk.
+    /// Checked once per header, on first use.
     #[serde(skip)]
-    header_changed: OnceLock<Vec<bool>>,
+    header_checks: OnceLock<Vec<HeaderCheck>>,
     /// Hash of everything the last successful link read (see
     /// `BuildRunner`'s link phase). Equal on the next build, with the
     /// output still there, means the link is skipped.
@@ -63,7 +65,7 @@ pub struct NodeState {
 }
 
 /// A header some node included, as it was when that node was built.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct HeaderState {
     /// Absolute path of the header.
     pub path: PathBuf,
@@ -73,6 +75,17 @@ pub struct HeaderState {
     /// recomputed.
     #[serde(default)]
     pub mtime: Option<u64>,
+}
+
+/// How a recorded header compares with the file on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeaderCheck {
+    /// Same mtime.
+    Unchanged,
+    /// New mtime, same content: the mtime read before hashing.
+    Touched(u64),
+    /// Different content, or the file is gone.
+    Changed,
 }
 
 /// Reason why a node needs rebuilding.
@@ -145,38 +158,46 @@ impl BuildState {
             .headers
             .iter()
             .enumerate()
-            .map(|(i, h)| (h.path.clone(), i))
+            .map(|(i, h)| (h.clone(), i))
             .collect();
         state
     }
 
-    /// Add `header` to the header table, replacing an entry for the same
-    /// path, and return its index.
+    /// Add `header` to the header table unless an identical record is
+    /// there, and return its index. Records for the same path with another
+    /// hash or mtime get their own entry: overwriting one would make the
+    /// nodes built against it look built against the other.
     fn intern_header(&mut self, header: HeaderState) -> usize {
-        match self.header_index.get(&header.path) {
-            Some(&i) => {
-                self.headers[i] = header;
-                i
-            }
-            None => {
-                let i = self.headers.len();
-                self.header_index.insert(header.path.clone(), i);
-                self.headers.push(header);
-                i
-            }
+        if let Some(&i) = self.header_index.get(&header) {
+            return i;
         }
+        let i = self.headers.len();
+        self.header_index.insert(header.clone(), i);
+        self.headers.push(header);
+        i
     }
 
     /// Copy `node_id`'s state from `prev`, for a node that was up to date.
+    ///
+    /// Headers that `prev.needs_rebuild` found touched but unchanged take
+    /// their new mtime, so the next build does not hash them again.
     pub fn carry_over(&mut self, prev: &BuildState, node_id: &str) {
         let Some(state) = prev.nodes.get(node_id) else {
             return;
         };
         let mut state = state.clone();
-        let headers: Option<Option<Vec<HeaderState>>> = state
-            .headers
-            .as_ref()
-            .map(|ids| ids.iter().map(|&i| prev.headers.get(i).cloned()).collect());
+        let checks = prev.header_checks.get();
+        let headers: Option<Option<Vec<HeaderState>>> = state.headers.as_ref().map(|ids| {
+            ids.iter()
+                .map(|&i| {
+                    let mut header = prev.headers.get(i)?.clone();
+                    if let Some(HeaderCheck::Touched(mtime)) = checks.and_then(|c| c.get(i)) {
+                        header.mtime = Some(*mtime);
+                    }
+                    Some(header)
+                })
+                .collect()
+        });
         // An index outside `prev`'s table makes the header set unknown.
         state.headers = headers
             .flatten()
@@ -263,12 +284,12 @@ impl BuildState {
             let Some(ids) = &prev.headers else {
                 return Some(RebuildReason::HeadersUnknown);
             };
-            let changed = self
-                .header_changed
-                .get_or_init(|| self.headers.iter().map(HeaderState::changed).collect());
+            let checks = self
+                .header_checks
+                .get_or_init(|| self.headers.iter().map(HeaderState::check).collect());
             for &i in ids {
-                match (self.headers.get(i), changed.get(i)) {
-                    (Some(_), Some(false)) => {}
+                match (self.headers.get(i), checks.get(i)) {
+                    (Some(_), Some(HeaderCheck::Unchanged | HeaderCheck::Touched(_))) => {}
                     (Some(header), _) => {
                         return Some(RebuildReason::HeaderChanged(header.path.clone()))
                     }
@@ -385,14 +406,18 @@ impl HeaderState {
         })
     }
 
-    /// Whether the file differs from this record: mtime fast path, then
-    /// content hash, so a `touch` alone is not a change. A missing file is.
-    fn changed(&self) -> bool {
+    /// Compare the file with this record: mtime fast path, then content
+    /// hash, so a `touch` alone is not a change. A missing file is.
+    fn check(&self) -> HeaderCheck {
         let mtime = file_mtime(&self.path);
         if mtime.is_some() && mtime == self.mtime {
-            return false;
+            return HeaderCheck::Unchanged;
         }
-        hash_file(&self.path).map_or(true, |hash| hash != self.hash)
+        match (hash_file(&self.path), mtime) {
+            (Ok(hash), Some(mtime)) if hash == self.hash => HeaderCheck::Touched(mtime),
+            (Ok(hash), None) if hash == self.hash => HeaderCheck::Unchanged,
+            _ => HeaderCheck::Changed,
+        }
     }
 }
 
@@ -670,6 +695,70 @@ mod tests {
         assert_eq!(next.headers.len(), 1);
         assert_eq!(next.needs_rebuild(&nodes[1], "flags", &[]), None);
         assert!(!next.nodes.contains_key("object:a"));
+    }
+
+    /// A header edited mid-build: an up-to-date node carried over with
+    /// the old version, and a node rebuilt against the new one, keep
+    /// separate records, whatever order they are stored in.
+    #[test]
+    fn test_header_edited_mid_build_keeps_both_versions() {
+        let tmp = TempDir::new().unwrap();
+        let header = tmp.path().join("value.h");
+        std::fs::write(&header, "#define VALUE 1").unwrap();
+        let old = vec![HeaderState::observe(&header).unwrap()];
+
+        let mut prev = BuildState::default();
+        let mut nodes = Vec::new();
+        for name in ["a", "b"] {
+            let src = tmp.path().join(format!("{}.cpp", name));
+            std::fs::write(&src, "#include \"value.h\"").unwrap();
+            let node = make_node(&format!("object:{}", name), Some(src), &[]);
+            prev.record_node(&node, "flags", &[], Some(&old));
+            nodes.push(node);
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&header, "#define VALUE 2").unwrap();
+        let new = vec![HeaderState::observe(&header).unwrap()];
+
+        for carried_first in [true, false] {
+            let mut next = BuildState::default();
+            if carried_first {
+                next.carry_over(&prev, "object:a");
+                next.record_node(&nodes[1], "flags", &[], Some(&new));
+            } else {
+                next.record_node(&nodes[1], "flags", &[], Some(&new));
+                next.carry_over(&prev, "object:a");
+            }
+            assert_eq!(
+                next.clone().needs_rebuild(&nodes[0], "flags", &[]),
+                Some(RebuildReason::HeaderChanged(header.clone())),
+                "carried_first: {}",
+                carried_first
+            );
+            assert_eq!(
+                next.needs_rebuild(&nodes[1], "flags", &[]),
+                None,
+                "carried_first: {}",
+                carried_first
+            );
+        }
+    }
+
+    /// A header touched without changing is re-hashed once: the carried
+    /// over record takes its new mtime.
+    #[test]
+    fn test_touched_header_mtime_is_refreshed() {
+        let tmp = TempDir::new().unwrap();
+        let (mut prev, node, header) = built_with_header(&tmp);
+        prev.headers[0].mtime = Some(1);
+
+        assert_eq!(prev.needs_rebuild(&node, "flags", &[]), None);
+        let mut next = BuildState::default();
+        next.carry_over(&prev, "object:main");
+        assert_eq!(next.headers.len(), 1);
+        assert_eq!(next.headers[0].mtime, file_mtime(&header));
+        assert_eq!(next.headers[0].hash, prev.headers[0].hash);
     }
 
     #[test]

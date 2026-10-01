@@ -63,7 +63,13 @@ path, the macros and which branch of an `#if` was taken.
 lists each header once (`BuildState::headers`), with its hash and mtime.
 `needs_rebuild` checks each header in the table once per build: if the mtime
 is unchanged it skips the file, otherwise it compares content hashes, so a
-`touch` alone rebuilds nothing. A node with no recorded headers rebuilds.
+`touch` alone rebuilds nothing. An up-to-date node's record of a touched
+header takes the new mtime, so it is hashed once, not on every build.
+
+The table holds one entry per header *version* (path, hash and mtime), not
+per path. A header edited during a build is seen at two versions: nodes
+compiled before the edit and nodes compiled after it. A shared per-path
+entry would make one group look built against the other's version. A node with no recorded headers rebuilds.
 That covers state files from older cmod, which have no `headers` key, and
 nodes built without a header list (distributed workers, precompiled BMIs).
 
@@ -142,6 +148,3 @@ hashes, which feed both the incremental check and the base key.
   dependency's own BMI, which is rebuilt.
 - **Header-unit imports (`import <vector>;`).** cmod does not build header
   units today.
-- **Refreshing header mtimes.** A header touched without changing keeps its
-  old mtime in the state, so it is re-hashed (once) on every build until a
-  node that includes it is recompiled.
