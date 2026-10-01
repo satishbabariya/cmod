@@ -1033,6 +1033,9 @@ fn build_module_graph(
 struct ClangScan {
     scan_deps: std::ffi::OsString,
     compiler: std::path::PathBuf,
+    /// `compiler --version`: an in-place upgrade can change predefined
+    /// macros, and with them which imports count.
+    compiler_version: String,
     flags: Vec<String>,
     /// Where results are kept between builds.
     state_path: std::path::PathBuf,
@@ -1058,6 +1061,7 @@ impl ClangScan {
         Some(ClangScan {
             scan_deps: scan_deps_binary(),
             compiler: backend.compiler_path().to_path_buf(),
+            compiler_version: backend.version(),
             flags: backend.common_flags(),
             state_path: build_dir.join(SCAN_STATE_FILE),
             persist,
@@ -1098,6 +1102,8 @@ impl ClangScan {
         let mut inputs = self.scan_deps.to_string_lossy().into_owned();
         inputs.push('\0');
         inputs.push_str(&self.compiler.to_string_lossy());
+        inputs.push('\0');
+        inputs.push_str(&self.compiler_version);
         for flag in &self.flags {
             inputs.push('\0');
             inputs.push_str(flag);
