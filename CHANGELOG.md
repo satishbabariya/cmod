@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.7] - 2026-10-01
+
+The release that makes incremental builds trustworthy, and fast. Up to alpha.6, `cmod build` could report success while linking objects built from old inputs: an edited header never rebuilt anything, even with `--force`; a module's importers rebuilt one build late; and a dependency's module change never reached its importers at all. All three are fixed, and with rebuilds now driven by real inputs, dependencies build incrementally, unchanged links are skipped, and scanning runs in parallel: a no-op build of a Catch2 consumer went from ~5.2 s to ~1.5 s on 4 cores. `cmod build --dry-run` and a rewritten `cmod explain` show what a build would do and why.
+
 ### Fixed
 
 - **Editing a header rebuilds the files that include it** — neither the incremental check nor the cache key looked at included headers. After a header edit, `cmod build` said "up-to-date", and `cmod build --force` restored the object built with the old header from the cache, as did any other project with the same source file, through the remote cache too. The compiler now reports each TU's headers (`-MD` for Clang and GCC, `/sourceDependencies` for MSVC). Build state records them, and cache keys cover their contents through a per-source include manifest, as in ccache's direct mode. Touching a header without changing it rebuilds nothing. Found by #131.
