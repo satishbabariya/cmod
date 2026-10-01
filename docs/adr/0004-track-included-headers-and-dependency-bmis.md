@@ -90,6 +90,14 @@ the key of the first set that still matches. A manifest is a hint and never a
 source of truth: the artifact key is computed from local file contents, so a
 corrupt or forged manifest can only cause a miss.
 
+A header edited while the compile ran makes the header list untrustworthy:
+the hash cmod reads may not be what the compiler read. As in ccache, if a
+header's mtime is at or after the compile's start, or changed since cmod
+first hashed it in this build, the header set counts as unknown. The object
+is not cached and the node rebuilds next time. Each header's mtime is read
+before its content is hashed, so a recorded (mtime, hash) pair never
+describes two different versions of the file.
+
 Header paths inside the package (the nearest directory with a `cmod.toml`)
 are stored relative to it, so two checkouts in different places share
 entries. Other headers are stored as absolute paths.

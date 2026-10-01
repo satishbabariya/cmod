@@ -261,9 +261,9 @@ impl BuildState {
     /// Record the state of a successfully built node.
     ///
     /// `dep_hashes` are the dependency output hashes the node was built
-    /// against (see [`Self::needs_rebuild`]); `headers` are the
-    /// `(absolute path, content hash)` pairs the node's source included, or
-    /// `None` when unknown.
+    /// against (see [`Self::needs_rebuild`]); `headers` are the headers the
+    /// node's source included, each with the mtime read *before* its hash
+    /// (see [`HeaderState::observe`]), or `None` when unknown.
     ///
     /// Note: If hash computation fails for output files, we log a warning and
     /// use an empty hash. This means the next build will recompute the node,
@@ -273,7 +273,7 @@ impl BuildState {
         node: &BuildNode,
         flags_hash: &str,
         dep_hashes: &[String],
-        headers: Option<&[(PathBuf, String)]>,
+        headers: Option<&[HeaderState]>,
     ) {
         let source_hash = node
             .source
@@ -284,22 +284,10 @@ impl BuildState {
         let mtime = node.source.as_ref().and_then(|s| file_mtime(s));
 
         let headers = headers.map(|headers| {
-            let mut ids = Vec::with_capacity(headers.len());
-            for (path, hash) in headers {
-                // Another node recorded this header in this build already:
-                // same content, so its mtime stands and the stat is saved.
-                let known = self.header_index.get(path).map(|&i| &self.headers[i]);
-                let mtime = match known {
-                    Some(header) if header.hash == *hash => header.mtime,
-                    _ => file_mtime(path),
-                };
-                ids.push(self.intern_header(HeaderState {
-                    path: path.clone(),
-                    hash: hash.clone(),
-                    mtime,
-                }));
-            }
-            ids
+            headers
+                .iter()
+                .map(|header| self.intern_header(header.clone()))
+                .collect()
         });
 
         let mut output_hashes = Vec::new();
@@ -361,6 +349,20 @@ impl BuildState {
 }
 
 impl HeaderState {
+    /// Read a header's mtime, then hash its content. In that order: if the
+    /// file changes in between, the recorded mtime is the old one, so the
+    /// next build re-hashes it instead of trusting a hash of content the
+    /// mtime does not describe. `None` when the file cannot be read.
+    pub fn observe(path: &Path) -> Option<HeaderState> {
+        let mtime = file_mtime(path);
+        let hash = hash_file(path).ok()?;
+        Some(HeaderState {
+            path: path.to_path_buf(),
+            hash,
+            mtime,
+        })
+    }
+
     /// Whether the file differs from this record: mtime fast path, then
     /// content hash, so a `touch` alone is not a change. A missing file is.
     fn changed(&self) -> bool {
@@ -373,7 +375,7 @@ impl HeaderState {
 }
 
 /// Get the mtime of a file as epoch milliseconds for sub-second granularity.
-fn file_mtime(path: &Path) -> Option<u64> {
+pub fn file_mtime(path: &Path) -> Option<u64> {
     std::fs::metadata(path)
         .ok()
         .and_then(|m| m.modified().ok())
@@ -596,7 +598,7 @@ mod tests {
 
         let mut state = BuildState::default();
         let node = make_node("object:main", Some(src), &[]);
-        let headers = vec![(header.clone(), hash_file(&header).unwrap())];
+        let headers = vec![HeaderState::observe(&header).unwrap()];
         state.record_node(&node, "flags", &[], Some(&headers));
         (state, node, header)
     }
@@ -623,7 +625,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let header = tmp.path().join("value.h");
         std::fs::write(&header, "#define VALUE 1").unwrap();
-        let headers = vec![(header.clone(), hash_file(&header).unwrap())];
+        let headers = vec![HeaderState::observe(&header).unwrap()];
 
         let mut state = BuildState::default();
         let mut nodes = Vec::new();

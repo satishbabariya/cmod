@@ -18,7 +18,7 @@ use cmod_core::types::{Artifact, BuildType, NodeKind, Profile};
 use crate::compiler::CompilerBackend;
 use crate::depfile;
 use crate::graph::ModuleGraph;
-use crate::incremental::BuildState;
+use crate::incremental::{file_mtime, BuildState, HeaderState};
 use crate::plan::{BuildNode, BuildPlan};
 
 /// Statistics from a build execution.
@@ -40,8 +40,9 @@ pub struct BuildStats {
     pub node_timings: BTreeMap<String, u64>,
 }
 
-/// `(absolute path, content hash)` of each header a source included.
-type IncludedHeaders = Vec<(PathBuf, String)>;
+/// Each header a source included, with its hash and the mtime read before
+/// hashing it.
+type IncludedHeaders = Vec<HeaderState>;
 
 /// What a compiled or restored node was built against, for the next
 /// build's incremental check ([`BuildState::record_node`]).
@@ -76,10 +77,11 @@ pub struct BuildRunner {
     shell: Option<Arc<Shell>>,
     /// Optional distributed worker pool for remote compilation.
     worker_pool: Option<crate::distributed::WorkerPool>,
-    /// Content hashes of headers and dependency outputs read during the
-    /// current build (`None`: unreadable). Many sources include the same
-    /// headers and import the same BMIs.
-    file_hashes: Mutex<HashMap<PathBuf, Option<String>>>,
+    /// Headers and dependency outputs read during the current build, as
+    /// observed once: content hash plus the mtime read before hashing
+    /// (`None`: unreadable). Many sources include the same headers and
+    /// import the same BMIs.
+    file_hashes: Mutex<HashMap<PathBuf, Option<HeaderState>>>,
 }
 
 /// Outcome of executing a single build node.
@@ -418,40 +420,54 @@ impl BuildRunner {
     /// finished: the scheduler guarantees this for a node's own
     /// dependencies.
     fn hash_input(&self, path: &Path) -> Option<String> {
+        self.observe_input(path).map(|observed| observed.hash)
+    }
+
+    /// [`HeaderState::observe`] of `path`, once per build.
+    fn observe_input(&self, path: &Path) -> Option<HeaderState> {
         let lock = || match self.file_hashes.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(hash) = lock().get(path) {
-            return hash.clone();
+        if let Some(observed) = lock().get(path) {
+            return observed.clone();
         }
         // Hash outside the lock: BMIs can be large, and workers hash in
         // parallel. Two workers may hash the same file once each.
-        let hash = hash_file(path).ok();
-        lock().insert(path.to_path_buf(), hash.clone());
-        hash
+        let observed = HeaderState::observe(path);
+        lock().insert(path.to_path_buf(), observed.clone());
+        observed
     }
 
     /// The headers the compile that just wrote `obj_output` read, hashed:
     /// absolute paths for build state, and package-relative digests for
-    /// cache keys. `None` when the compiler reported no header list or a
-    /// header can no longer be read.
+    /// cache keys. `None` when the compiler reported no header list, a
+    /// header can no longer be read, or a header may have changed while the
+    /// compile that started at `compile_start` (epoch ms) ran: its hash
+    /// might then not be what the compiler read. ccache refuses to cache in
+    /// that case for the same reason. `None` means not cached and rebuilt
+    /// next time.
     fn hashed_headers(
         &self,
         source: &Path,
         obj_output: &Path,
+        compile_start: u64,
     ) -> Option<(IncludedHeaders, Vec<HeaderDigest>)> {
         let paths = self.backend.included_headers(source, obj_output)?;
         let root = package_root(source);
         let mut included = Vec::with_capacity(paths.len());
         let mut digests = Vec::with_capacity(paths.len());
         for path in paths {
-            let hash = self.hash_input(&path)?;
+            let observed = self.observe_input(&path)?;
+            let mtime = file_mtime(&path)?;
+            if observed.mtime != Some(mtime) || mtime >= compile_start {
+                return None;
+            }
             digests.push(HeaderDigest {
                 path: portable_header_path(&path, root.as_deref()),
-                hash: hash.clone(),
+                hash: observed.hash.clone(),
             });
-            included.push((path, hash));
+            included.push(observed);
         }
         Some((included, digests))
     }
@@ -516,11 +532,11 @@ impl BuildRunner {
         let mut headers = Vec::with_capacity(entry.len());
         for digest in entry {
             let path = resolve_header_path(&digest.path, root);
-            let hash = self.hash_input(&path)?;
-            if hash != digest.hash {
+            let observed = self.observe_input(&path)?;
+            if observed.hash != digest.hash {
                 return None;
             }
-            headers.push((path, hash));
+            headers.push(observed);
         }
         self.try_cache_restore(module_id, &key.with_headers(entry), node)
             .then_some(headers)
@@ -1029,6 +1045,7 @@ impl BuildRunner {
                     }
                 }
 
+                let compile_start = epoch_millis();
                 if node.kind == NodeKind::Interface {
                     self.backend.compile_interface(
                         source,
@@ -1043,7 +1060,7 @@ impl BuildRunner {
 
                 // Without the header list there is no correct key for the
                 // artifacts, so they are not cached.
-                let headers = self.hashed_headers(source, obj_output);
+                let headers = self.hashed_headers(source, obj_output, compile_start);
                 if let (Some((module_id, key)), Some((_, digests))) = (&base_key, &headers) {
                     self.cache_store(module_id, &key.with_headers(digests), node);
                     self.record_include_manifest(module_id, key, digests.clone(), obj_output);
@@ -1461,6 +1478,13 @@ impl BuildRunner {
         stats.wall_time_ms = wall_start.elapsed().as_millis() as u64;
         Ok((final_output, stats))
     }
+}
+
+/// The current time as epoch milliseconds, the unit of recorded mtimes.
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// The directory of the nearest `cmod.toml` above `source`: header paths
@@ -2022,6 +2046,96 @@ mod tests {
         assert_eq!(stats.incremental_skipped, 0);
         assert_eq!(stats.wall_time_ms, 0);
         assert_eq!(stats.total_compile_time_ms, 0);
+    }
+
+    /// A compiled TU with one header, and a depfile naming it, as the
+    /// compiler would have left them.
+    fn compiled_with_header(tmp: &TempDir) -> (BuildRunner, PathBuf, PathBuf, PathBuf) {
+        let src = tmp.path().join("main.cpp");
+        let header = tmp.path().join("value.h");
+        let obj = tmp.path().join("main.o");
+        fs::write(&src, "#include \"value.h\"\n").unwrap();
+        fs::write(&header, "#define VALUE 1\n").unwrap();
+        fs::write(
+            depfile::depfile_path(&obj, "d"),
+            format!(
+                "{}: {} {}\n",
+                obj.display(),
+                src.display(),
+                header.display()
+            ),
+        )
+        .unwrap();
+        let backend = crate::compiler::ClangBackend::new("20", cmod_core::types::Profile::Debug);
+        (BuildRunner::new(Box::new(backend), None), src, header, obj)
+    }
+
+    #[test]
+    fn test_hashed_headers_from_depfile() {
+        let tmp = TempDir::new().unwrap();
+        let (runner, src, header, obj) = compiled_with_header(&tmp);
+        let (included, digests) = runner
+            .hashed_headers(&src, &obj, epoch_millis() + 60_000)
+            .unwrap();
+        assert_eq!(included.len(), 1);
+        assert_eq!(included[0].path, header);
+        assert_eq!(included[0].mtime, file_mtime(&header));
+        assert_eq!(digests[0].hash, hash_file(&header).unwrap());
+    }
+
+    /// A header newer than the compile may have changed under it: no header
+    /// list, so the object is neither cached nor trusted next build.
+    #[test]
+    fn test_hashed_headers_rejects_header_written_during_compile() {
+        let tmp = TempDir::new().unwrap();
+        let (runner, src, _, obj) = compiled_with_header(&tmp);
+        assert!(runner.hashed_headers(&src, &obj, 0).is_none());
+    }
+
+    /// A header hashed earlier in the build (say, for another node's cache
+    /// lookup) and edited since: the memoized hash is not what this compile
+    /// read.
+    #[test]
+    fn test_hashed_headers_rejects_header_changed_since_hashed() {
+        let tmp = TempDir::new().unwrap();
+        let (runner, src, header, obj) = compiled_with_header(&tmp);
+        runner.observe_input(&header).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&header, "#define VALUE 2\n").unwrap();
+        assert!(runner
+            .hashed_headers(&src, &obj, epoch_millis() + 60_000)
+            .is_none());
+    }
+
+    #[test]
+    fn test_hashed_headers_without_depfile_is_unknown() {
+        let tmp = TempDir::new().unwrap();
+        let (runner, src, _, obj) = compiled_with_header(&tmp);
+        fs::remove_file(depfile::depfile_path(&obj, "d")).unwrap();
+        assert!(runner
+            .hashed_headers(&src, &obj, epoch_millis() + 60_000)
+            .is_none());
+    }
+
+    #[test]
+    fn test_portable_header_path_roundtrip() {
+        let proj = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        let root = proj.path();
+        let inside = root.join("include").join("value.h");
+        let outside = other.path().join("stdio.h");
+
+        let portable = portable_header_path(&inside, Some(root));
+        assert_eq!(portable, "include/value.h");
+        assert_eq!(resolve_header_path(&portable, Some(root)), inside);
+        // A checkout elsewhere resolves the same relative path.
+        assert_eq!(
+            resolve_header_path(&portable, Some(other.path())),
+            other.path().join("include").join("value.h")
+        );
+        // Outside the package: absolute, unchanged.
+        let portable = portable_header_path(&outside, Some(root));
+        assert_eq!(resolve_header_path(&portable, Some(root)), outside);
     }
 
     #[test]
