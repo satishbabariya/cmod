@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -507,7 +506,7 @@ fn compile_tests(
         });
     }
 
-    let pending: Vec<&TestCompile> = jobs.iter().filter(|job| !job.fresh).collect();
+    let pending: Vec<usize> = (0..jobs.len()).filter(|&i| !jobs[i].fresh).collect();
     let workers = if opts.jobs == 0 {
         std::thread::available_parallelism()
             .map(|n| n.get())
@@ -517,11 +516,14 @@ fn compile_tests(
     }
     .clamp(1, pending.len().max(1));
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let outcomes: std::sync::Mutex<HashMap<String, CompileOutcome>> = Default::default();
+    // By position: two tests in different directories can share a name.
+    let outcomes: Vec<std::sync::Mutex<Option<CompileOutcome>>> =
+        jobs.iter().map(|_| Default::default()).collect();
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
-                while let Some(job) = pending.get(next.fetch_add(1, Ordering::Relaxed)) {
+                while let Some(&i) = pending.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let job = &jobs[i];
                     shell.verbose("Compiling", format!("test: {}", job.name));
                     let started = epoch_millis();
                     let start = Instant::now();
@@ -531,19 +533,14 @@ fn compile_tests(
                         started,
                         duration: start.elapsed(),
                     };
-                    outcomes
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(job.name.clone(), outcome);
+                    *outcomes[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
                 }
             });
         }
     });
-    let mut outcomes = outcomes.into_inner().unwrap_or_else(|e| e.into_inner());
-
     let mut compiled = Vec::new();
     let mut compile_failures = Vec::new();
-    for job in jobs {
+    for (job, outcome) in jobs.into_iter().zip(outcomes) {
         let test = CompiledTest {
             name: job.name.clone(),
             source: job.source.clone(),
@@ -554,7 +551,7 @@ fn compile_tests(
             compiled.push(test);
             continue;
         }
-        let Some(outcome) = outcomes.remove(&job.name) else {
+        let Some(outcome) = outcome.into_inner().unwrap_or_else(|e| e.into_inner()) else {
             continue;
         };
         let output = outcome.output.map_err(|e| CmodError::TestFailed {
