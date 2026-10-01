@@ -1065,17 +1065,23 @@ impl ClangScan {
     }
 
     /// The scan command for `source`, writing the headers it reads to
-    /// `depfile`.
+    /// `depfile`. `as_module` scans it as a module interface (`-x
+    /// c++-module`), as the backend compiles interfaces and partitions whose
+    /// extension is not `.cppm`.
     fn command(
         &self,
         source: &std::path::Path,
         depfile: &std::path::Path,
+        as_module: bool,
     ) -> std::process::Command {
         let mut cmd = std::process::Command::new(&self.scan_deps);
         cmd.args(["--format=p1689", "--"])
             .arg(&self.compiler)
-            .args(&self.flags)
-            .arg("-c")
+            .args(&self.flags);
+        if as_module {
+            cmd.args(["-x", "c++-module"]);
+        }
+        cmd.arg("-c")
             .arg(source)
             .arg("-o")
             .arg(depfile.with_extension("o"))
@@ -1088,13 +1094,16 @@ impl ClangScan {
     /// What a scan of `source` depends on, apart from headers: the scanner,
     /// the command line and the source's content. `None` when the source
     /// cannot be read.
-    fn key(&self, source: &std::path::Path) -> Option<String> {
+    fn key(&self, source: &std::path::Path, as_module: bool) -> Option<String> {
         let mut inputs = self.scan_deps.to_string_lossy().into_owned();
         inputs.push('\0');
         inputs.push_str(&self.compiler.to_string_lossy());
         for flag in &self.flags {
             inputs.push('\0');
             inputs.push_str(flag);
+        }
+        if as_module {
+            inputs.push_str("\0-x\0c++-module");
         }
         inputs.push('\0');
         inputs.push_str(&cmod_cache::key::hash_file(source).ok()?);
@@ -1107,14 +1116,15 @@ impl ClangScan {
         &self,
         source: &std::path::Path,
         depfile: &std::path::Path,
+        as_module: bool,
     ) -> Result<(Vec<String>, Option<Vec<HeaderState>>), CmodError> {
         let started = epoch_millis();
-        let output =
-            self.command(source, depfile)
-                .output()
-                .map_err(|e| CmodError::ModuleScanFailed {
-                    reason: format!("failed to run clang-scan-deps: {}", e),
-                })?;
+        let output = self
+            .command(source, depfile, as_module)
+            .output()
+            .map_err(|e| CmodError::ModuleScanFailed {
+                reason: format!("failed to run clang-scan-deps: {}", e),
+            })?;
         if !output.status.success() {
             return Err(CmodError::ModuleScanFailed {
                 reason: format!(
@@ -1168,7 +1178,24 @@ fn scan_imports(
     };
 
     let mut state = cmod_build::incremental::CommandState::load(&clang.state_path);
-    let keys: Vec<Option<String>> = sources.iter().map(|s| clang.key(s)).collect();
+    // Interfaces and partitions not named `.cppm` are compiled with
+    // `-x c++-module` (see the Clang backend), so they are scanned that way.
+    let as_module: Vec<bool> = sources
+        .iter()
+        .map(|s| {
+            s.extension().and_then(|e| e.to_str()) != Some("cppm")
+                && matches!(
+                    runner::classify_source(s),
+                    Ok(cmod_core::types::ModuleUnitKind::InterfaceUnit
+                        | cmod_core::types::ModuleUnitKind::PartitionUnit)
+                )
+        })
+        .collect();
+    let keys: Vec<Option<String>> = sources
+        .iter()
+        .zip(&as_module)
+        .map(|(s, &m)| clang.key(s, m))
+        .collect();
     let mut results: Vec<Option<Vec<String>>> = sources
         .iter()
         .zip(&keys)
@@ -1196,7 +1223,7 @@ fn scan_imports(
                     pending.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
                 {
                     let depfile = depfiles.path().join(format!("{}.d", i));
-                    let result = clang.scan(&sources[i], &depfile).ok();
+                    let result = clang.scan(&sources[i], &depfile, as_module[i]).ok();
                     *scanned[i].lock().unwrap_or_else(|e| e.into_inner()) = result;
                 }
             });

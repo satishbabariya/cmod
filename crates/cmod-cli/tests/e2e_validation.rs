@@ -2720,7 +2720,52 @@ fn test_e2e_scan_follows_the_preprocessor_and_is_cached() {
     )
     .unwrap();
 
-    assert_eq!(build_and_run(tmp.path(), "scan", &["build"]), "2");
+    // Scan through a wrapper that fails once `scan-off` exists. The second
+    // build can only succeed from cached results: falling back to the
+    // source text would see the `#if 0` cycle.
+    let build = |scanner: &Path| {
+        let path = format!(
+            "/opt/homebrew/opt/llvm/bin:{}",
+            std::env::var("PATH").unwrap_or_default()
+        );
+        Command::new(env!("CARGO_BIN_EXE_cmod"))
+            .args(["-v", "build"])
+            .current_dir(tmp.path())
+            .env("PATH", path)
+            .env("SCAN_DEPS", scanner)
+            .output()
+            .expect("failed to run cmod")
+    };
+    let scanner = tmp.path().join("scan-wrapper.sh");
+    let real = std::env::var_os("SCAN_DEPS").unwrap_or_else(|| "clang-scan-deps".into());
+    fs::write(
+        &scanner,
+        format!(
+            "#!/bin/sh\n[ -e {off:?} ] && [ \"$1\" != --version ] && exit 97\nexec {real:?} \"$@\"\n",
+            off = tmp.path().join("scan-off"),
+            real = real,
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&scanner, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(not(unix))]
+    let scanner = std::path::PathBuf::from(&real);
+
+    let output = build(&scanner);
+    assert!(output.status.success(), "{}", stderr(&output));
+    if cfg!(unix) {
+        fs::write(tmp.path().join("scan-off"), "").unwrap();
+        let output = build(&scanner);
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+    let run = Command::new(tmp.path().join("build/debug/scan"))
+        .output()
+        .expect("failed to run built binary");
+    assert_eq!(stdout(&run).trim(), "2");
 
     let state: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(tmp.path().join("build/debug/.cmod-scan-state.json")).unwrap(),
@@ -2734,4 +2779,39 @@ fn test_e2e_scan_follows_the_preprocessor_and_is_cached() {
         .map(|(_, record)| record)
         .unwrap();
     assert_eq!(main["data"], serde_json::json!(["local.b"]), "{:#}", state);
+}
+
+/// An interface not named `.cppm` is compiled with `-x c++-module`, and
+/// scanned the same way. Scanned as plain C++, its scan failed on every
+/// build and was never cached.
+#[test]
+fn test_e2e_scan_handles_ixx_interfaces() {
+    if !has_llvm_clang() || !has_clang_scan_deps() {
+        eprintln!("Skipping: LLVM Clang or clang-scan-deps not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_rebuild_manifest(tmp.path(), "ixx", "");
+    fs::write(
+        tmp.path().join("src/lib.ixx"),
+        "export module local.ixx;\nexport int v() { return 7; }\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("src/main.cpp"),
+        "import local.ixx;\n#include <cstdio>\nint main() { std::printf(\"%d\\n\", v()); }\n",
+    )
+    .unwrap();
+    assert_eq!(build_and_run(tmp.path(), "ixx", &["build"]), "7");
+
+    let state: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(tmp.path().join("build/debug/.cmod-scan-state.json")).unwrap(),
+    )
+    .unwrap();
+    let records = state["outputs"].as_object().unwrap();
+    assert!(
+        records.keys().any(|path| path.ends_with("lib.ixx")),
+        "{:#}",
+        state
+    );
 }
