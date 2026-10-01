@@ -40,27 +40,49 @@ pub fn run(apply: bool, shell: &Shell) -> Result<(), CmodError> {
         shell.verbose("Import", imp);
     }
 
+    // Headers the package includes, to find dependencies used only that way.
+    let includes = collect_included_names(&src_dirs, &own_include_dirs(&config));
+
     // Compare against declared dependencies
     let mut unused = Vec::new();
+    let mut unchecked = Vec::new();
     for (dep_name, dep) in &config.manifest.dependencies {
         // A dep is "used" if any source file imports a module that matches
         // the dep name or a module that starts with the dep name.
-        let is_used = imports
+        if imports
             .iter()
-            .any(|imp| dep_matches_import(dep_name, dep, &config, imp));
-
-        if !is_used {
-            let source_info = dep
-                .git_url()
-                .map(|u| format!(" ({})", u))
-                .or_else(|| dep.path().map(|p| format!(" (path: {})", p.display())))
-                .unwrap_or_default();
-            unused.push((dep_name.clone(), source_info));
+            .any(|imp| dep_matches_import(dep_name, dep, &config, imp))
+        {
+            continue;
         }
+        // Otherwise look at the dependency itself: the module it declares,
+        // and the headers it provides.
+        let Some(dep_dir) = dep_dir_on_disk(dep_name, dep, &config) else {
+            unchecked.push(dep_name.clone());
+            continue;
+        };
+        if dep_is_used(&dep_dir, &imports, &includes) {
+            continue;
+        }
+        let source_info = dep
+            .git_url()
+            .map(|u| format!(" ({})", u))
+            .or_else(|| dep.path().map(|p| format!(" (path: {})", p.display())))
+            .unwrap_or_default();
+        unused.push((dep_name.clone(), source_info));
+    }
+
+    for name in &unchecked {
+        shell.warn(format!(
+            "{}: not checked out, so its headers could not be checked; run `cmod build` first",
+            name
+        ));
     }
 
     if unused.is_empty() {
-        shell.status("Tidy", "all dependencies are used");
+        if unchecked.is_empty() {
+            shell.status("Tidy", "all dependencies are used");
+        }
         return Ok(());
     }
 
@@ -242,6 +264,151 @@ fn collect_all_imports_multi(
     Ok(imports)
 }
 
+/// Where dependency `name` is on disk: its path, or its checkout under
+/// `vendor/` or `build/deps/`. `None` for a git dependency not fetched yet.
+fn dep_dir_on_disk(
+    name: &str,
+    dep: &cmod_core::manifest::Dependency,
+    config: &Config,
+) -> Option<std::path::PathBuf> {
+    match dep.path() {
+        Some(path) => Some(config.root.join(path)).filter(|d| d.is_dir()),
+        None => {
+            super::common::find_dep_on_disk(&config.root.join("vendor"), &config.deps_dir(), name)
+        }
+    }
+}
+
+/// Whether the package uses the dependency in `dep_dir`: it imports the
+/// module the dependency declares, or includes a header from one of its
+/// include directories (`#include <fmt/format.h>`), as most dependencies
+/// wrapping a header library are used.
+fn dep_is_used(dep_dir: &Path, imports: &BTreeSet<String>, includes: &BTreeSet<String>) -> bool {
+    let provides_header = |include_dirs: &[std::path::PathBuf]| {
+        includes
+            .iter()
+            .any(|header| include_dirs.iter().any(|dir| dir.join(header).is_file()))
+    };
+    // Without its own manifest, `Config::load` would find the package's;
+    // such a directory provides headers only.
+    if !dep_dir.join("cmod.toml").is_file() {
+        let dirs: Vec<_> = ["include", "inc"]
+            .iter()
+            .map(|d| dep_dir.join(d))
+            .filter(|d| d.is_dir())
+            .collect();
+        return provides_header(&dirs);
+    }
+    // A manifest that cannot be read leaves what it provides unknown: keep
+    // the dependency rather than remove one that may be in use.
+    let Ok(dep_config) = Config::load(dep_dir) else {
+        return true;
+    };
+    // The modules it provides: the one its manifest names, and those its
+    // interfaces declare (`nlohmann.json`, in a package named otherwise).
+    let mut modules: Vec<String> = dep_config
+        .manifest
+        .module
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+    let sources =
+        runner::discover_sources_multi(&dep_config.src_dirs(), &dep_config.exclude_patterns())
+            .unwrap_or_default();
+    for source in &sources {
+        if runner::classify_source(source).ok()
+            == Some(cmod_core::types::ModuleUnitKind::InterfaceUnit)
+        {
+            if let Ok(Some(name)) = runner::extract_module_name(source) {
+                modules.push(name);
+            }
+        }
+    }
+    if modules.iter().any(|name| {
+        imports.iter().any(|imp| {
+            imp == name
+                || imp.starts_with(&format!("{}.", name))
+                || imp.starts_with(&format!("{}:", name))
+        })
+    }) {
+        return true;
+    }
+    provides_header(&super::common::detect_include_dirs(dep_dir, &dep_config))
+}
+
+/// The package's own include directories (`include/`, `inc/`, `[build]
+/// include_dirs`): headers there can include dependencies' headers too.
+fn own_include_dirs(config: &Config) -> Vec<std::path::PathBuf> {
+    super::common::detect_include_dirs(&config.root, config)
+}
+
+/// Every header named by an `#include` or a header-unit `import` in the
+/// sources and headers under `dirs`.
+fn collect_included_names(
+    src_dirs: &[std::path::PathBuf],
+    include_dirs: &[std::path::PathBuf],
+) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for dir in src_dirs.iter().chain(include_dirs) {
+        for entry in walkdir::WalkDir::new(dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            let is_cpp = matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some(
+                    "cppm"
+                        | "ixx"
+                        | "mpp"
+                        | "cpp"
+                        | "cc"
+                        | "cxx"
+                        | "c++"
+                        | "h"
+                        | "hh"
+                        | "hpp"
+                        | "hxx"
+                        | "h++"
+                        | "inl"
+                        | "ipp"
+                        | "tpp"
+                )
+            );
+            if !is_cpp || !path.is_file() {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(path) {
+                names.extend(content.lines().filter_map(included_name));
+            }
+        }
+    }
+    names
+}
+
+/// The header a line includes: `#include <a/b.h>`, `# include "a.h"`, or
+/// `import <a/b.h>;`.
+fn included_name(line: &str) -> Option<String> {
+    let line = line.trim();
+    let rest = if let Some(directive) = line.strip_prefix('#') {
+        directive.trim_start().strip_prefix("include")?
+    } else {
+        line.strip_prefix("export ")
+            .unwrap_or(line)
+            .trim_start()
+            .strip_prefix("import")?
+    }
+    .trim_start();
+    let close = match rest.chars().next()? {
+        '<' => '>',
+        '"' => '"',
+        _ => return None,
+    };
+    let name = &rest[1..];
+    let end = name.find(close)?;
+    Some(name[..end].to_string()).filter(|n| !n.is_empty())
+}
+
 /// Check if a dependency name matches an import.
 ///
 /// A dep like "github.com/fmtlib/fmt" matches imports like "fmt", "fmt.core", etc.
@@ -303,6 +470,52 @@ mod tests {
             no_default_features: false,
             no_cache: false,
         }
+    }
+
+    #[test]
+    fn test_dep_is_used_keeps_unreadable_manifest() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("cmod.toml"), "not [valid toml").unwrap();
+        assert!(dep_is_used(tmp.path(), &BTreeSet::new(), &BTreeSet::new()));
+    }
+
+    #[test]
+    fn test_dep_is_used_without_manifest_checks_its_headers() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("include/lib")).unwrap();
+        std::fs::write(tmp.path().join("include/lib/a.h"), "").unwrap();
+        let includes = |names: &[&str]| names.iter().map(|n| n.to_string()).collect();
+        assert!(dep_is_used(
+            tmp.path(),
+            &BTreeSet::new(),
+            &includes(&["lib/a.h"])
+        ));
+        assert!(!dep_is_used(
+            tmp.path(),
+            &BTreeSet::new(),
+            &includes(&["other.h"])
+        ));
+    }
+
+    #[test]
+    fn test_included_name() {
+        assert_eq!(
+            included_name("#include <fmt/format.h>").as_deref(),
+            Some("fmt/format.h")
+        );
+        assert_eq!(
+            included_name("  #  include \"a.h\" // x").as_deref(),
+            Some("a.h")
+        );
+        assert_eq!(included_name("import <vector>;").as_deref(), Some("vector"));
+        assert_eq!(
+            included_name("export import \"b.h\";").as_deref(),
+            Some("b.h")
+        );
+        assert_eq!(included_name("import fmt;"), None);
+        assert_eq!(included_name("#include MACRO_HEADER"), None);
+        assert_eq!(included_name("#define X <y.h>"), None);
+        assert_eq!(included_name("#include <>"), None);
     }
 
     #[test]

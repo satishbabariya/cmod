@@ -503,6 +503,36 @@ fn test_e2e_build_compile_error_stops_at_the_module() {
     assert!(!err.contains("not found"), "{}", err);
 }
 
+/// Compiling an interface's PCM to an object does not preprocess, so the
+/// include paths on its command line went unused, and clang warned about
+/// each one for every interface of any package with an `include/` directory
+/// or dependencies.
+#[test]
+fn test_e2e_build_has_no_unused_argument_warnings() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    init_project(tmp.path(), "quiet");
+    fs::create_dir_all(tmp.path().join("include")).unwrap();
+    fs::write(tmp.path().join("include/answer.h"), "#define ANSWER 42\n").unwrap();
+    fs::write(
+        tmp.path().join("src/lib.cppm"),
+        "module;\n#include <answer.h>\nexport module local.quiet;\n\
+         export int answer() { return ANSWER; }\n",
+    )
+    .unwrap();
+
+    let output = run_cmod_with_llvm(tmp.path(), &["build", "--no-cache"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        !stderr(&output).contains("unused during compilation"),
+        "{}",
+        stderr(&output)
+    );
+}
+
 #[test]
 fn test_e2e_build_no_source_files() {
     let tmp = TempDir::new().unwrap();
@@ -1516,6 +1546,119 @@ fn test_e2e_tidy_detects_unused() {
     assert!(output.status.success());
     let err = stderr(&output);
     assert!(err.contains("Unused") || err.contains("unused_lib"));
+}
+
+/// A dependency used only through its headers, or through a module its
+/// interface declares under another name than its manifest's, is used:
+/// `cmod tidy --apply` used to delete both, and break the build.
+#[test]
+fn test_e2e_tidy_keeps_dependencies_used_by_header_or_module() {
+    let tmp = TempDir::new().unwrap();
+    init_project(tmp.path(), "tidyused");
+
+    let headers = tmp.path().join("libs/headers");
+    fs::create_dir_all(headers.join("include/hdr")).unwrap();
+    fs::write(
+        headers.join("cmod.toml"),
+        "[package]\nname = \"headers\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        headers.join("include/hdr/util.h"),
+        "inline int util() { return 1; }\n",
+    )
+    .unwrap();
+
+    let renamed = tmp.path().join("libs/renamed");
+    fs::create_dir_all(renamed.join("src")).unwrap();
+    fs::write(
+        renamed.join("cmod.toml"),
+        "[package]\nname = \"renamed\"\nversion = \"1.0.0\"\n\n\
+         [module]\nname = \"local.renamed\"\nroot = \"src/lib.cppm\"\n",
+    )
+    .unwrap();
+    fs::write(
+        renamed.join("src/lib.cppm"),
+        "export module vendor.actual;\nexport int actual() { return 2; }\n",
+    )
+    .unwrap();
+
+    let unused = tmp.path().join("libs/unused");
+    fs::create_dir_all(unused.join("include/other")).unwrap();
+    fs::write(
+        unused.join("cmod.toml"),
+        "[package]\nname = \"unused\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    fs::write(unused.join("include/other/x.h"), "\n").unwrap();
+
+    for (name, path) in [
+        ("headers", "./libs/headers"),
+        ("renamed", "./libs/renamed"),
+        ("unused", "./libs/unused"),
+    ] {
+        let output = run_cmod(tmp.path(), &["add", name, "--path", path]);
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+    fs::write(
+        tmp.path().join("src/main.cpp"),
+        "#include <hdr/util.h>\nimport vendor.actual;\nint main() { return util() + actual(); }\n",
+    )
+    .unwrap();
+
+    let output = run_cmod(tmp.path(), &["tidy", "--apply"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
+    assert!(
+        manifest.contains("headers"),
+        "{}\n{}",
+        stderr(&output),
+        manifest
+    );
+    assert!(
+        manifest.contains("renamed"),
+        "{}\n{}",
+        stderr(&output),
+        manifest
+    );
+    assert!(
+        !manifest.contains("libs/unused"),
+        "{}\n{}",
+        stderr(&output),
+        manifest
+    );
+}
+
+/// A git dependency that is not checked out cannot be checked: tidy says
+/// so, and `--apply` keeps it.
+#[test]
+fn test_e2e_tidy_keeps_unfetched_dependencies() {
+    let tmp = TempDir::new().unwrap();
+    init_project(tmp.path(), "tidyunfetched");
+    let manifest_path = tmp.path().join("cmod.toml");
+    let manifest = fs::read_to_string(&manifest_path).unwrap();
+    fs::write(
+        &manifest_path,
+        manifest.replace(
+            "[dependencies]\n",
+            "[dependencies]\n\"github.com/example/absent\" = \"^1.0\"\n",
+        ),
+    )
+    .unwrap();
+
+    let output = run_cmod(tmp.path(), &["tidy", "--apply"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("not checked out"),
+        "{}",
+        stderr(&output)
+    );
+    let manifest = fs::read_to_string(&manifest_path).unwrap();
+    assert!(
+        manifest.contains("github.com/example/absent"),
+        "{}",
+        manifest
+    );
 }
 
 #[test]
