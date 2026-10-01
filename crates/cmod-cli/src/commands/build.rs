@@ -363,7 +363,6 @@ fn build_path_dependencies(
         if let Some(t) = &config.target {
             dep_config.target = Some(t.clone());
         }
-        use_root_compiler(&mut dep_config, config, dep_name, shell);
 
         // Collect include directories from the dependency
         let inc_dirs = super::common::detect_include_dirs(&dep_path, &dep_config);
@@ -507,7 +506,6 @@ fn build_vendored_dependencies(
         let mut dep_config = Config::load(&dep_dir)?;
         dep_config.profile = config.profile;
         dep_config.target = config.target.clone();
-        use_root_compiler(&mut dep_config, config, &pkg.name, shell);
 
         // Auto-detect include directories for this dependency
         let inc_dirs = super::common::detect_include_dirs(&dep_dir, &dep_config);
@@ -539,8 +537,7 @@ fn build_vendored_dependencies(
         let graph = build_module_graph(&sources, &dep_config.manifest.package.name)?;
         graph.validate()?;
 
-        // Set up compiler from the dependency's toolchain config, which now
-        // names the root's compiler
+        // Set up compiler from the dependency's own toolchain config
         let (mut backend_cfg, compiler_kind, target) = setup_compiler(&dep_config, &[]);
 
         // Add auto-detected include dirs to the dep's own compiler flags
@@ -1047,49 +1044,6 @@ fn parse_p1689_imports(json_str: &str) -> Result<Vec<String>, CmodError> {
     Ok(imports)
 }
 
-/// The compiler a manifest asks for: `[toolchain] compiler`, or clang.
-fn manifest_compiler(config: &Config) -> Compiler {
-    config
-        .manifest
-        .toolchain
-        .as_ref()
-        .and_then(|tc| tc.compiler.clone())
-        .unwrap_or(Compiler::Clang)
-}
-
-/// Make a dependency build with the root package's compiler.
-///
-/// BMIs only work with the compiler that wrote them, so one compiler builds
-/// the whole graph. The dependency's own `compiler` is only reported. See
-/// `docs/adr/0002-build-dependencies-with-the-root-compiler.md`.
-fn use_root_compiler(dep_config: &mut Config, root: &Config, dep_name: &str, shell: &Shell) {
-    let root_compiler = manifest_compiler(root);
-    match dep_config.manifest.toolchain.as_mut() {
-        Some(tc) => {
-            if let Some(declared) = tc.compiler.as_ref().filter(|c| **c != root_compiler) {
-                shell.verbose(
-                    "Compiler",
-                    format!(
-                        "{} declares {}, building it with {} like the root package",
-                        dep_name, declared, root_compiler
-                    ),
-                );
-            }
-            tc.compiler = Some(root_compiler);
-        }
-        None => {
-            dep_config.manifest.toolchain = Some(cmod_core::manifest::Toolchain {
-                compiler: Some(root_compiler),
-                version: None,
-                cxx_standard: None,
-                stdlib: None,
-                target: None,
-                sysroot: None,
-            });
-        }
-    }
-}
-
 /// Set up the Clang compiler backend from config.
 fn setup_compiler(
     config: &Config,
@@ -1102,7 +1056,12 @@ fn setup_compiler(
         .and_then(|tc| tc.cxx_standard.clone())
         .unwrap_or_else(|| "20".to_string());
 
-    let compiler_kind = manifest_compiler(config);
+    let compiler_kind = config
+        .manifest
+        .toolchain
+        .as_ref()
+        .and_then(|tc| tc.compiler.clone())
+        .unwrap_or(Compiler::Clang);
 
     let mut backend_cfg = BackendConfig {
         cxx_standard,
