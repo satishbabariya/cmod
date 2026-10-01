@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
@@ -32,6 +33,37 @@ impl CacheKey {
         CacheKey(hex::encode(result))
     }
 
+    /// The key that holds the include manifest for sources with this key:
+    /// the header sets seen when compiling them (see [`IncludeManifest`]).
+    ///
+    /// [`IncludeManifest`]: crate::cache::IncludeManifest
+    pub fn include_manifest_key(&self) -> CacheKey {
+        let mut hasher = Sha256::new();
+        hasher.update(b"cmod-include-manifest-v1\0");
+        hasher.update(self.0.as_bytes());
+        CacheKey(hex::encode(hasher.finalize()))
+    }
+
+    /// The key for artifacts compiled from this key's inputs while
+    /// including exactly `headers`. Artifacts are stored and restored under
+    /// this key, never under `self`, so a cached object is only reused when
+    /// every header it read has the same content.
+    pub fn with_headers(&self, headers: &[HeaderDigest]) -> CacheKey {
+        let mut sorted: Vec<&HeaderDigest> = headers.iter().collect();
+        sorted.sort_by(|a, b| a.path.cmp(&b.path));
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"cmod-headers-v1\0");
+        hasher.update(self.0.as_bytes());
+        for header in sorted {
+            hasher.update(b"\0");
+            hasher.update(header.path.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(header.hash.as_bytes());
+        }
+        CacheKey(hex::encode(hasher.finalize()))
+    }
+
     /// Create a CacheKey from a hex string (for tests or lookups).
     pub fn from_hex(hex_str: &str) -> Option<Self> {
         if hex_str.is_empty() {
@@ -45,6 +77,16 @@ impl fmt::Display for CacheKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+/// One header a translation unit included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeaderDigest {
+    /// Relative to the package root when the header is inside it (so
+    /// checkouts in different places share entries), absolute otherwise.
+    pub path: String,
+    /// SHA-256 of the header's content.
+    pub hash: String,
 }
 
 /// Inputs for computing a deterministic cache key.
@@ -235,6 +277,43 @@ mod tests {
         });
 
         assert_ne!(key_no_flags, key_with_flags);
+    }
+
+    fn digest(path: &str, hash: &str) -> HeaderDigest {
+        HeaderDigest {
+            path: path.to_string(),
+            hash: hash.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_with_headers_depends_on_header_content() {
+        let base = CacheKey("base".to_string());
+        let v1 = base.with_headers(&[digest("include/value.h", "h1")]);
+        let v2 = base.with_headers(&[digest("include/value.h", "h2")]);
+        assert_ne!(v1, v2);
+        assert_ne!(v1, base);
+        assert_ne!(base.with_headers(&[]), base);
+    }
+
+    #[test]
+    fn test_with_headers_ignores_order_but_not_paths() {
+        let base = CacheKey("base".to_string());
+        let ab = base.with_headers(&[digest("a.h", "1"), digest("b.h", "2")]);
+        let ba = base.with_headers(&[digest("b.h", "2"), digest("a.h", "1")]);
+        assert_eq!(ab, ba);
+
+        // Same contents under swapped names is a different translation unit.
+        let swapped = base.with_headers(&[digest("a.h", "2"), digest("b.h", "1")]);
+        assert_ne!(ab, swapped);
+    }
+
+    #[test]
+    fn test_include_manifest_key_is_distinct() {
+        let base = CacheKey("base".to_string());
+        assert_ne!(base.include_manifest_key(), base);
+        assert_ne!(base.include_manifest_key(), base.with_headers(&[]));
+        assert_eq!(base.include_manifest_key().0.len(), 64);
     }
 
     #[test]

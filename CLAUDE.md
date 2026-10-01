@@ -61,9 +61,10 @@ cmod/
 │   ├── cmod-build/                        # Build orchestration
 │   │   └── src/
 │   │       ├── compiler.rs                # CompilerBackend trait + Clang/GCC/MSVC backends + factory
+│   │       ├── depfile.rs                 # Compiler-reported header deps (-MD depfiles, MSVC /sourceDependencies)
 │   │       ├── distributed.rs             # Remote worker pool for distributed builds
 │   │       ├── graph.rs                   # ModuleGraph DAG + topological/critical-path sort
-│   │       ├── incremental.rs             # BuildState + rebuild detection (powers cmod explain)
+│   │       ├── incremental.rs             # BuildState + rebuild detection (sources, headers, dep BMIs)
 │   │       ├── plan.rs                    # BuildPlan IR + compile_commands generation
 │   │       └── runner.rs                  # Parallel build execution + source discovery/classification
 │   ├── cmod-cache/                        # Artifact caching
@@ -71,7 +72,7 @@ cmod/
 │   │       ├── bmi.rs                     # BMI package export/import + compatibility keys
 │   │       ├── cache.rs                   # ArtifactCache (store/get/evict, zstd, TTL/size eviction)
 │   │       ├── distribution.rs            # BMI variant index + HTTP distributor
-│   │       ├── key.rs                     # CacheKey computation (SHA-256, incl. compiler version)
+│   │       ├── key.rs                     # CacheKey computation (SHA-256, incl. compiler version, header sets)
 │   │       └── remote.rs                  # RemoteCache trait + HTTP client
 │   ├── cmod-workspace/                    # Workspace management
 │   │   └── src/

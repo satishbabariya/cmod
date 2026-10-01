@@ -971,10 +971,17 @@ fn build_module_graph(
     }
 
     // Filter imports to only include modules that exist in the graph.
-    // Use logical module names (not node IDs) for the filter.
+    // Use logical module names (not node IDs) for the filter. The others
+    // come from dependencies: kept aside so their BMIs count as inputs.
     let known_modules = graph.module_names();
     for node in graph.nodes.values_mut() {
-        node.imports.retain(|imp| known_modules.contains(imp));
+        let (internal, external): (Vec<String>, Vec<String>) = std::mem::take(&mut node.imports)
+            .into_iter()
+            .partition(|imp| known_modules.contains(imp));
+        node.imports = internal;
+        if !external.is_empty() {
+            graph.external_imports.insert(node.id.clone(), external);
+        }
     }
 
     Ok(graph)

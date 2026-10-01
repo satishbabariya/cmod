@@ -23,7 +23,8 @@ All requests are rooted at `<shared_url>/cache/`:
   accept `:` in paths (nginx, Caddy, and plain filesystems all do).
 - `<key>` is a 64-char hex SHA-256 cache key.
 - `<artifact>` is a flat filename (`<module>.pcm`, `<module>.o`,
-  `metadata.json`).
+  `metadata.json`, or `includes.json` for an include manifest; see
+  [Build Cache](caching.md#cache-key-composition)).
 
 If `[cache] auth_token_env` is configured, every request carries
 `Authorization: Bearer <token>`.
@@ -33,6 +34,7 @@ How the client uses it:
 - **`cmod build`** (with `[cache] shared_url` set, or `--remote-cache <URL>`)
   transparently GETs artifacts on a local cache miss and PUTs them after a
   successful compile — this is the main path and needs no extra commands.
+  `metadata.json` is PUT last, after the artifacts it describes.
 - **`cmod cache push [--remote <URL>]`** uploads the entire local cache.
 - **`cmod cache pull [--remote <URL>]`** pre-fetches artifacts for the
   dependencies pinned in `cmod.lock` (it is lockfile-scoped; it does not

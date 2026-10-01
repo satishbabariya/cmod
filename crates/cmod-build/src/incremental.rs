@@ -3,8 +3,9 @@
 //! Tracks per-node content hashes so unchanged nodes can be skipped
 //! without full cache lookups. Stores state in `.cmod-build-state.json`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +22,17 @@ pub struct BuildState {
     /// Per-node compilation time in milliseconds from the last build.
     #[serde(default)]
     pub node_timings: BTreeMap<String, u64>,
+    /// Every header any node included, once: nodes refer to it by index
+    /// (most headers are included by many nodes).
+    #[serde(default)]
+    pub headers: Vec<HeaderState>,
+    /// Path → index into `headers`. Rebuilt on load.
+    #[serde(skip)]
+    header_index: HashMap<PathBuf, usize>,
+    /// Per index into `headers`: whether the header changed since it was
+    /// recorded. Checked once per header, on first use.
+    #[serde(skip)]
+    header_changed: OnceLock<Vec<bool>>,
 }
 
 /// State tracked for a single build node.
@@ -35,6 +47,25 @@ pub struct NodeState {
     /// Output file hashes (after successful compilation).
     pub output_hashes: Vec<(String, String)>,
     /// Source file mtime (epoch milliseconds) for fast-path invalidation.
+    #[serde(default)]
+    pub mtime: Option<u64>,
+    /// Headers the source included when it was last built, as indices into
+    /// [`BuildState::headers`]. `None` means unknown (state written by a
+    /// cmod that did not record them, or a node built without a dependency
+    /// file), which forces a rebuild.
+    #[serde(default)]
+    pub headers: Option<Vec<usize>>,
+}
+
+/// A header some node included, as it was when that node was built.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HeaderState {
+    /// Absolute path of the header.
+    pub path: PathBuf,
+    /// SHA-256 of the header's content.
+    pub hash: String,
+    /// Header mtime (epoch milliseconds): when unchanged, the hash is not
+    /// recomputed.
     #[serde(default)]
     pub mtime: Option<u64>,
 }
@@ -54,6 +85,10 @@ pub enum RebuildReason {
     OutputMissing,
     /// Forced rebuild requested (--force).
     Forced,
+    /// A header the source includes changed or disappeared.
+    HeaderChanged(PathBuf),
+    /// The headers the source includes were not recorded.
+    HeadersUnknown,
 }
 
 impl std::fmt::Display for RebuildReason {
@@ -65,6 +100,10 @@ impl std::fmt::Display for RebuildReason {
             RebuildReason::FlagsChanged => write!(f, "compiler flags changed"),
             RebuildReason::OutputMissing => write!(f, "output file missing"),
             RebuildReason::Forced => write!(f, "forced rebuild"),
+            RebuildReason::HeaderChanged(path) => {
+                write!(f, "included header changed: {}", path.display())
+            }
+            RebuildReason::HeadersUnknown => write!(f, "included headers not recorded"),
         }
     }
 }
@@ -76,10 +115,51 @@ impl BuildState {
         if !path.exists() {
             return Self::default();
         }
-        match std::fs::read_to_string(&path) {
+        let mut state: Self = match std::fs::read_to_string(&path) {
             Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
             Err(_) => Self::default(),
+        };
+        state.header_index = state
+            .headers
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (h.path.clone(), i))
+            .collect();
+        state
+    }
+
+    /// Add `header` to the header table, replacing an entry for the same
+    /// path, and return its index.
+    fn intern_header(&mut self, header: HeaderState) -> usize {
+        match self.header_index.get(&header.path) {
+            Some(&i) => {
+                self.headers[i] = header;
+                i
+            }
+            None => {
+                let i = self.headers.len();
+                self.header_index.insert(header.path.clone(), i);
+                self.headers.push(header);
+                i
+            }
         }
+    }
+
+    /// Copy `node_id`'s state from `prev`, for a node that was up to date.
+    pub fn carry_over(&mut self, prev: &BuildState, node_id: &str) {
+        let Some(state) = prev.nodes.get(node_id) else {
+            return;
+        };
+        let mut state = state.clone();
+        let headers: Option<Option<Vec<HeaderState>>> = state
+            .headers
+            .as_ref()
+            .map(|ids| ids.iter().map(|&i| prev.headers.get(i).cloned()).collect());
+        // An index outside `prev`'s table makes the header set unknown.
+        state.headers = headers
+            .flatten()
+            .map(|headers| headers.into_iter().map(|h| self.intern_header(h)).collect());
+        self.nodes.insert(node_id.to_string(), state);
     }
 
     /// Save build state to disk.
@@ -103,9 +183,22 @@ impl BuildState {
     /// Returns `None` if the node is up-to-date, or `Some(reason)` if it
     /// needs to be rebuilt.
     ///
+    /// `dep_hashes` are the content hashes of the node's dependencies'
+    /// outputs as they are now on disk, in `node.dependencies` order. They
+    /// must come from disk, not from this state: a dependency rebuilt
+    /// earlier in the same build has new outputs this state has not seen.
+    ///
     /// Uses mtime as a fast path: if the mtime hasn't changed, the source
     /// hash is assumed unchanged and the expensive hash computation is skipped.
-    pub fn needs_rebuild(&self, node: &BuildNode, flags_hash: &str) -> Option<RebuildReason> {
+    ///
+    /// Headers are checked against disk once per `BuildState`, on the first
+    /// call that reaches them: load a fresh state for each build.
+    pub fn needs_rebuild(
+        &self,
+        node: &BuildNode,
+        flags_hash: &str,
+        dep_hashes: &[String],
+    ) -> Option<RebuildReason> {
         let prev = match self.nodes.get(&node.id) {
             Some(s) => s,
             None => return Some(RebuildReason::NoPreviousState),
@@ -138,16 +231,28 @@ impl BuildState {
         }
 
         // Check dependency outputs haven't changed
-        let mut current_dep_hashes = Vec::new();
-        for dep_id in &node.dependencies {
-            if let Some(dep_state) = self.nodes.get(dep_id) {
-                for (_, h) in &dep_state.output_hashes {
-                    current_dep_hashes.push(h.clone());
+        if dep_hashes != prev.dep_hashes.as_slice() {
+            return Some(RebuildReason::DependencyChanged);
+        }
+
+        // Check included headers. The whole table is checked once, on the
+        // first node that gets here, not once per including node.
+        if node.source.is_some() {
+            let Some(ids) = &prev.headers else {
+                return Some(RebuildReason::HeadersUnknown);
+            };
+            let changed = self
+                .header_changed
+                .get_or_init(|| self.headers.iter().map(HeaderState::changed).collect());
+            for &i in ids {
+                match (self.headers.get(i), changed.get(i)) {
+                    (Some(_), Some(false)) => {}
+                    (Some(header), _) => {
+                        return Some(RebuildReason::HeaderChanged(header.path.clone()))
+                    }
+                    (None, _) => return Some(RebuildReason::HeadersUnknown),
                 }
             }
-        }
-        if current_dep_hashes != prev.dep_hashes {
-            return Some(RebuildReason::DependencyChanged);
         }
 
         None
@@ -155,10 +260,21 @@ impl BuildState {
 
     /// Record the state of a successfully built node.
     ///
+    /// `dep_hashes` are the dependency output hashes the node was built
+    /// against (see [`Self::needs_rebuild`]); `headers` are the headers the
+    /// node's source included, each with the mtime read *before* its hash
+    /// (see [`HeaderState::observe`]), or `None` when unknown.
+    ///
     /// Note: If hash computation fails for output files, we log a warning and
     /// use an empty hash. This means the next build will recompute the node,
     /// which is the safe fallback behavior.
-    pub fn record_node(&mut self, node: &BuildNode, flags_hash: &str) {
+    pub fn record_node(
+        &mut self,
+        node: &BuildNode,
+        flags_hash: &str,
+        dep_hashes: &[String],
+        headers: Option<&[HeaderState]>,
+    ) {
         let source_hash = node
             .source
             .as_ref()
@@ -167,14 +283,12 @@ impl BuildState {
 
         let mtime = node.source.as_ref().and_then(|s| file_mtime(s));
 
-        let mut dep_hashes = Vec::new();
-        for dep_id in &node.dependencies {
-            if let Some(dep_state) = self.nodes.get(dep_id) {
-                for (_, h) in &dep_state.output_hashes {
-                    dep_hashes.push(h.clone());
-                }
-            }
-        }
+        let headers = headers.map(|headers| {
+            headers
+                .iter()
+                .map(|header| self.intern_header(header.clone()))
+                .collect()
+        });
 
         let mut output_hashes = Vec::new();
         for output in &node.outputs {
@@ -202,10 +316,11 @@ impl BuildState {
             node.id.clone(),
             NodeState {
                 source_hash,
-                dep_hashes,
+                dep_hashes: dep_hashes.to_vec(),
                 flags_hash: flags_hash.to_string(),
                 output_hashes,
                 mtime,
+                headers,
             },
         );
     }
@@ -233,8 +348,34 @@ impl BuildState {
     }
 }
 
+impl HeaderState {
+    /// Read a header's mtime, then hash its content. In that order: if the
+    /// file changes in between, the recorded mtime is the old one, so the
+    /// next build re-hashes it instead of trusting a hash of content the
+    /// mtime does not describe. `None` when the file cannot be read.
+    pub fn observe(path: &Path) -> Option<HeaderState> {
+        let mtime = file_mtime(path);
+        let hash = hash_file(path).ok()?;
+        Some(HeaderState {
+            path: path.to_path_buf(),
+            hash,
+            mtime,
+        })
+    }
+
+    /// Whether the file differs from this record: mtime fast path, then
+    /// content hash, so a `touch` alone is not a change. A missing file is.
+    fn changed(&self) -> bool {
+        let mtime = file_mtime(&self.path);
+        if mtime.is_some() && mtime == self.mtime {
+            return false;
+        }
+        hash_file(&self.path).map_or(true, |hash| hash != self.hash)
+    }
+}
+
 /// Get the mtime of a file as epoch milliseconds for sub-second granularity.
-fn file_mtime(path: &Path) -> Option<u64> {
+pub fn file_mtime(path: &Path) -> Option<u64> {
     std::fs::metadata(path)
         .ok()
         .and_then(|m| m.modified().ok())
@@ -256,6 +397,7 @@ mod tests {
             source,
             dependencies: deps.iter().map(|s| s.to_string()).collect(),
             outputs: vec![],
+            external_imports: vec![],
         }
     }
 
@@ -271,6 +413,7 @@ mod tests {
                 flags_hash: "flags456".to_string(),
                 output_hashes: vec![("mymod.pcm".to_string(), "out789".to_string())],
                 mtime: None,
+                headers: None,
             },
         );
 
@@ -292,7 +435,7 @@ mod tests {
         let state = BuildState::default();
         let node = make_node("interface:test", None, &[]);
         assert_eq!(
-            state.needs_rebuild(&node, "flags"),
+            state.needs_rebuild(&node, "flags", &[]),
             Some(RebuildReason::NoPreviousState)
         );
     }
@@ -307,7 +450,7 @@ mod tests {
         let node = make_node("interface:test", Some(src.clone()), &[]);
 
         // Record with current content
-        state.record_node(&node, "flags");
+        state.record_node(&node, "flags", &[], Some(&[]));
 
         // Ensure mtime changes (sub-millisecond writes can share same mtime)
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -316,7 +459,7 @@ mod tests {
         std::fs::write(&src, "version 2").unwrap();
 
         assert_eq!(
-            state.needs_rebuild(&node, "flags"),
+            state.needs_rebuild(&node, "flags", &[]),
             Some(RebuildReason::SourceChanged)
         );
     }
@@ -330,10 +473,10 @@ mod tests {
         let mut state = BuildState::default();
         let node = make_node("interface:test", Some(src), &[]);
 
-        state.record_node(&node, "flags_v1");
+        state.record_node(&node, "flags_v1", &[], Some(&[]));
 
         assert_eq!(
-            state.needs_rebuild(&node, "flags_v2"),
+            state.needs_rebuild(&node, "flags_v2", &[]),
             Some(RebuildReason::FlagsChanged)
         );
     }
@@ -347,10 +490,10 @@ mod tests {
         let mut state = BuildState::default();
         let node = make_node("interface:test", Some(src), &[]);
 
-        state.record_node(&node, "flags");
+        state.record_node(&node, "flags", &[], Some(&[]));
 
         // No changes → should be None (up-to-date)
-        assert_eq!(state.needs_rebuild(&node, "flags"), None);
+        assert_eq!(state.needs_rebuild(&node, "flags", &[]), None);
     }
 
     #[test]
@@ -366,14 +509,37 @@ mod tests {
         let mut node = make_node("interface:test", Some(src), &[]);
         node.outputs = vec![output.clone()];
 
-        state.record_node(&node, "flags");
+        state.record_node(&node, "flags", &[], Some(&[]));
 
         // Remove the output
         std::fs::remove_file(&output).unwrap();
 
         assert_eq!(
-            state.needs_rebuild(&node, "flags"),
+            state.needs_rebuild(&node, "flags", &[]),
             Some(RebuildReason::OutputMissing)
+        );
+    }
+
+    /// A dependency rebuilt earlier in the same build changes the hashes
+    /// the caller passes in, even though this state still holds the old
+    /// ones for it.
+    #[test]
+    fn test_needs_rebuild_dependency_changed() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("main.cpp");
+        std::fs::write(&src, "import dep;").unwrap();
+
+        let mut state = BuildState::default();
+        let node = make_node("object:main", Some(src), &["interface:dep"]);
+        state.record_node(&node, "flags", &["pcm-v1".to_string()], Some(&[]));
+
+        assert_eq!(
+            state.needs_rebuild(&node, "flags", &["pcm-v1".to_string()]),
+            None
+        );
+        assert_eq!(
+            state.needs_rebuild(&node, "flags", &["pcm-v2".to_string()]),
+            Some(RebuildReason::DependencyChanged)
         );
     }
 
@@ -388,6 +554,7 @@ mod tests {
                 flags_hash: "flags".to_string(),
                 output_hashes: vec![("out.pcm".to_string(), "hash".to_string())],
                 mtime: None,
+                headers: None,
             },
         );
 
@@ -412,14 +579,150 @@ mod tests {
         let node = make_node("interface:test", Some(src.clone()), &[]);
 
         // Record node — this stores both hash and mtime
-        state.record_node(&node, "flags");
+        state.record_node(&node, "flags", &[], Some(&[]));
 
         // Verify mtime was stored
         let recorded = state.nodes.get("interface:test").unwrap();
         assert!(recorded.mtime.is_some());
 
         // Without modifying the file, mtime is the same → should skip hash and be up-to-date
-        assert_eq!(state.needs_rebuild(&node, "flags"), None);
+        assert_eq!(state.needs_rebuild(&node, "flags", &[]), None);
+    }
+
+    /// A source plus one header it includes, recorded as built.
+    fn built_with_header(tmp: &TempDir) -> (BuildState, BuildNode, PathBuf) {
+        let src = tmp.path().join("main.cpp");
+        let header = tmp.path().join("value.h");
+        std::fs::write(&src, "#include \"value.h\"").unwrap();
+        std::fs::write(&header, "#define VALUE 1").unwrap();
+
+        let mut state = BuildState::default();
+        let node = make_node("object:main", Some(src), &[]);
+        let headers = vec![HeaderState::observe(&header).unwrap()];
+        state.record_node(&node, "flags", &[], Some(&headers));
+        (state, node, header)
+    }
+
+    #[test]
+    fn test_needs_rebuild_header_changed() {
+        let tmp = TempDir::new().unwrap();
+        let (state, node, header) = built_with_header(&tmp);
+        assert_eq!(state.clone().needs_rebuild(&node, "flags", &[]), None);
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&header, "#define VALUE 2").unwrap();
+
+        assert_eq!(
+            state.needs_rebuild(&node, "flags", &[]),
+            Some(RebuildReason::HeaderChanged(header))
+        );
+    }
+
+    /// A header included by many nodes is stored once, and survives
+    /// a save/load and a carry-over of an up-to-date node.
+    #[test]
+    fn test_headers_are_interned() {
+        let tmp = TempDir::new().unwrap();
+        let header = tmp.path().join("value.h");
+        std::fs::write(&header, "#define VALUE 1").unwrap();
+        let headers = vec![HeaderState::observe(&header).unwrap()];
+
+        let mut state = BuildState::default();
+        let mut nodes = Vec::new();
+        for name in ["a", "b", "c"] {
+            let src = tmp.path().join(format!("{}.cpp", name));
+            std::fs::write(&src, "#include \"value.h\"").unwrap();
+            let node = make_node(&format!("object:{}", name), Some(src), &[]);
+            state.record_node(&node, "flags", &[], Some(&headers));
+            nodes.push(node);
+        }
+        assert_eq!(state.headers.len(), 1);
+
+        state.save(tmp.path()).unwrap();
+        let loaded = BuildState::load(tmp.path());
+        assert_eq!(loaded.headers.len(), 1);
+        assert_eq!(loaded.needs_rebuild(&nodes[0], "flags", &[]), None);
+
+        let mut next = BuildState::default();
+        next.carry_over(&loaded, "object:b");
+        assert_eq!(next.headers.len(), 1);
+        assert_eq!(next.needs_rebuild(&nodes[1], "flags", &[]), None);
+        assert!(!next.nodes.contains_key("object:a"));
+    }
+
+    #[test]
+    fn test_needs_rebuild_header_index_out_of_range() {
+        let tmp = TempDir::new().unwrap();
+        let (mut state, node, _) = built_with_header(&tmp);
+        state.nodes.get_mut("object:main").unwrap().headers = Some(vec![7]);
+        assert_eq!(
+            state.needs_rebuild(&node, "flags", &[]),
+            Some(RebuildReason::HeadersUnknown)
+        );
+    }
+
+    #[test]
+    fn test_needs_rebuild_header_touched_but_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let (state, node, header) = built_with_header(&tmp);
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&header, "#define VALUE 1").unwrap();
+
+        assert_eq!(state.needs_rebuild(&node, "flags", &[]), None);
+    }
+
+    #[test]
+    fn test_needs_rebuild_header_deleted() {
+        let tmp = TempDir::new().unwrap();
+        let (state, node, header) = built_with_header(&tmp);
+
+        std::fs::remove_file(&header).unwrap();
+
+        assert_eq!(
+            state.needs_rebuild(&node, "flags", &[]),
+            Some(RebuildReason::HeaderChanged(header))
+        );
+    }
+
+    #[test]
+    fn test_needs_rebuild_headers_unknown() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("main.cpp");
+        std::fs::write(&src, "int main() {}").unwrap();
+
+        let mut state = BuildState::default();
+        let node = make_node("object:main", Some(src), &[]);
+        state.record_node(&node, "flags", &[], None);
+
+        assert_eq!(
+            state.needs_rebuild(&node, "flags", &[]),
+            Some(RebuildReason::HeadersUnknown)
+        );
+    }
+
+    /// State files written before headers were tracked have no `headers`
+    /// key: they load, and every node rebuilds once.
+    #[test]
+    fn test_state_without_headers_field_rebuilds() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("main.cpp");
+        std::fs::write(&src, "int main() {}").unwrap();
+        let mtime = file_mtime(&src).unwrap();
+
+        let json = format!(
+            r#"{{"nodes": {{"object:main": {{"source_hash": "", "dep_hashes": [],
+                "flags_hash": "flags", "output_hashes": [], "mtime": {}}}}}}}"#,
+            mtime
+        );
+        std::fs::write(tmp.path().join(".cmod-build-state.json"), json).unwrap();
+
+        let state = BuildState::load(tmp.path());
+        let node = make_node("object:main", Some(src), &[]);
+        assert_eq!(
+            state.needs_rebuild(&node, "flags", &[]),
+            Some(RebuildReason::HeadersUnknown)
+        );
     }
 
     #[test]
@@ -429,5 +732,9 @@ mod tests {
             "source file changed"
         );
         assert_eq!(format!("{}", RebuildReason::Forced), "forced rebuild");
+        assert_eq!(
+            format!("{}", RebuildReason::HeaderChanged(PathBuf::from("a/b.h"))),
+            format!("included header changed: {}", Path::new("a/b.h").display())
+        );
     }
 }

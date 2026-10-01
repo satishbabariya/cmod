@@ -11,7 +11,8 @@ cmod caches compiled artifacts (BMIs, object files) using content-addressed SHA-
 A cache key is computed from:
 
 - **Module source hash** — SHA-256 of the source file content
-- **Dependency lock hash** — hash of imported BMIs and their versions
+- **Imported BMIs** — content hashes of the BMIs the source imports, from this package and from its dependencies
+- **Included headers** — path and content hash of every header the source included, system headers too
 - **Compiler identity** — compiler name and version (e.g., `clang-18.1.0`)
 - **C++ standard** — e.g., `20` or `23`
 - **Standard library** — e.g., `libc++` or `libstdc++`
@@ -19,6 +20,8 @@ A cache key is computed from:
 - **Build flags** — any extra compiler flags
 
 These components are concatenated and hashed with SHA-256. The resulting cache key is the 64-character hex string produced by `hex::encode()` — not a human-readable dash-separated string. If any component changes, the hash differs and a new cache entry is created.
+
+The included headers are only known after compiling, so cmod looks them up the way ccache's "direct mode" does. Everything but the headers forms a base key. Under it, an *include manifest* (`includes.json`) lists the header sets that earlier compiles of that source read. A lookup re-hashes each set's headers and uses the first set that still matches. The compiler reports the headers it read (`-MD` for Clang and GCC, `/sourceDependencies` for MSVC); if it reports none, the object is not cached. Headers inside the package are recorded relative to its root, so checkouts in different directories share entries. See `docs/adr/0004-track-included-headers-and-dependency-bmis.md`.
 
 ## Local Cache
 

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Editing a header rebuilds the files that include it** — neither the incremental check nor the cache key looked at included headers. After a header edit, `cmod build` said "up-to-date", and `cmod build --force` restored the object built with the old header from the cache, as did any other project with the same source file, through the remote cache too. The compiler now reports each TU's headers (`-MD` for Clang and GCC, `/sourceDependencies` for MSVC). Build state records them, and cache keys cover their contents through a per-source include manifest, as in ccache's direct mode. Touching a header without changing it rebuilds nothing. Found by #131.
+- **A module change rebuilds its importers in the same build** — importers were checked against the previous build's state, so they stayed "up-to-date" and kept the old inlined code until the next build.
+- **A dependency's module change rebuilds its importers** — imports of git, path and workspace dependencies' modules were dropped from the graph, so changing a dependency's interface left importing TUs stale until their own source changed, and their cache keys did not change either. Dependency BMIs are now inputs of the TUs that import them (`external_imports` in `cmod plan`).
+- **Runner-pushed remote cache entries can be restored** — `cmod build` uploaded artifacts without their `metadata.json`, which restores require. It is now uploaded last, after the artifacts.
+
+The first build after upgrading recompiles everything: old build state has no header lists, and cache keys changed. Lockfile format unchanged. See `docs/adr/0004-track-included-headers-and-dependency-bmis.md`.
+
+### Changed
+
+- The `e2e_validation` compile tests also run on Linux with `clang++` on PATH. They had only looked for Homebrew LLVM, so the Linux E2E job skipped all of them.
+
 ## [0.1.0-alpha.6] - 2026-10-01
 
 The release that fixes a GCC project's first git dependency. Alpha.5 shipped the GCC backend for the root package but left git and path dependencies on clang's command line and `.pcm`-only BMI lookup; both are real breaks for any `compiler = "gcc"` project and are fixed here.

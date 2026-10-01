@@ -557,6 +557,7 @@ mod tests {
                 flags_hash: "flags".to_string(),
                 output_hashes: vec![("base.pcm".to_string(), "hash1".to_string())],
                 mtime: None,
+                headers: None,
             },
         );
 

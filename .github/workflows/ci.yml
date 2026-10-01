@@ -162,6 +162,9 @@ jobs:
           ./build/debug/gccdemo
           CXX=g++-14 $GITHUB_WORKSPACE/target/debug/cmod test
 
+      - name: Header edits rebuild (GCC)
+        run: CXX=g++-14 ./scripts/header-rebuild-smoke.sh "$GITHUB_WORKSPACE/target/debug/cmod" gcc
+
       # Real-world ecosystem ports as GCC consumers (#98). Every consumer
       # runs even if an earlier one fails, so one run yields the full table.
       - name: Real-world consumers (GCC)
@@ -233,6 +236,11 @@ jobs:
           ls build/debug/pcm/
           test -f build/debug/pcm/local_msvcdemo.ifc
           ./build/debug/msvcdemo
+
+      # Exercises /sourceDependencies, the only header source under MSVC.
+      - name: Header edits rebuild (MSVC)
+        shell: bash
+        run: ./scripts/header-rebuild-smoke.sh "$GITHUB_WORKSPACE/target/debug/cmod" msvc
 
       # Real-world header-only ecosystem ports as MSVC consumers (#99).
       # Static-lib ports are excluded for now: their manifests carry
