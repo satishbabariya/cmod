@@ -2673,3 +2673,63 @@ fn test_e2e_workspace_noop_build_links_nothing() {
         .expect("failed to run built binary");
     assert!(run.success());
 }
+
+/// Whether `clang-scan-deps` runs, with the PATH `run_cmod_with_llvm` uses.
+fn has_clang_scan_deps() -> bool {
+    let path = format!(
+        "/opt/homebrew/opt/llvm/bin:{}",
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let scanner = std::env::var_os("SCAN_DEPS").unwrap_or_else(|| "clang-scan-deps".into());
+    Command::new(scanner)
+        .arg("--version")
+        .env("PATH", path)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Imports come from the preprocessed source: an `import` inside `#if 0`
+/// is not one. The source-text extractor saw it, and with it a cycle
+/// between `local.a` and `local.b`. Every clang-scan-deps run used to fail
+/// (the compiler was missing from its command line), so it was never used.
+/// Results are kept until the source changes.
+#[test]
+fn test_e2e_scan_follows_the_preprocessor_and_is_cached() {
+    if !has_llvm_clang() || !has_clang_scan_deps() {
+        eprintln!("Skipping: LLVM Clang or clang-scan-deps not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_rebuild_manifest(tmp.path(), "scan", "");
+    let src = tmp.path().join("src");
+    fs::write(
+        src.join("a.cppm"),
+        "export module local.a;\n#if 0\nimport local.b;\n#endif\nexport int a() { return 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("b.cppm"),
+        "export module local.b;\nimport local.a;\nexport int b() { return a() + 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("main.cpp"),
+        "import local.b;\n#include <cstdio>\nint main() { std::printf(\"%d\\n\", b()); }\n",
+    )
+    .unwrap();
+
+    assert_eq!(build_and_run(tmp.path(), "scan", &["build"]), "2");
+
+    let state: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(tmp.path().join("build/debug/.cmod-scan-state.json")).unwrap(),
+    )
+    .unwrap();
+    let records = state["outputs"].as_object().unwrap();
+    assert_eq!(records.len(), 3, "{:#}", state);
+    let main = records
+        .iter()
+        .find(|(path, _)| path.ends_with("main.cpp"))
+        .map(|(_, record)| record)
+        .unwrap();
+    assert_eq!(main["data"], serde_json::json!(["local.b"]), "{:#}", state);
+}

@@ -77,10 +77,10 @@ pub struct HeaderState {
     pub mtime: Option<u64>,
 }
 
-/// Outputs built outside the build plan, one command each: `cmod test`'s
-/// test binaries. An output is fresh when the command that would build it
-/// has the key recorded for it, and the headers that command read last time
-/// are unchanged.
+/// Results of commands run outside the build plan: `cmod test`'s test
+/// binaries, and `cmod build`'s module scans. A result is fresh when the
+/// command that would produce it has the key recorded for it, and the
+/// headers that command read last time are unchanged.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CommandState {
     /// Per output path.
@@ -95,6 +95,10 @@ pub struct CommandRecord {
     pub key: String,
     /// Headers the command read, each with the mtime read before its hash.
     pub headers: Vec<HeaderState>,
+    /// What the command reported, for commands whose result is not a file
+    /// (the modules a scanned source imports).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data: Vec<String>,
 }
 
 impl CommandState {
@@ -120,27 +124,38 @@ impl CommandState {
     /// Whether `output` exists and was built by a command with `key`, and
     /// no header that command read has changed since.
     pub fn is_fresh(&self, output: &Path, key: &str) -> bool {
-        output.exists()
-            && self
-                .outputs
-                .get(&output.display().to_string())
-                .is_some_and(|record| {
-                    record.key == key
-                        && record
-                            .headers
-                            .iter()
-                            .all(|h| h.check() != HeaderCheck::Changed)
-                })
+        output.exists() && self.fresh(output, key).is_some()
     }
 
-    /// Record that `output` was built by a command with `key` that read
-    /// `headers`; `None` (headers unknown) forgets the output instead, so
-    /// it is built again next time.
-    pub fn record(&mut self, output: &Path, key: String, headers: Option<Vec<HeaderState>>) {
+    /// The record for `output` if it was made by a command with `key` and
+    /// no header that command read has changed since.
+    pub fn fresh(&self, output: &Path, key: &str) -> Option<&CommandRecord> {
+        self.outputs
+            .get(&output.display().to_string())
+            .filter(|record| {
+                record.key == key
+                    && record
+                        .headers
+                        .iter()
+                        .all(|h| h.check() != HeaderCheck::Changed)
+            })
+    }
+
+    /// Record that `output` was made by a command with `key` that read
+    /// `headers` and reported `data`; `None` (headers unknown) forgets the
+    /// output instead, so the command runs again next time.
+    pub fn record(
+        &mut self,
+        output: &Path,
+        key: String,
+        headers: Option<Vec<HeaderState>>,
+        data: Vec<String>,
+    ) {
         let output = output.display().to_string();
         match headers {
             Some(headers) => {
-                self.outputs.insert(output, CommandRecord { key, headers });
+                self.outputs
+                    .insert(output, CommandRecord { key, headers, data });
             }
             None => {
                 self.outputs.remove(&output);
@@ -918,7 +933,7 @@ mod tests {
 
         let mut state = CommandState::default();
         let headers = vec![HeaderState::observe(&header).unwrap()];
-        state.record(&output, "k1".into(), Some(headers));
+        state.record(&output, "k1".into(), Some(headers), vec![]);
         // No output yet.
         assert!(!state.is_fresh(&output, "k1"));
 
@@ -936,7 +951,7 @@ mod tests {
         assert!(!state.is_fresh(&output, "k1"));
 
         let mut state = state;
-        state.record(&output, "k1".into(), None);
+        state.record(&output, "k1".into(), None, vec![]);
         assert!(!state.is_fresh(&output, "k1"));
     }
 

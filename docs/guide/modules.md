@@ -127,7 +127,7 @@ The following prefixes are reserved and cannot be used:
 
 cmod builds a **Directed Acyclic Graph (DAG)** of module dependencies before any compilation begins:
 
-1. **Source scanning** — `clang-scan-deps` discovers `import` statements in source files
+1. **Source scanning** — `clang-scan-deps` reports each source's imports (P1689), run with the package's compile flags, so include paths and macros decide which `import`s count (one inside `#if 0` does not). Each result is kept in `build/<profile>/.cmod-scan-state.json` with the headers the scan read, and reused until the source, the flags, or one of those headers changes. Without `clang-scan-deps`, and for GCC and MSVC builds, imports are read from the source text, which does not see the preprocessor.
 2. **Name resolution** — imported module names are matched to source files and dependencies
 3. **DAG construction** — dependency edges are created between module units
 4. **Topological sort** — the graph is sorted to determine correct compilation order
