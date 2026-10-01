@@ -951,7 +951,7 @@ fn build_workspace(
 ///
 /// Imports come from `clang` (see [`ClangScan`]) when given, otherwise from
 /// the source text.
-fn build_module_graph(
+pub(crate) fn build_module_graph(
     sources: &[std::path::PathBuf],
     package_name: &str,
     clang: Option<&ClangScan>,
@@ -1030,7 +1030,7 @@ fn build_module_graph(
 /// include paths and macros decide which `import`s count. Each source's
 /// result is kept with the headers the scan read, and reused while the
 /// source, the command and those headers are unchanged.
-struct ClangScan {
+pub(crate) struct ClangScan {
     scan_deps: std::ffi::OsString,
     compiler: std::path::PathBuf,
     /// `compiler --version`: an in-place upgrade can change predefined
@@ -1050,7 +1050,7 @@ impl ClangScan {
     /// The scan for packages built by `backend`, or `None` (source-text
     /// extraction) when the backend is not Clang or `clang-scan-deps` cannot
     /// be run.
-    fn for_backend(
+    pub(crate) fn for_backend(
         backend: &dyn cmod_build::compiler::CompilerBackend,
         build_dir: &std::path::Path,
         persist: bool,
@@ -1348,7 +1348,7 @@ fn use_root_compiler(dep_config: &mut Config, root: &Config, dep_name: &str, she
 }
 
 /// Set up the Clang compiler backend from config.
-fn setup_compiler(
+pub(crate) fn setup_compiler(
     config: &Config,
     activated_features: &[String],
 ) -> (BackendConfig, Compiler, String) {
