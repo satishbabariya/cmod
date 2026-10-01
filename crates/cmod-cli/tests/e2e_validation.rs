@@ -471,6 +471,38 @@ fn test_e2e_build_compile_error() {
     );
 }
 
+/// A module that fails to compile stops the build there: its importers are
+/// not compiled. Idle workers used to pick them up, and each failed again,
+/// reporting the module as not found.
+#[test]
+fn test_e2e_build_compile_error_stops_at_the_module() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    init_project(tmp.path(), "broken");
+    fs::write(
+        tmp.path().join("src/lib.cppm"),
+        "export module local.broken;\nexport int broken() { return not_declared; }\n",
+    )
+    .unwrap();
+    for name in ["a", "b", "c"] {
+        fs::write(
+            tmp.path().join(format!("src/{name}.cpp")),
+            format!("import local.broken;\nint {name}() {{ return broken(); }}\n"),
+        )
+        .unwrap();
+    }
+
+    let output = run_cmod_with_llvm(tmp.path(), &["build", "--jobs", "4"]);
+    assert!(!output.status.success());
+    let err = stderr(&output);
+    assert!(err.contains("not_declared"), "{}", err);
+    assert!(!err.contains("not found"), "{}", err);
+}
+
 #[test]
 fn test_e2e_build_no_source_files() {
     let tmp = TempDir::new().unwrap();
@@ -2837,6 +2869,69 @@ fn test_e2e_gcc_first_build_is_complete() {
         "{}",
         report
     );
+}
+
+/// A shared library is compiled as position-independent code, and so are
+/// the dependencies linked into it. g++ compiles PIE objects by default,
+/// which cannot go into a shared object: every shared library with an
+/// object referring to external data failed to link.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_e2e_gcc_shared_lib_with_a_dependency_links() {
+    let Some(gxx) = gcc_with_scanner() else {
+        eprintln!("Skipping: no g++ 14+ found");
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    write_rebuild_manifest(
+        tmp.path(),
+        "shared",
+        "\n[dependencies]\ndep = { path = \"libs/dep\" }\n",
+    );
+    let manifest = fs::read_to_string(tmp.path().join("cmod.toml")).unwrap();
+    fs::write(
+        tmp.path().join("cmod.toml"),
+        manifest
+            .replace("compiler = \"clang\"", "compiler = \"gcc\"")
+            .replace("type = \"binary\"", "type = \"shared-lib\""),
+    )
+    .unwrap();
+    let dep = tmp.path().join("libs/dep");
+    fs::create_dir_all(dep.join("src")).unwrap();
+    fs::write(
+        dep.join("cmod.toml"),
+        "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+         [module]\nname = \"local.dep\"\nroot = \"src/lib.cppm\"\n\n\
+         [toolchain]\ncompiler = \"gcc\"\ncxx_standard = \"20\"\n\n\
+         [build]\ntype = \"static-lib\"\n",
+    )
+    .unwrap();
+    // Both refer to `stdout`, data defined outside the library.
+    fs::write(
+        dep.join("src/lib.cppm"),
+        "module;\n#include <cstdio>\nexport module local.dep;\n\
+         export void say(const char* s) { std::fputs(s, stdout); }\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("src/lib.cppm"),
+        "module;\n#include <cstdio>\nexport module local.shared;\nimport local.dep;\n\
+         export void hello() { say(\"hello\\n\"); std::fflush(stdout); }\n",
+    )
+    .unwrap();
+    let cmod = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cmod"))
+            .args(args)
+            .current_dir(tmp.path())
+            .env("CXX", gxx)
+            .output()
+            .expect("failed to run cmod")
+    };
+    let output = cmod(&["resolve"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = cmod(&["build"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(tmp.path().join("build/debug/libshared.so").exists());
 }
 
 /// GCC packages are scanned by g++ itself: the `#if 0` import is not one,

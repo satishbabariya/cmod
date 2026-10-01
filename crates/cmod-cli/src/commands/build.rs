@@ -753,6 +753,9 @@ pub(crate) fn member_build(
         }
         backend_cfg.extra_flags.extend(build.extra_flags.clone());
     }
+    if wants_pic(member.manifest.build.as_ref()) && pic_capable(config) {
+        add_pic_flag(&mut backend_cfg.extra_flags);
+    }
 
     // Auto-detect include/ directory for this member
     let member_include = member.path.join("include");
@@ -1348,6 +1351,61 @@ fn use_root_compiler(dep_config: &mut Config, root: &Config, dep_name: &str, she
             });
         }
     }
+    // A dependency is linked into the root package: into a shared library,
+    // its objects must be position-independent too.
+    if wants_pic(root.manifest.build.as_ref())
+        && pic_capable(root)
+        && !wants_pic(dep_config.manifest.build.as_ref())
+    {
+        let build = dep_config
+            .manifest
+            .build
+            .get_or_insert_with(|| cmod_core::manifest::Build {
+                build_type: None,
+                optimization: None,
+                lto: None,
+                parallel: None,
+                incremental: None,
+                include_dirs: Vec::new(),
+                extra_flags: Vec::new(),
+                sources: Vec::new(),
+                exclude: Vec::new(),
+                distributed: None,
+            });
+        build.extra_flags.push(PIC_FLAG.to_string());
+    }
+}
+
+/// How Clang and GCC compile position-independent code.
+const PIC_FLAG: &str = "-fPIC";
+
+/// Whether a package with this `[build]` section compiles to
+/// position-independent code: a shared library does (as CMake's default),
+/// and so does one whose `extra_flags` ask for it, as `use_root_compiler`
+/// does for the dependencies of a shared library.
+fn wants_pic(build: Option<&cmod_core::manifest::Build>) -> bool {
+    build.is_some_and(|b| {
+        b.build_type == Some(cmod_core::types::BuildType::SharedLib)
+            || b.extra_flags.iter().any(|f| f == "-fPIC" || f == "-fpic")
+    })
+}
+
+/// Whether `config`'s compiler takes `-fPIC`: MSVC and Windows targets
+/// have no such flag.
+fn pic_capable(config: &Config) -> bool {
+    let target = config
+        .target
+        .clone()
+        .or_else(|| config.manifest.toolchain.as_ref()?.target.clone())
+        .unwrap_or_else(default_target);
+    manifest_compiler(config) != Compiler::Msvc && !target.contains("windows")
+}
+
+/// Add `-fPIC` to `flags` unless they have it.
+fn add_pic_flag(flags: &mut Vec<String>) {
+    if !flags.iter().any(|f| f == "-fPIC" || f == "-fpic") {
+        flags.push(PIC_FLAG.to_string());
+    }
 }
 
 /// Set up the Clang compiler backend from config.
@@ -1425,6 +1483,10 @@ pub(crate) fn setup_compiler(
         if !backend_cfg.extra_flags.contains(&flag) {
             backend_cfg.extra_flags.push(flag);
         }
+    }
+
+    if wants_pic(config.manifest.build.as_ref()) && pic_capable(config) {
+        add_pic_flag(&mut backend_cfg.extra_flags);
     }
 
     (backend_cfg, compiler_kind, target)

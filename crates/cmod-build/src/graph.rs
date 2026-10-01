@@ -148,6 +148,43 @@ impl ModuleGraph {
         Ok(())
     }
 
+    /// One import cycle among the modules `topological_order` could not
+    /// order (those not in `ordered`), as `a -> b -> a`: `a` imports `b`,
+    /// which imports `a`. Modules that only import a cycle are left out.
+    fn find_cycle(&self, ordered: &[&str]) -> String {
+        let known = self.module_names();
+        let mut imports: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for node in self.nodes.values() {
+            if ordered.contains(&node.name.as_str()) {
+                continue;
+            }
+            let entry = imports.entry(node.name.as_str()).or_default();
+            for import in &node.imports {
+                if *import != node.name
+                    && known.contains(import)
+                    && !ordered.contains(&import.as_str())
+                {
+                    entry.insert(import.as_str());
+                }
+            }
+        }
+        // Each unordered module imports another one (or its in-degree would
+        // have reached zero), so following imports must come back around.
+        let Some(&start) = imports.keys().next() else {
+            return String::new();
+        };
+        let mut path = vec![start];
+        while let Some(&next) = imports.get(path[path.len() - 1]).and_then(|i| i.first()) {
+            if let Some(at) = path.iter().position(|&m| m == next) {
+                let mut cycle = path.split_off(at);
+                cycle.push(next);
+                return cycle.join(" -> ");
+            }
+            path.push(next);
+        }
+        imports.keys().copied().collect::<Vec<_>>().join(", ")
+    }
+
     /// Compute a topological ordering of the graph.
     ///
     /// Returns node IDs in dependency order (dependencies first).
@@ -210,13 +247,8 @@ impl ModuleGraph {
         }
 
         if mod_order.len() != module_names.len() {
-            let remaining: Vec<String> = module_names
-                .iter()
-                .filter(|n| !mod_order.contains(&n.as_str()))
-                .cloned()
-                .collect();
             return Err(CmodError::CircularDependency {
-                cycle: remaining.join(" -> "),
+                cycle: self.find_cycle(&mod_order),
             });
         }
 
@@ -562,7 +594,21 @@ mod tests {
         let result = graph.topological_order();
         assert!(result.is_err());
         if let Err(CmodError::CircularDependency { cycle }) = result {
-            assert!(!cycle.is_empty());
+            assert_eq!(cycle, "a -> c -> b -> a");
+        }
+    }
+
+    #[test]
+    fn test_cycle_leaves_out_importers_of_the_cycle() {
+        let mut graph = ModuleGraph::new();
+        graph.add_node(make_node("a", &["b"]));
+        graph.add_node(make_node("b", &["a"]));
+        graph.add_node(make_node("app", &["a"]));
+        graph.add_node(make_node("free", &[]));
+
+        match graph.topological_order() {
+            Err(CmodError::CircularDependency { cycle }) => assert_eq!(cycle, "a -> b -> a"),
+            other => panic!("expected a cycle, got {:?}", other),
         }
     }
 

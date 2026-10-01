@@ -27,6 +27,8 @@ type = "binary"       # Compile to an executable (default)
 # type = "shared-lib" # Compile to a shared library (.so/.dylib)
 ```
 
+A shared library is compiled with `-fPIC` (Clang and GCC, except for Windows targets), as are the dependencies linked into it. Members of a workspace that are shared libraries get `-fPIC` for their own sources; a static member linked into one needs `extra_flags = ["-fPIC"]`.
+
 ## Optimization Levels
 
 ```toml

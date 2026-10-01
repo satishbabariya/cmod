@@ -222,8 +222,31 @@ impl WorkspaceManager {
         }
 
         if order.len() != n {
+            // Each member left over depends on another one left over (or its
+            // in-degree would have reached zero): follow those dependencies
+            // until one comes back around.
+            let left: Vec<usize> = (0..n).filter(|&i| in_degree[i] > 0).collect();
+            let depends_on =
+                |idx: usize| left.iter().copied().find(|&d| dependents[d].contains(&idx));
+            let mut path = left.first().copied().into_iter().collect::<Vec<_>>();
+            let mut cycle = Vec::new();
+            while let Some(next) = path.last().and_then(|&at| depends_on(at)) {
+                if let Some(at) = path.iter().position(|&m| m == next) {
+                    cycle = path.split_off(at);
+                    cycle.push(next);
+                    break;
+                }
+                path.push(next);
+            }
+            let names: Vec<&str> = cycle
+                .iter()
+                .map(|&i| self.members[i].name.as_str())
+                .collect();
             return Err(CmodError::CircularDependency {
-                cycle: "workspace members have circular path dependencies".to_string(),
+                cycle: format!(
+                    "{} (workspace members' path dependencies)",
+                    names.join(" -> ")
+                ),
             });
         }
 
@@ -663,6 +686,45 @@ core = { path = "./core" }
         // core must come before app
         assert_eq!(order[0].name, "core");
         assert_eq!(order[1].name, "app");
+    }
+
+    #[test]
+    fn test_build_order_names_the_cycle() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("cmod.toml"),
+            "[package]\nname = \"cyclic\"\nversion = \"0.1.0\"\n\n\
+             [workspace]\nmembers = [\"a\", \"b\", \"app\"]\n",
+        )
+        .unwrap();
+        for (name, deps) in [("a", &["b"][..]), ("b", &["a"]), ("app", &["a"])] {
+            let dir = root.join(name);
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            let deps: String = deps
+                .iter()
+                .map(|d| format!("{d} = {{ path = \"../{d}\" }}\n"))
+                .collect();
+            std::fs::write(
+                dir.join("cmod.toml"),
+                format!(
+                    "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n{deps}"
+                ),
+            )
+            .unwrap();
+        }
+
+        let ws = WorkspaceManager::load(root).unwrap();
+        match ws.build_order() {
+            Err(CmodError::CircularDependency { cycle }) => {
+                assert!(
+                    cycle.starts_with("a -> b -> a") || cycle.starts_with("b -> a -> b"),
+                    "{}",
+                    cycle
+                );
+            }
+            other => panic!("expected a cycle, got {:?}", other.map(|o| o.len())),
+        }
     }
 
     #[test]
