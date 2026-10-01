@@ -2487,3 +2487,100 @@ fn test_e2e_dry_run_without_lockfile_examines_path_deps() {
     let output = run_cmod_with_llvm(tmp.path(), &["explain", "main"]);
     assert!(output.status.success(), "{}", stderr(&output));
 }
+
+/// With a lockfile, a dry run of an up-to-date project with a path
+/// dependency reports nothing to do. It used to report the dependency as
+/// "not checked out at the locked commit", as if it were a git dependency.
+#[test]
+fn test_e2e_dry_run_with_lockfile_skips_path_deps() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_impl_dep_project(tmp.path());
+    assert_eq!(build_and_run(tmp.path(), "app", &["build"]), "1");
+
+    let output = run_cmod_with_llvm(tmp.path(), &["build", "--dry-run"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert!(!out.contains("not checked out"), "{}", out);
+    assert!(out.contains("\n0 of "), "{}", out);
+}
+
+/// A workspace member that depends on several members is not relinked by a
+/// no-op build. The members' objects were passed to the link in hash-set
+/// order, which differs between runs, so the link key changed every time.
+#[test]
+fn test_e2e_workspace_noop_build_links_nothing() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("cmod.toml"),
+        "[package]\nname = \"ws\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+         [workspace]\nmembers = [\"a\", \"b\", \"c\", \"app\"]\n",
+    )
+    .unwrap();
+    let member = |name: &str, build_type: &str, deps: &str| {
+        let dir = root.join(name);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("cmod.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+                 [module]\nname = \"local.{name}\"\nroot = \"src/lib.cppm\"\n\n\
+                 [dependencies]\n{deps}\n\
+                 [toolchain]\ncompiler = \"clang\"\ncxx_standard = \"20\"\n\n\
+                 [build]\ntype = \"{build_type}\"\n"
+            ),
+        )
+        .unwrap();
+        dir
+    };
+    for name in ["a", "b", "c"] {
+        let dir = member(name, "static-lib", "");
+        fs::write(
+            dir.join("src/lib.cppm"),
+            format!("export module local.{name};\n\nexport int {name}() {{ return 1; }}\n"),
+        )
+        .unwrap();
+    }
+    let app = member(
+        "app",
+        "binary",
+        "a = { path = \"../a\" }\nb = { path = \"../b\" }\nc = { path = \"../c\" }\n",
+    );
+    fs::write(
+        app.join("src/lib.cppm"),
+        "export module local.app;\nimport local.a;\nimport local.b;\nimport local.c;\n\n\
+         export int total() { return a() + b() + c(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        app.join("src/main.cpp"),
+        "import local.app;\n\nint main() { return total() == 3 ? 0 : 1; }\n",
+    )
+    .unwrap();
+
+    let output = run_cmod_with_llvm(root, &["build"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    // Three members give six possible orders: one rebuild can match by luck.
+    for _ in 0..3 {
+        let output = run_cmod_with_llvm(root, &["-v", "build"]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let err = stderr(&output);
+        assert!(
+            !err.contains("Linked"),
+            "no-op workspace build relinked: {}",
+            err
+        );
+    }
+    let run = Command::new(root.join("build/debug/app/app"))
+        .status()
+        .expect("failed to run built binary");
+    assert!(run.success());
+}

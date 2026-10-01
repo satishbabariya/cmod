@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A no-op workspace build no longer relinks** — a member's upstream members' objects were collected in hash-set order, which changes from run to run, so the link inputs looked different every build: the member was relinked each time, and its binary was not reproducible. Members, and the archives and objects collected from every dependency's build directory, are now sorted.
+- **`cmod build --dry-run` no longer reports path dependencies as unfetched** — with a lockfile, every path dependency was reported as "not checked out at the locked commit; a build would fetch it", although a build never fetches them.
+
 ## [0.1.0-alpha.7] - 2026-10-01
 
 The release that makes incremental builds trustworthy, and fast. Up to alpha.6, `cmod build` could report success while linking objects built from old inputs: an edited header never rebuilt anything, even with `--force`; a module's importers rebuilt one build late; and a dependency's module change never reached its importers at all. All three are fixed, and with rebuilds now driven by real inputs, dependencies build incrementally, unchanged links are skipped, and scanning runs in parallel: a no-op build of a Catch2 consumer went from ~5.2 s to ~1.5 s on 4 cores. `cmod build --dry-run` and a rewritten `cmod explain` show what a build would do and why.

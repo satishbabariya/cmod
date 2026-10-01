@@ -99,11 +99,42 @@ pub fn find_dep_on_disk(vendor_dir: &Path, deps_dir: &Path, pkg_name: &str) -> O
     None
 }
 
-/// Ensure a git dependency is present on disk, cloning it if necessary.
-///
-/// First checks `vendor/` and `build/deps/` via `find_dep_on_disk()`. If the dep
-/// is not found, clones it from the lockfile's `repo` URL and checks out the
-/// locked `commit` hash. Returns the path if the dep has a `cmod.toml`, or `None`.
+/// Files directly in `dir` with extension `ext`, sorted. Sorted because the
+/// order becomes a link command's order: unsorted, the link key changes
+/// from one build to the next and the output is not reproducible.
+pub fn files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some(ext))
+        .collect();
+    files.sort();
+    files
+}
+
+/// What a built dependency contributes to a link: its `.a` archives, or
+/// its `.o` objects when it produced no archive. Sorted.
+pub fn linkable_artifacts(build_dir: &Path) -> Vec<PathBuf> {
+    let archives = files_with_extension(build_dir, "a");
+    if !archives.is_empty() {
+        return archives;
+    }
+    files_with_extension(&build_dir.join("obj"), "o")
+}
+
+/// Whether the build fetches `pkg` when it is not on disk, as
+/// [`ensure_dep_on_disk`] does: a git URL and a locked commit. Path
+/// dependencies (`path:` URLs) are not fetched.
+pub fn is_fetched(pkg: &LockedPackage) -> bool {
+    pkg.commit.is_some()
+        && pkg
+            .repo
+            .as_deref()
+            .is_some_and(|url| !url.starts_with("path:"))
+}
+
 /// The dependency's checkout, if it is on disk at the locked commit (or
 /// vendored). Unlike [`ensure_dep_on_disk`], never fetches or removes
 /// anything: for dry runs.
@@ -126,6 +157,11 @@ pub fn locked_checkout_on_disk(
     }
 }
 
+/// Ensure a git dependency is present on disk, cloning it if necessary.
+///
+/// First checks `vendor/` and `build/deps/` via `find_dep_on_disk()`. If the dep
+/// is not found, clones it from the lockfile's `repo` URL and checks out the
+/// locked `commit` hash. Returns the path if the dep has a `cmod.toml`, or `None`.
 pub fn ensure_dep_on_disk(
     pkg: &LockedPackage,
     vendor_dir: &Path,
@@ -317,32 +353,7 @@ pub fn collect_path_dep_artifacts(config: &Config, bmi_ext: &str) -> DepArtifact
         ));
 
         // Prefer .a archives over individual .o files
-        let mut has_archive = false;
-        if dep_build_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&dep_build_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("a") {
-                        result.objs.push(path);
-                        has_archive = true;
-                    }
-                }
-            }
-        }
-
-        if !has_archive {
-            let obj_dir = dep_build_dir.join("obj");
-            if obj_dir.exists() {
-                if let Ok(entries) = std::fs::read_dir(&obj_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                            result.objs.push(path);
-                        }
-                    }
-                }
-            }
-        }
+        result.objs.extend(linkable_artifacts(&dep_build_dir));
     }
 
     result
@@ -398,32 +409,7 @@ pub fn collect_dep_artifacts(config: &Config, lockfile: &Lockfile, bmi_ext: &str
         ));
 
         // Collect linkable artifacts: prefer .a archives over individual .o files
-        let mut has_archive = false;
-        if dep_build_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&dep_build_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("a") {
-                        result.objs.push(path);
-                        has_archive = true;
-                    }
-                }
-            }
-        }
-
-        if !has_archive {
-            let obj_dir = dep_build_dir.join("obj");
-            if obj_dir.exists() {
-                if let Ok(entries) = std::fs::read_dir(&obj_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("o") {
-                            result.objs.push(path);
-                        }
-                    }
-                }
-            }
-        }
+        result.objs.extend(linkable_artifacts(&dep_build_dir));
     }
 
     result
@@ -529,5 +515,40 @@ mod tests {
         let (_tmp, config) = root_with_built_path_dep("pcm");
         let artifacts = collect_path_dep_artifacts(&config, "gcm");
         assert!(artifacts.pcms.is_empty(), "{:?}", artifacts.pcms);
+    }
+
+    #[test]
+    fn is_fetched_excludes_path_dependencies() {
+        let mut pkg = git_package("0123abcd");
+        pkg.repo = Some("https://github.com/acme/dep".into());
+        assert!(is_fetched(&pkg));
+        pkg.repo = Some("path:libs/dep".into());
+        assert!(!is_fetched(&pkg));
+        pkg.repo = Some("https://github.com/acme/dep".into());
+        pkg.commit = None;
+        assert!(!is_fetched(&pkg));
+    }
+
+    #[test]
+    fn linkable_artifacts_are_sorted_and_prefer_archives() {
+        let tmp = TempDir::new().unwrap();
+        let obj = tmp.path().join("obj");
+        std::fs::create_dir_all(&obj).unwrap();
+        for name in ["c.o", "a.o", "b.o", "a.o.d"] {
+            std::fs::write(obj.join(name), "").unwrap();
+        }
+        assert_eq!(
+            linkable_artifacts(tmp.path()),
+            vec![obj.join("a.o"), obj.join("b.o"), obj.join("c.o")]
+        );
+
+        for name in ["libz.a", "liba.a"] {
+            std::fs::write(tmp.path().join(name), "").unwrap();
+        }
+        assert_eq!(
+            linkable_artifacts(tmp.path()),
+            vec![tmp.path().join("liba.a"), tmp.path().join("libz.a")]
+        );
+        assert!(linkable_artifacts(&tmp.path().join("missing")).is_empty());
     }
 }
