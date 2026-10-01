@@ -101,7 +101,7 @@ cmod test [TESTNAME] [OPTIONS]
 | `[TESTNAME]` | | Positional filter: run only tests whose name contains this string |
 | `--release` | | Build tests in release mode |
 | `--filter <GLOB>` | | Filter test files by glob pattern |
-| `--jobs <N>` | `-j` | Number of test binaries to run in parallel (0 = auto) |
+| `--jobs <N>` | `-j` | Number of test binaries to compile and run in parallel (0 = auto) |
 | `--no-fail-fast` | | Continue running after a failure |
 | `--timeout <SECS>` | | Per-test timeout in seconds (overrides `[test].timeout`) |
 | `--package <NAME>` | `-p` | Run tests for a specific workspace member |

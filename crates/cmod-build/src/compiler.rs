@@ -514,7 +514,8 @@ impl CompilerBackend for ClangBackend {
 
     fn test_binary_command(&self, test: &TestBinary<'_>) -> Result<Command, CmodError> {
         // Only the standard and the target, not common_flags(): this is the
-        // command line `cmod test` built by hand before #112, kept as is.
+        // command line `cmod test` built by hand before #112, plus the
+        // depfile that lets an unchanged test skip its compile.
         let mut cmd = Command::new(&self.clang_path);
         cmd.arg(format!("-std=c++{}", self.cxx_standard));
         if let Some(ref target) = self.target {
@@ -526,6 +527,7 @@ impl CompilerBackend for ClangBackend {
                 .map(|(name, path)| format!("-fmodule-file={}={}", name, path.display())),
         );
         cmd.args(test.flags);
+        cmd.args(make_depfile_args(test.output));
         cmd.arg("-o").arg(test.output).arg(test.source);
         cmd.args(test.objects);
         Ok(cmd)
@@ -919,6 +921,7 @@ impl CompilerBackend for GccBackend {
         cmd.args(self.config_flags())
             .arg(format!("-fmodule-mapper={}", mapper.display()))
             .args(test.flags)
+            .args(make_depfile_args(test.output))
             .arg("-o")
             .arg(test.output)
             .arg(test.source)
