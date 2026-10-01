@@ -2904,6 +2904,16 @@ fn test_e2e_workspace_compile_commands() {
     }
     let tmp = TempDir::new().unwrap();
     write_three_member_workspace(tmp.path());
+
+    // Before any build, members already get the upstream members' BMIs,
+    // at the paths the build will write them to.
+    let output = run_cmod_with_llvm(tmp.path(), &["compile-commands"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let db = fs::read_to_string(tmp.path().join("compile_commands.json")).unwrap();
+    for module in ["local.a", "local.b", "local.c"] {
+        assert!(db.contains(&format!("-fmodule-file={module}=")), "{}", db);
+    }
+
     let output = run_cmod_with_llvm(tmp.path(), &["build"]);
     assert!(output.status.success(), "{}", stderr(&output));
 

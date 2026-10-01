@@ -162,14 +162,9 @@ fn workspace_commands(config: &Config) -> Result<Vec<CompileCommand>, CmodError>
         )?;
         commands.extend(plan.compile_commands(backend.as_ref(), &config.root));
 
-        member_pcms.insert(
-            member.name.clone(),
-            super::common::collect_module_bmis(
-                &mb.build_dir.join("pcm"),
-                &mb.sources,
-                backend.bmi_extension(),
-            ),
-        );
+        // Where the member's BMIs go, from its plan: a database written
+        // before the first build must name them too.
+        member_pcms.insert(member.name.clone(), plan.pcm_paths().into_iter().collect());
         member_include_dirs.insert(member.name.clone(), member_include_dirs_of(member));
     }
     Ok(commands)
