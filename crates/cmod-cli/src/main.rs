@@ -746,7 +746,7 @@ fn error_hint(e: &cmod_core::error::CmodError) -> Option<&'static str> {
         }
         CmodError::GitRepoNotFound { .. } => Some("check the Git URL and your network connection"),
         CmodError::CircularDependency { .. } => {
-            Some("review your dependency graph with `cmod deps --tree`")
+            Some("each one imports the next (workspace members: depends on it by path); remove one of those edges")
         }
         _ => None,
     }
