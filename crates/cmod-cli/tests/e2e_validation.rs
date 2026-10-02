@@ -1808,6 +1808,8 @@ fn test_e2e_lockfile_verifies_after_remove() {
 
     let output = run_cmod(tmp.path(), &["remove", "extra"]);
     assert!(output.status.success(), "{}", stderr(&output));
+    let lock = fs::read_to_string(tmp.path().join("cmod.lock")).unwrap();
+    assert!(lock.contains("integrity"), "{}", lock);
     let output = run_cmod_with_llvm(tmp.path(), &["build", "--verify"]);
     assert!(output.status.success(), "{}", stderr(&output));
 }

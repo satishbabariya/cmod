@@ -110,14 +110,14 @@ impl Lockfile {
     }
 
     /// Write the lockfile to disk, with the integrity hash of the packages
-    /// it writes. Every command that changes them saves through here (add,
-    /// remove, update, a build's resolve): one that kept the loaded hash
-    /// left a lockfile `--verify` rejects, and one that dropped it turned
-    /// the check off.
-    pub fn save(&self, path: &Path) -> Result<(), CmodError> {
-        let mut sealed = self.clone();
-        sealed.compute_integrity();
-        let content = sealed.to_toml_string()?;
+    /// it writes, which it also keeps, so a build verifying the lockfile it
+    /// just resolved checks that hash. Every command that changes the
+    /// packages saves through here (add, remove, update, a build's
+    /// resolve): one that kept the loaded hash left a lockfile `--verify`
+    /// rejects, and one that dropped it turned the check off.
+    pub fn save(&mut self, path: &Path) -> Result<(), CmodError> {
+        self.compute_integrity();
+        let content = self.to_toml_string()?;
         std::fs::write(path, content)?;
         Ok(())
     }
@@ -381,6 +381,9 @@ mod tests {
         let saved = Lockfile::load(&path).unwrap();
         assert!(saved.integrity.is_some());
         assert!(saved.verify_integrity().is_ok());
+        // The lockfile saved carries the hash it wrote, for a caller that
+        // goes on to verify it (a build's resolve with --verify).
+        assert_eq!(fresh.integrity, saved.integrity);
     }
 
     #[test]
