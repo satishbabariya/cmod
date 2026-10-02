@@ -97,7 +97,7 @@ pub fn run(
 
     // Resolve activated features for compiler defines
     let mut resolver = Resolver::new(config.deps_dir());
-    let lockfile = resolver.add_dependency(
+    let mut lockfile = resolver.add_dependency(
         &mut config.manifest,
         dep_key.clone(),
         dependency,

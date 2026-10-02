@@ -1565,7 +1565,7 @@ fn ensure_resolved(config: &Config, shell: &Shell) -> Result<Lockfile, CmodError
             config.deps_dir()
         };
         let mut resolver = Resolver::new(deps_dir);
-        let lockfile = resolver.resolve_with_target(
+        let mut lockfile = resolver.resolve_with_target(
             &config.manifest,
             None,
             false,

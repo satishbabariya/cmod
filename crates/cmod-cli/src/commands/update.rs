@@ -32,7 +32,8 @@ pub fn run(name: Option<String>, patch_only: bool, shell: &Shell) -> Result<(), 
 
         existing_lock.remove_package(dep_name);
 
-        let lockfile = resolver.resolve(&config.manifest, Some(&existing_lock), false, false)?;
+        let mut lockfile =
+            resolver.resolve(&config.manifest, Some(&existing_lock), false, false)?;
 
         // If --patch, verify the update is only a patch bump
         if patch_only {
@@ -60,7 +61,7 @@ pub fn run(name: Option<String>, patch_only: bool, shell: &Shell) -> Result<(), 
             None
         };
 
-        let lockfile = resolver.resolve(&config.manifest, None, false, false)?;
+        let mut lockfile = resolver.resolve(&config.manifest, None, false, false)?;
 
         // If --patch, validate all updates are patch-only
         if patch_only {

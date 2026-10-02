@@ -109,8 +109,14 @@ impl Lockfile {
         })
     }
 
-    /// Write the lockfile to disk.
-    pub fn save(&self, path: &Path) -> Result<(), CmodError> {
+    /// Write the lockfile to disk, with the integrity hash of the packages
+    /// it writes, which it also keeps, so a build verifying the lockfile it
+    /// just resolved checks that hash. Every command that changes the
+    /// packages saves through here (add, remove, update, a build's
+    /// resolve): one that kept the loaded hash left a lockfile `--verify`
+    /// rejects, and one that dropped it turned the check off.
+    pub fn save(&mut self, path: &Path) -> Result<(), CmodError> {
+        self.compute_integrity();
         let content = self.to_toml_string()?;
         std::fs::write(path, content)?;
         Ok(())
@@ -336,6 +342,48 @@ mod tests {
         assert!(lock.integrity.is_some());
         assert!(lock.integrity.as_ref().unwrap().starts_with("sha256:"));
         assert!(lock.verify_integrity().is_ok());
+    }
+
+    #[test]
+    fn test_save_writes_the_integrity_of_what_it_saves() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("cmod.lock");
+        let mut lock = Lockfile::new();
+        for name in ["a", "b"] {
+            lock.upsert_package(LockedPackage {
+                name: name.to_string(),
+                version: "1.0.0".to_string(),
+                source: Some("git".to_string()),
+                repo: None,
+                commit: Some("abc".to_string()),
+                hash: None,
+                toolchain: None,
+                targets: BTreeMap::new(),
+                deps: Vec::new(),
+                features: Vec::new(),
+            });
+        }
+        lock.compute_integrity();
+        lock.save(&path).unwrap();
+
+        // A command that loads it, changes a package and saves it...
+        let mut loaded = Lockfile::load(&path).unwrap();
+        loaded.remove_package("a");
+        loaded.save(&path).unwrap();
+        let saved = Lockfile::load(&path).unwrap();
+        assert!(saved.integrity.is_some());
+        assert!(saved.verify_integrity().is_ok());
+
+        // ...and one that never computed a hash.
+        let mut fresh = Lockfile::new();
+        fresh.upsert_package(saved.packages[0].clone());
+        fresh.save(&path).unwrap();
+        let saved = Lockfile::load(&path).unwrap();
+        assert!(saved.integrity.is_some());
+        assert!(saved.verify_integrity().is_ok());
+        // The lockfile saved carries the hash it wrote, for a caller that
+        // goes on to verify it (a build's resolve with --verify).
+        assert_eq!(fresh.integrity, saved.integrity);
     }
 
     #[test]
