@@ -1237,6 +1237,92 @@ fn test_e2e_emit_cmake_builds_with_cmake() {
     assert_eq!(stdout(&run).trim(), "142");
 }
 
+/// A CMake C++20-modules project whose sources are outside `src/`, with an
+/// example among the library's sources and a test target, migrates to a
+/// package that builds the project's executable as is.
+#[test]
+fn test_e2e_migrate_cmake_modules_project_builds() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    for dir in ["lib/core", "app", "tests", "inc"] {
+        fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    fs::write(
+        root.join("CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.28)\n\
+         project(geo-kit VERSION 0.4.0 LANGUAGES CXX)\n\
+         set(CMAKE_CXX_STANDARD 20)\n\
+         add_compile_definitions(GEO_LOG=0)\n\
+         add_library(geo_core)\n\
+         add_library(geo::core ALIAS geo_core)\n\
+         target_sources(geo_core\n\
+           PUBLIC FILE_SET CXX_MODULES BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/lib\n\
+             FILES ${CMAKE_CURRENT_SOURCE_DIR}/lib/core/geo.cppm lib/core/vec.cppm\n\
+           PRIVATE lib/core/geo_impl.cpp)\n\
+         target_include_directories(geo_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>)\n\
+         target_compile_definitions(geo_core PUBLIC GEO_SCALE=3)\n\
+         add_executable(geo-kit app/main.cpp)\n\
+         target_link_libraries(geo-kit PRIVATE geo::core)\n\
+         add_executable(geo_example lib/core/example.cpp)\n\
+         target_link_libraries(geo_example PRIVATE geo::core)\n\
+         add_executable(geo_tests tests/test.cpp)\n\
+         target_compile_options(geo_tests PRIVATE -fsanitize=address)\n\
+         target_link_libraries(geo_tests PRIVATE geo::core GTest::gtest_main)\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("lib/core/geo.cppm"),
+        "export module geo;\nexport import geo.vec;\nexport int area(int w, int h);\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("lib/core/vec.cppm"),
+        "export module geo.vec;\nexport struct Vec { int x, y; };\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("lib/core/geo_impl.cpp"),
+        "module;\n#include \"geo_cfg.h\"\nmodule geo;\n\
+         int area(int w, int h) { return w * h * GEO_SCALE + GEO_LOG + GEO_BIAS; }\n",
+    )
+    .unwrap();
+    fs::write(root.join("inc/geo_cfg.h"), "#define GEO_BIAS 1\n").unwrap();
+    fs::write(
+        root.join("lib/core/example.cpp"),
+        "import geo;\nint main() { return area(1, 1); }\n",
+    )
+    .unwrap();
+    fs::write(root.join("tests/test.cpp"), "int main() {}\n").unwrap();
+    fs::write(
+        root.join("app/main.cpp"),
+        "#include <cstdio>\nimport geo;\n\
+         int main() { Vec v{2, 3}; std::printf(\"%d\\n\", area(v.x, v.y)); }\n",
+    )
+    .unwrap();
+
+    let output = run_cmod(root, &["migrate", "cmake"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let manifest = fs::read_to_string(root.join("cmod.toml")).unwrap();
+    assert!(
+        manifest.contains("name = \"geo\"\nroot = \"lib/core/geo.cppm\""),
+        "{}",
+        manifest
+    );
+    assert!(!manifest.contains("-fsanitize"), "{}", manifest);
+    assert!(!manifest.contains("geo_core"), "{}", manifest);
+
+    let output = run_cmod_with_llvm(root, &["build"]);
+    assert!(output.status.success(), "{}\n{}", stderr(&output), manifest);
+    let run = Command::new(root.join("build/debug/geo-kit"))
+        .output()
+        .expect("failed to run the migrated binary");
+    assert_eq!(stdout(&run).trim(), "19");
+}
+
 // ─── Group 10: Compile Commands ─────────────────────────────────────────────
 
 #[test]

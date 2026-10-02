@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
+use cmod_build::runner::{classify_source, discover_sources_multi, extract_module_name};
 use cmod_core::error::CmodError;
 use cmod_core::manifest::{default_manifest, Build, Compat, Manifest, Module, Package, Toolchain};
 use cmod_core::shell::Shell;
-use cmod_core::types::{BuildType, Compiler};
+use cmod_core::types::{BuildType, Compiler, ModuleUnitKind};
 
 /// Information extracted from a CMakeLists.txt file.
 #[derive(Debug, Default)]
@@ -17,16 +18,71 @@ struct CmakeInfo {
     cxx_standard: Option<String>,
     /// All C++ standards seen (for picking the highest).
     all_cxx_standards: Vec<String>,
+    /// The build type of the product target (see [`product_index`]).
     build_type: Option<BuildType>,
-    /// Whether an add_library was seen (takes priority over add_executable).
+    /// Whether a concrete add_library was seen.
     has_library: bool,
+    /// The sources of the product and of the targets it links.
     sources: Vec<String>,
+    /// The sources of every other target (tests, examples, tools).
+    other_sources: Vec<String>,
     include_dirs: Vec<String>,
     extra_flags: Vec<String>,
+    /// What the product links that this file does not define.
     linked_libraries: Vec<String>,
     packages: Vec<String>,
     has_tests: bool,
     subdirectories: Vec<String>,
+    /// Targets in the order they are defined (or first referenced).
+    targets: Vec<CmakeTarget>,
+    /// `add_library(<alias> ALIAS <target>)`.
+    aliases: HashMap<String, String>,
+    /// Directory-scoped settings: include_directories(), add_compile_options(),
+    /// add_compile_definitions() and add_definitions().
+    global_include_dirs: Vec<String>,
+    global_flags: Vec<String>,
+    /// Flag commands under a condition, with the target they set (`None`
+    /// for directory-wide ones).
+    conditional: Vec<(Option<String>, String)>,
+    /// Those of them that would apply to the product, for the user to review.
+    conditional_settings: Vec<String>,
+}
+
+/// One CMake target and what its target_*() commands give it.
+#[derive(Debug, Default)]
+struct CmakeTarget {
+    name: String,
+    kind: TargetKind,
+    sources: Vec<String>,
+    include_dirs: Vec<String>,
+    flags: Vec<String>,
+    links: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum TargetKind {
+    /// Only named by target_*() commands: defined elsewhere (a subdirectory).
+    #[default]
+    Unknown,
+    Executable,
+    Library(BuildType),
+    /// add_library(... INTERFACE): no sources of its own, but usage
+    /// requirements its dependents inherit.
+    Interface,
+    /// add_library(... IMPORTED): something outside this project.
+    Imported,
+}
+
+/// What the migration found on disk: where the sources are and which module
+/// the package provides.
+#[derive(Debug, Default)]
+struct Layout {
+    module: Option<Module>,
+    /// `[build] sources`; empty means the default `src/`.
+    sources: Vec<String>,
+    /// `[build] exclude`: sources of other targets inside those directories.
+    exclude: Vec<String>,
+    warnings: Vec<String>,
 }
 
 /// Run the CMake migration: parse CMakeLists.txt and generate cmod.toml.
@@ -88,8 +144,22 @@ pub fn run(path: Option<PathBuf>, shell: &Shell) -> Result<(), CmodError> {
         );
     }
 
+    let layout = detect_layout(&project_dir, &info);
+    if let Some(ref module) = layout.module {
+        shell.status(
+            "Detected",
+            format!("module {} ({})", module.name, module.root.display()),
+        );
+    }
+    if !layout.sources.is_empty() {
+        shell.status(
+            "Detected",
+            format!("source directories: {}", layout.sources.join(", ")),
+        );
+    }
+
     // Build manifest from extracted info.
-    let manifest = build_manifest(&info, &name);
+    let manifest = build_manifest(&info, &name, &layout);
 
     // Write cmod.toml.
     let toml_str = manifest.to_toml_string()?;
@@ -100,9 +170,9 @@ pub fn run(path: Option<PathBuf>, shell: &Shell) -> Result<(), CmodError> {
 
     shell.status("Generated", "cmod.toml");
 
-    // Create src/ directory if missing.
+    // Create src/ directory if missing, when that is where sources go.
     let src_dir = project_dir.join("src");
-    if !src_dir.exists() {
+    if layout.sources.is_empty() && !src_dir.exists() {
         std::fs::create_dir_all(&src_dir)?;
         shell.status("Created", "src/ directory");
     }
@@ -117,6 +187,10 @@ pub fn run(path: Option<PathBuf>, shell: &Shell) -> Result<(), CmodError> {
     }
 
     // Print warnings and notes.
+    for warning in &layout.warnings {
+        shell.warn(warning);
+    }
+
     if !info.packages.is_empty() {
         shell.warn(format!(
             "{} find_package() call(s) need manual dependency mapping (see TODOs in cmod.toml)",
@@ -134,14 +208,16 @@ pub fn run(path: Option<PathBuf>, shell: &Shell) -> Result<(), CmodError> {
         }
     }
 
-    shell.note("Add C++20 module declarations to your source files");
+    if layout.module.is_none() {
+        shell.note("No module interface found: add C++20 module declarations to your sources");
+    }
     shell.note("Run `cmod build` to verify the migration");
 
     Ok(())
 }
 
 /// Build a `Manifest` from parsed CMake information.
-fn build_manifest(info: &CmakeInfo, name: &str) -> Manifest {
+fn build_manifest(info: &CmakeInfo, name: &str, layout: &Layout) -> Manifest {
     let mut manifest = default_manifest(name);
 
     // Package.
@@ -170,16 +246,8 @@ fn build_manifest(info: &CmakeInfo, name: &str) -> Manifest {
         homepage: None,
     };
 
-    // Module.
-    let module_root = if info.build_type == Some(BuildType::Binary) {
-        "src/main.cppm"
-    } else {
-        "src/lib.cppm"
-    };
-    manifest.module = Some(Module {
-        name: format!("local.{}", name.replace('-', "_")),
-        root: PathBuf::from(module_root),
-    });
+    // Module: the one the sources declare, if any.
+    manifest.module = layout.module.clone();
 
     // Toolchain — only set cxx_standard when the value is a concrete number.
     let resolved_std = info
@@ -187,7 +255,11 @@ fn build_manifest(info: &CmakeInfo, name: &str) -> Manifest {
         .as_deref()
         .filter(|s| !s.contains("${") && s.chars().all(|c| c.is_ascii_digit()))
         .map(|s| s.to_string());
-    let cxx_std = resolved_std.unwrap_or_else(|| "20".to_string());
+    let mut cxx_std = resolved_std.unwrap_or_else(|| "20".to_string());
+    // Modules need C++20, whatever the oldest standard the project supports.
+    if layout.module.is_some() && cxx_std.parse::<u32>().is_ok_and(|n| n < 20) {
+        cxx_std = "20".to_string();
+    }
     manifest.toolchain = Some(Toolchain {
         compiler: Some(Compiler::Clang),
         version: None,
@@ -215,8 +287,8 @@ fn build_manifest(info: &CmakeInfo, name: &str) -> Manifest {
         incremental: Some(true),
         include_dirs: info.include_dirs.clone(),
         extra_flags: info.extra_flags.clone(),
-        sources: Vec::new(),
-        exclude: Vec::new(),
+        sources: layout.sources.clone(),
+        exclude: layout.exclude.clone(),
         distributed: None,
     });
 
@@ -238,7 +310,7 @@ fn append_migration_comments(toml: &str, info: &CmakeInfo) -> String {
         for pkg in &info.packages {
             result.push_str(&format!(
                 "# find_package({}) -> add Git URL to [dependencies]\n",
-                pkg
+                comment_text(pkg)
             ));
             if let Some(hint) = well_known_package_hint(pkg) {
                 result.push_str(&format!("#   e.g. {} = \"^1.0\"\n", hint));
@@ -247,12 +319,30 @@ fn append_migration_comments(toml: &str, info: &CmakeInfo) -> String {
 
         if !info.linked_libraries.is_empty() {
             result.push_str("# Linked libraries: ");
-            result.push_str(&info.linked_libraries.join(", "));
+            result.push_str(&comment_text(&info.linked_libraries.join(", ")));
             result.push('\n');
         }
     }
 
+    if !info.conditional_settings.is_empty() {
+        result.push_str("\n# ==========================================================\n");
+        result.push_str("# TODO: Flags set under a condition in CMakeLists.txt, not migrated;\n");
+        result.push_str("# add those that apply to [build] extra_flags (definitions as -D)\n");
+        result.push_str("# ==========================================================\n");
+        for command in &info.conditional_settings {
+            result.push_str(&format!("# {}\n", comment_text(command)));
+        }
+    }
+
     result
+}
+
+/// `text` on one comment line: line breaks and other control characters
+/// would end the comment and let the rest be read as TOML.
+fn comment_text(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 /// Provide Git URL hints for well-known CMake packages.
@@ -288,19 +378,90 @@ fn parse_cmake(content: &str) -> CmakeInfo {
     let joined = join_continuation_lines(content);
     let commands = extract_commands(&joined);
 
+    // Commands inside function() and macro() bodies only run when called;
+    // those inside if(), foreach() and while() only under some condition.
+    let mut body_depth = 0usize;
+    let mut cond_depth = 0usize;
     for (cmd_name, args_str) in &commands {
-        match cmd_name.to_lowercase().as_str() {
+        let cmd = cmd_name.to_lowercase();
+        // `add_executable(${PROJECT_NAME} ...)` names the target after the project.
+        let substituted;
+        let args_str: &str = match info.project_name.as_deref() {
+            Some(project) if !project.contains('$') && args_str.contains("PROJECT_NAME}") => {
+                substituted = args_str
+                    .replace("${PROJECT_NAME}", project)
+                    .replace("${CMAKE_PROJECT_NAME}", project);
+                &substituted
+            }
+            _ => args_str,
+        };
+        match cmd.as_str() {
+            "function" | "macro" => {
+                body_depth += 1;
+                continue;
+            }
+            "endfunction" | "endmacro" => {
+                body_depth = body_depth.saturating_sub(1);
+                continue;
+            }
+            _ if body_depth > 0 => continue,
+            "if" | "foreach" | "while" => {
+                cond_depth += 1;
+                continue;
+            }
+            "endif" | "endforeach" | "endwhile" => {
+                cond_depth = cond_depth.saturating_sub(1);
+                continue;
+            }
+            // Flags that depend on a condition (a platform, an option) are
+            // listed for the user to decide on rather than applied.
+            "target_compile_definitions"
+            | "target_compile_options"
+            | "add_compile_definitions"
+            | "add_compile_options"
+            | "add_definitions"
+                if cond_depth > 0 =>
+            {
+                let tokens = tokenize_args(args_str);
+                let target = cmd
+                    .starts_with("target_")
+                    .then(|| tokens.first().cloned())
+                    .flatten();
+                info.conditional
+                    .push((target, format!("{}({})", cmd, tokens.join(" "))));
+                continue;
+            }
+            _ => {}
+        }
+        match cmd.as_str() {
             "project" => parse_project(args_str, &mut info),
             "set" => parse_set(args_str, &mut info),
-            "add_executable" => parse_add_target(args_str, &mut info, BuildType::Binary),
+            "add_executable" => parse_add_executable(args_str, &mut info),
             "add_library" => parse_add_library(args_str, &mut info),
             "find_package" => parse_find_package(args_str, &mut info),
+            "target_sources" => parse_target_sources(args_str, &mut info),
             "target_link_libraries" => parse_target_link_libraries(args_str, &mut info),
             "target_compile_options" => parse_target_compile_options(args_str, &mut info),
+            "target_compile_definitions" => {
+                parse_target_compile_definitions(args_str, &mut info);
+            }
             "target_include_directories" => {
                 parse_target_include_directories(args_str, &mut info);
             }
             "target_compile_features" => parse_target_compile_features(args_str, &mut info),
+            "include_directories" => {
+                let dirs = include_dir_args(&tokenize_args(args_str));
+                info.global_include_dirs.extend(dirs);
+            }
+            "add_compile_options" | "add_definitions" => {
+                let tokens = tokenize_args(args_str);
+                info.global_flags
+                    .extend(tokens.into_iter().filter(|t| !t.starts_with('$')));
+            }
+            "add_compile_definitions" => {
+                let defines = define_flags(&tokenize_args(args_str));
+                info.global_flags.extend(defines);
+            }
             "enable_testing" => {
                 info.has_tests = true;
             }
@@ -346,11 +507,7 @@ fn parse_cmake(content: &str) -> CmakeInfo {
         }
     }
 
-    // Post-process: if a library was seen, prefer library build type.
-    // Many projects have both add_library (the actual product) and add_executable (examples/tests).
-    if info.has_library && info.build_type == Some(BuildType::Binary) {
-        info.build_type = Some(BuildType::StaticLib);
-    }
+    collect_product(&mut info);
 
     // Post-process: filter out MSVC-style flags (/flag) since cmod targets Clang,
     // and flags containing unresolved CMake variables (${...}).
@@ -569,44 +726,78 @@ fn parse_set(args: &str, info: &mut CmakeInfo) {
     }
 }
 
-fn parse_add_target(args: &str, info: &mut CmakeInfo, bt: BuildType) {
+/// The target named `name`, created as [`TargetKind::Unknown`] when this
+/// file has not defined it (yet).
+fn target_mut<'a>(info: &'a mut CmakeInfo, name: &str) -> &'a mut CmakeTarget {
+    let name = info
+        .aliases
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| name.to_string());
+    let index = match info.targets.iter().position(|t| t.name == name) {
+        Some(index) => index,
+        None => {
+            info.targets.push(CmakeTarget {
+                name,
+                ..Default::default()
+            });
+            info.targets.len() - 1
+        }
+    };
+    &mut info.targets[index]
+}
+
+/// The sources among `tokens`: paths, with variables and generator
+/// expressions left out.
+fn source_args(tokens: &[String]) -> Vec<String> {
+    tokens
+        .iter()
+        .filter_map(|t| project_path(t))
+        .filter(|t| t != ".")
+        .collect()
+}
+
+fn parse_add_executable(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
-    if tokens.is_empty() {
+    let Some(name) = tokens.first() else {
+        return;
+    };
+    if tokens.get(1).map(String::as_str) == Some("ALIAS") {
+        if let Some(target) = tokens.get(2) {
+            info.aliases.insert(name.clone(), target.clone());
+        }
+        return;
+    }
+    if tokens.iter().any(|t| t == "IMPORTED") {
+        target_mut(info, name).kind = TargetKind::Imported;
         return;
     }
 
-    info.build_type = Some(bt);
-
     // Remaining tokens (after target name) are source files,
     // skipping CMake keywords.
-    let cmake_keywords = [
-        "WIN32",
-        "MACOSX_BUNDLE",
-        "EXCLUDE_FROM_ALL",
-        "IMPORTED",
-        "ALIAS",
-    ];
-    for token in &tokens[1..] {
-        if cmake_keywords.contains(&token.as_str()) {
-            continue;
-        }
-        if token.starts_with('$') {
-            continue; // skip variable references
-        }
-        info.sources.push(token.clone());
-    }
+    let cmake_keywords = ["WIN32", "MACOSX_BUNDLE", "EXCLUDE_FROM_ALL"];
+    let sources: Vec<String> = tokens[1..]
+        .iter()
+        .filter(|t| !cmake_keywords.contains(&t.as_str()))
+        .cloned()
+        .collect();
+    let sources = source_args(&sources);
+
+    let target = target_mut(info, name);
+    target.kind = TargetKind::Executable;
+    target.sources.extend(sources);
 }
 
 fn parse_add_library(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
-    if tokens.is_empty() {
+    let Some(name) = tokens.first() else {
         return;
-    }
+    };
 
     // Determine library type.
     let mut bt = BuildType::StaticLib;
     let mut source_start = 1;
-    let mut is_concrete = true;
+    let mut kind = None;
 
     let lib_keywords = [
         "STATIC",
@@ -617,6 +808,8 @@ fn parse_add_library(args: &str, info: &mut CmakeInfo) {
         "IMPORTED",
         "ALIAS",
         "EXCLUDE_FROM_ALL",
+        "GLOBAL",
+        "UNKNOWN",
     ];
 
     for (i, token) in tokens.iter().enumerate().skip(1) {
@@ -632,9 +825,19 @@ fn parse_add_library(args: &str, info: &mut CmakeInfo) {
             "MODULE" | "OBJECT" => {
                 source_start = i + 1;
             }
-            "INTERFACE" | "IMPORTED" | "ALIAS" => {
-                // Non-concrete targets — skip source collection entirely.
-                is_concrete = false;
+            "ALIAS" => {
+                // Not a target of its own: another name for one.
+                if let Some(target) = tokens.get(i + 1) {
+                    info.aliases.insert(name.clone(), target.clone());
+                }
+                return;
+            }
+            "IMPORTED" => {
+                kind = Some(TargetKind::Imported);
+                break;
+            }
+            "INTERFACE" => {
+                kind = Some(TargetKind::Interface);
                 break;
             }
             _ => {
@@ -647,19 +850,21 @@ fn parse_add_library(args: &str, info: &mut CmakeInfo) {
         }
     }
 
-    if !is_concrete {
-        return;
-    }
-
-    info.has_library = true;
-    info.build_type = Some(bt);
-
-    for token in &tokens[source_start..] {
-        if lib_keywords.contains(&token.as_str()) || token.starts_with('$') {
-            continue;
+    let sources = match kind {
+        Some(_) => Vec::new(),
+        None => {
+            let sources: Vec<String> = tokens[source_start.min(tokens.len())..]
+                .iter()
+                .filter(|t| !lib_keywords.contains(&t.as_str()))
+                .cloned()
+                .collect();
+            source_args(&sources)
         }
-        info.sources.push(token.clone());
-    }
+    };
+
+    let target = target_mut(info, name);
+    target.kind = kind.unwrap_or(TargetKind::Library(bt));
+    target.sources.extend(sources);
 }
 
 fn parse_find_package(args: &str, info: &mut CmakeInfo) {
@@ -669,33 +874,102 @@ fn parse_find_package(args: &str, info: &mut CmakeInfo) {
     }
 }
 
+/// `target_sources(<target> <PUBLIC|PRIVATE|INTERFACE> [items...]
+/// [FILE_SET <set> [TYPE <type>] [BASE_DIRS <dirs>...] [FILES <files>...]]...)`.
+fn parse_target_sources(args: &str, info: &mut CmakeInfo) {
+    #[derive(PartialEq)]
+    enum State {
+        Files,
+        SetName,
+        Skip,
+    }
+
+    let tokens = tokenize_args(args);
+    let Some(name) = tokens.first() else {
+        return;
+    };
+    let mut state = State::Files;
+    let mut files = Vec::new();
+    for token in &tokens[1..] {
+        match token.as_str() {
+            "PUBLIC" | "PRIVATE" | "INTERFACE" | "FILES" => state = State::Files,
+            "FILE_SET" => state = State::SetName,
+            "TYPE" | "BASE_DIRS" => state = State::Skip,
+            _ => match state {
+                State::Files => files.push(token.clone()),
+                // The set's name; what follows is TYPE, BASE_DIRS or FILES.
+                State::SetName => state = State::Skip,
+                State::Skip => {}
+            },
+        }
+    }
+    let files = source_args(&files);
+    target_mut(info, name).sources.extend(files);
+}
+
 fn parse_target_link_libraries(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
-    let visibility_keywords = ["PUBLIC", "PRIVATE", "INTERFACE"];
+    let Some(name) = tokens.first() else {
+        return;
+    };
+    let keywords = [
+        "PUBLIC",
+        "PRIVATE",
+        "INTERFACE",
+        "LINK_PUBLIC",
+        "LINK_PRIVATE",
+        "LINK_INTERFACE_LIBRARIES",
+        "debug",
+        "optimized",
+        "general",
+    ];
 
     // Skip target name (first token), then collect non-keyword tokens.
-    for token in tokens.iter().skip(1) {
-        if visibility_keywords.contains(&token.as_str()) || token.starts_with('$') {
-            continue;
-        }
-        info.linked_libraries.push(token.clone());
-    }
+    let links: Vec<String> = tokens[1..]
+        .iter()
+        .filter(|t| !keywords.contains(&t.as_str()) && !t.starts_with('$'))
+        .cloned()
+        .collect();
+    target_mut(info, name).links.extend(links);
 }
 
 fn parse_target_compile_options(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
-    let visibility_keywords = ["PUBLIC", "PRIVATE", "INTERFACE"];
+    let Some(name) = tokens.first() else {
+        return;
+    };
+    let keywords = ["PUBLIC", "PRIVATE", "INTERFACE", "BEFORE"];
 
-    for token in tokens.iter().skip(1) {
-        if visibility_keywords.contains(&token.as_str()) || token.starts_with('$') {
-            continue;
-        }
-        info.extra_flags.push(token.clone());
-    }
+    let flags: Vec<String> = tokens[1..]
+        .iter()
+        .filter(|t| !keywords.contains(&t.as_str()) && !t.starts_with('$'))
+        .cloned()
+        .collect();
+    target_mut(info, name).flags.extend(flags);
 }
 
-fn parse_target_include_directories(args: &str, info: &mut CmakeInfo) {
+/// `-D` flags for the definitions among `tokens` (`NAME`, `NAME=value`, or
+/// `-DNAME`, which CMake accepts too).
+fn define_flags(tokens: &[String]) -> Vec<String> {
+    let keywords = ["PUBLIC", "PRIVATE", "INTERFACE"];
+    tokens
+        .iter()
+        .filter(|t| !keywords.contains(&t.as_str()) && !t.starts_with('$') && !t.is_empty())
+        .map(|t| format!("-D{}", t.strip_prefix("-D").unwrap_or(t)))
+        .collect()
+}
+
+fn parse_target_compile_definitions(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
+    let Some(name) = tokens.first() else {
+        return;
+    };
+    let defines = define_flags(&tokens[1..]);
+    target_mut(info, name).flags.extend(defines);
+}
+
+/// The include directories among `tokens`.
+fn include_dir_args(tokens: &[String]) -> Vec<String> {
     let keywords = [
         "PUBLIC",
         "PRIVATE",
@@ -704,13 +978,137 @@ fn parse_target_include_directories(args: &str, info: &mut CmakeInfo) {
         "BEFORE",
         "AFTER",
     ];
+    tokens
+        .iter()
+        .filter(|t| !keywords.contains(&t.as_str()))
+        .filter_map(|t| project_path(t))
+        .collect()
+}
 
-    for token in tokens.iter().skip(1) {
-        if keywords.contains(&token.as_str()) || token.starts_with('$') {
+fn parse_target_include_directories(args: &str, info: &mut CmakeInfo) {
+    let tokens = tokenize_args(args);
+    let Some(name) = tokens.first() else {
+        return;
+    };
+    let dirs = include_dir_args(&tokens[1..]);
+    target_mut(info, name).include_dirs.extend(dirs);
+}
+
+/// Index of the target the package is made from: an executable named after
+/// the project, else a library named after it, else the first library (the
+/// executables beside a library are usually its examples and tests), else
+/// the first executable.
+fn product_index(info: &CmakeInfo) -> Option<usize> {
+    let named = |t: &CmakeTarget| {
+        info.project_name
+            .as_deref()
+            .is_some_and(|p| t.name.eq_ignore_ascii_case(p))
+    };
+    let is_lib = |t: &CmakeTarget| matches!(t.kind, TargetKind::Library(_));
+    let is_exe = |t: &CmakeTarget| t.kind == TargetKind::Executable;
+    let targets = &info.targets;
+    targets
+        .iter()
+        .position(|t| is_exe(t) && named(t))
+        .or_else(|| targets.iter().position(|t| is_lib(t) && named(t)))
+        .or_else(|| targets.iter().position(is_lib))
+        .or_else(|| targets.iter().position(is_exe))
+}
+
+/// Fill in the build type, sources, flags, include directories and links of
+/// the product: its own and those of the targets it links, transitively.
+/// Settings of targets defined elsewhere (a subdirectory) are kept too, as
+/// there is no telling whom they belong to; those of this file's other
+/// targets (tests, examples) are not.
+fn collect_product(info: &mut CmakeInfo) {
+    info.has_library = info
+        .targets
+        .iter()
+        .any(|t| matches!(t.kind, TargetKind::Library(_)));
+
+    let product = product_index(info);
+    info.build_type = product.map(|i| match info.targets[i].kind {
+        TargetKind::Library(bt) => bt,
+        _ => BuildType::Binary,
+    });
+
+    // The product and the internal targets it links, in definition order.
+    let internal = |name: &str| {
+        let name = info.aliases.get(name).map(String::as_str).unwrap_or(name);
+        info.targets.iter().position(|t| {
+            t.name == name && !matches!(t.kind, TargetKind::Unknown | TargetKind::Imported)
+        })
+    };
+    let mut included = vec![false; info.targets.len()];
+    let mut queue: Vec<usize> = product.into_iter().collect();
+    while let Some(i) = queue.pop() {
+        if std::mem::replace(&mut included[i], true) {
             continue;
         }
-        info.include_dirs.push(token.clone());
+        queue.extend(info.targets[i].links.iter().filter_map(|l| internal(l)));
     }
+    for (i, target) in info.targets.iter().enumerate() {
+        if target.kind == TargetKind::Unknown {
+            included[i] = true;
+        }
+    }
+
+    let mut sources = Vec::new();
+    let mut other_sources = Vec::new();
+    let mut include_dirs = std::mem::take(&mut info.global_include_dirs);
+    let mut flags = std::mem::take(&mut info.global_flags);
+    let mut links = Vec::new();
+    for (i, target) in info.targets.iter().enumerate() {
+        if !included[i] {
+            other_sources.extend(target.sources.iter().cloned());
+            continue;
+        }
+        sources.extend(target.sources.iter().cloned());
+        include_dirs.extend(target.include_dirs.iter().cloned());
+        flags.extend(target.flags.iter().cloned());
+        links.extend(
+            target
+                .links
+                .iter()
+                .filter(|l| internal(l).is_none())
+                .cloned(),
+        );
+    }
+
+    dedup_in_order(&mut sources);
+    dedup_in_order(&mut include_dirs);
+    dedup_in_order(&mut flags);
+    dedup_in_order(&mut links);
+    other_sources.retain(|s| !sources.contains(s));
+    dedup_in_order(&mut other_sources);
+
+    let conditional_settings = info
+        .conditional
+        .iter()
+        .filter(|(target, _)| {
+            let Some(name) = target.as_deref() else {
+                return true;
+            };
+            let name = info.aliases.get(name).map(String::as_str).unwrap_or(name);
+            match info.targets.iter().position(|t| t.name == name) {
+                Some(i) => included[i],
+                None => true,
+            }
+        })
+        .map(|(_, command)| command.clone())
+        .collect();
+
+    info.conditional_settings = conditional_settings;
+    info.sources = sources;
+    info.other_sources = other_sources;
+    info.include_dirs = include_dirs;
+    info.extra_flags = flags;
+    info.linked_libraries = links;
+}
+
+fn dedup_in_order(items: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    items.retain(|item| seen.insert(item.clone()));
 }
 
 fn parse_target_compile_features(args: &str, info: &mut CmakeInfo) {
@@ -726,6 +1124,154 @@ fn parse_target_compile_features(args: &str, info: &mut CmakeInfo) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// A path in the project as CMake spells it, relative to the project root:
+/// `src/a.cpp`, `${CMAKE_CURRENT_SOURCE_DIR}/src/a.cpp` and
+/// `$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>` all name one. `None`
+/// for what depends on variables or other generator expressions.
+fn project_path(token: &str) -> Option<String> {
+    let mut path = token;
+    if let Some(inner) = path
+        .strip_prefix("$<BUILD_INTERFACE:")
+        .and_then(|p| p.strip_suffix('>'))
+    {
+        path = inner;
+    }
+    for var in [
+        "${CMAKE_CURRENT_SOURCE_DIR}",
+        "${CMAKE_CURRENT_LIST_DIR}",
+        "${PROJECT_SOURCE_DIR}",
+        "${CMAKE_SOURCE_DIR}",
+    ] {
+        if let Some(rest) = path.strip_prefix(var) {
+            if rest.is_empty() {
+                return Some(".".to_string());
+            }
+            path = rest.strip_prefix('/')?;
+            break;
+        }
+    }
+    if path.is_empty() || path.contains('$') {
+        return None;
+    }
+    while let Some(rest) = path.strip_prefix("./") {
+        path = rest;
+    }
+    let path = path.trim_end_matches('/');
+    Some(if path.is_empty() { "." } else { path }.to_string())
+}
+
+/// Whether `path` is a file cmod compiles.
+fn is_cpp_source(path: &str) -> bool {
+    matches!(
+        Path::new(path).extension().and_then(|e| e.to_str()),
+        Some("cppm" | "ixx" | "mpp" | "cpp" | "cc" | "cxx" | "c")
+    )
+}
+
+fn slash_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// Work out where the product's sources are and which module it provides.
+///
+/// The source directories are the outermost ones holding the product's
+/// sources (left at the default when that is `src/`); sources of the other
+/// targets inside them are excluded. The module is the one a primary
+/// interface among the sources cmod compiles there exports: one named after
+/// the project, else the first the product lists, else the first found.
+fn detect_layout(project_dir: &Path, info: &CmakeInfo) -> Layout {
+    let mut layout = Layout::default();
+    let product: Vec<&str> = info
+        .sources
+        .iter()
+        .map(String::as_str)
+        .filter(|s| is_cpp_source(s))
+        .collect();
+
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for source in &product {
+        let path = Path::new(source);
+        if path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
+            layout.warnings.push(format!(
+                "{} is outside the project directory and was not migrated",
+                source
+            ));
+            continue;
+        }
+        match path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            Some(dir) => dirs.push(dir.to_path_buf()),
+            None => layout.warnings.push(format!(
+                "{} is in the project root; cmod builds the sources in [build] sources directories, so move it to src/",
+                source
+            )),
+        }
+    }
+    dirs.sort();
+    dirs.dedup();
+    let mut roots: Vec<PathBuf> = dirs
+        .iter()
+        .filter(|d| !dirs.iter().any(|o| o != *d && d.starts_with(o)))
+        .cloned()
+        .collect();
+    if roots.is_empty() {
+        roots.push(PathBuf::from("src"));
+    }
+    if roots != [PathBuf::from("src")] {
+        layout.sources = roots.iter().map(|r| slash_path(r)).collect();
+    }
+
+    for other in info.other_sources.iter().filter(|s| is_cpp_source(s)) {
+        let path = Path::new(other.as_str());
+        if let Some(rel) = roots.iter().find_map(|r| path.strip_prefix(r).ok()) {
+            layout.exclude.push(slash_path(rel));
+        }
+    }
+
+    // The product's listed sources first, then the rest of what cmod
+    // compiles: every source in those directories.
+    let mut candidates: Vec<PathBuf> = product.iter().map(PathBuf::from).collect();
+    let dirs: Vec<PathBuf> = roots.iter().map(|r| project_dir.join(r)).collect();
+    for path in discover_sources_multi(&dirs, &layout.exclude).unwrap_or_default() {
+        if let Ok(rel) = path.strip_prefix(project_dir) {
+            let rel = PathBuf::from(slash_path(rel));
+            if !candidates.contains(&rel) {
+                candidates.push(rel);
+            }
+        }
+    }
+    let interfaces: Vec<(String, PathBuf)> = candidates
+        .into_iter()
+        .filter_map(|rel| {
+            let path = project_dir.join(&rel);
+            match classify_source(&path) {
+                Ok(ModuleUnitKind::InterfaceUnit) => {}
+                _ => return None,
+            }
+            let name = extract_module_name(&path).ok().flatten()?;
+            Some((name, rel))
+        })
+        .collect();
+    let wanted = info
+        .project_name
+        .as_deref()
+        .map(|p| p.to_lowercase().replace('-', "_"));
+    let chosen = wanted
+        .as_deref()
+        .and_then(|w| {
+            interfaces.iter().find(|(name, _)| {
+                let name = name.to_lowercase();
+                name == w || name.rsplit('.').next() == Some(w)
+            })
+        })
+        .or_else(|| interfaces.first());
+    layout.module = chosen.map(|(name, root)| Module {
+        name: name.clone(),
+        root: PathBuf::from(slash_path(root)),
+    });
+
+    layout
+}
 
 /// Extract the variable name from a CMake `${VAR}` reference.
 /// Returns `None` if the string does not contain a `${...}` pattern.
@@ -976,7 +1522,7 @@ add_executable(myapp \\\n\
             build_type: Some(BuildType::Binary),
             ..Default::default()
         };
-        let manifest = build_manifest(&info, "myapp");
+        let manifest = build_manifest(&info, "myapp", &Layout::default());
         assert_eq!(manifest.package.name, "myapp");
         assert_eq!(manifest.package.version, "1.0.0");
         assert_eq!(
@@ -1019,7 +1565,11 @@ set(CMAKE_CXX_STANDARD 20)
 add_executable(hello src/main.cpp)
 ";
         let info = parse_cmake(cmake);
-        let manifest = build_manifest(&info, info.project_name.as_deref().unwrap());
+        let manifest = build_manifest(
+            &info,
+            info.project_name.as_deref().unwrap(),
+            &Layout::default(),
+        );
         let toml_str = manifest.to_toml_string().unwrap();
 
         assert!(toml_str.contains("name = \"hello\""));
@@ -1195,7 +1745,11 @@ set(FMT_VERSION 10.2.1)
 project(FMT CXX)
 ";
         let info = parse_cmake(cmake);
-        let manifest = build_manifest(&info, info.project_name.as_deref().unwrap());
+        let manifest = build_manifest(
+            &info,
+            info.project_name.as_deref().unwrap(),
+            &Layout::default(),
+        );
         assert_eq!(manifest.package.version, "10.2.1");
     }
 
@@ -1290,5 +1844,312 @@ add_library(folly SHARED src/lib.cpp)
         // has_library should be true from the concrete add_library.
         assert!(info.has_library);
         assert_eq!(info.build_type, Some(BuildType::SharedLib));
+    }
+
+    #[test]
+    fn test_target_sources_file_set_files_are_sources() {
+        let cmake = "\
+add_library(lib STATIC)
+target_sources(lib
+  PUBLIC FILE_SET mods TYPE CXX_MODULES BASE_DIRS src FILES src/a.cppm src/b.cppm
+  PRIVATE src/impl.cpp
+  PUBLIC FILE_SET HEADERS FILES include/a.h)
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(
+            info.sources,
+            vec!["src/a.cppm", "src/b.cppm", "src/impl.cpp", "include/a.h"]
+        );
+    }
+
+    #[test]
+    fn test_compile_definitions_become_flags() {
+        let cmake = "\
+add_compile_definitions(GLOBAL=1)
+add_library(lib src/a.cpp)
+target_compile_definitions(lib PUBLIC FAST=1 -DTRACE PRIVATE $<$<CONFIG:Debug>:DBG>)
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.extra_flags, vec!["-DGLOBAL=1", "-DFAST=1", "-DTRACE"]);
+    }
+
+    #[test]
+    fn test_executable_named_after_project_is_the_product() {
+        let cmake = "\
+project(app)
+add_library(core STATIC src/core.cppm)
+add_executable(app src/main.cpp)
+target_link_libraries(app PRIVATE core)
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.build_type, Some(BuildType::Binary));
+        assert_eq!(info.sources, vec!["src/core.cppm", "src/main.cpp"]);
+    }
+
+    #[test]
+    fn test_library_named_after_project_beats_other_libraries() {
+        let cmake = "\
+project(geo)
+add_library(helpers STATIC src/helpers.cpp)
+add_library(geo SHARED src/geo.cpp)
+add_executable(demo examples/demo.cpp)
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.build_type, Some(BuildType::SharedLib));
+        assert_eq!(info.sources, vec!["src/geo.cpp"]);
+        assert_eq!(
+            info.other_sources,
+            vec!["src/helpers.cpp", "examples/demo.cpp"]
+        );
+    }
+
+    #[test]
+    fn test_internal_targets_are_not_linked_libraries() {
+        let cmake = "\
+project(app)
+add_library(core STATIC src/core.cpp)
+add_library(app::core ALIAS core)
+add_library(cfg INTERFACE)
+target_compile_definitions(cfg INTERFACE CFG=1)
+target_link_libraries(core PUBLIC cfg fmt::fmt)
+add_executable(app src/main.cpp)
+target_link_libraries(app PRIVATE app::core Threads::Threads)
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.linked_libraries, vec!["fmt::fmt", "Threads::Threads"]);
+        // The interface library's usage requirements reach the product.
+        assert_eq!(info.extra_flags, vec!["-DCFG=1"]);
+    }
+
+    #[test]
+    fn test_settings_of_other_targets_are_left_out() {
+        let cmake = "\
+project(app)
+add_executable(app src/main.cpp)
+target_compile_options(app PRIVATE -Wall)
+add_executable(app_tests tests/main.cpp)
+target_compile_options(app_tests PRIVATE -fsanitize=address)
+target_include_directories(app_tests PRIVATE tests/include)
+target_link_libraries(app_tests PRIVATE GTest::gtest_main)
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.extra_flags, vec!["-Wall"]);
+        assert!(info.include_dirs.is_empty());
+        assert!(info.linked_libraries.is_empty());
+        assert_eq!(info.other_sources, vec!["tests/main.cpp"]);
+    }
+
+    #[test]
+    fn test_project_path_spellings() {
+        assert_eq!(project_path("src/a.cpp").as_deref(), Some("src/a.cpp"));
+        assert_eq!(project_path("./src/a.cpp").as_deref(), Some("src/a.cpp"));
+        assert_eq!(
+            project_path("${CMAKE_CURRENT_SOURCE_DIR}/src/a.cpp").as_deref(),
+            Some("src/a.cpp")
+        );
+        assert_eq!(
+            project_path("$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>").as_deref(),
+            Some("include")
+        );
+        assert_eq!(project_path("include/").as_deref(), Some("include"));
+        assert_eq!(
+            project_path("${CMAKE_CURRENT_SOURCE_DIR}").as_deref(),
+            Some(".")
+        );
+        assert_eq!(project_path("$<INSTALL_INTERFACE:include>"), None);
+        assert_eq!(project_path("${SOURCES}"), None);
+        assert_eq!(project_path("${CMAKE_CURRENT_SOURCE_DIR}x/a.cpp"), None);
+    }
+
+    fn write_files(root: &Path, files: &[(&str, &str)]) {
+        for (path, content) in files {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_layout_finds_the_module_the_sources_export() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_files(
+            tmp.path(),
+            &[
+                (
+                    "src/math.cppm",
+                    "module;\n#include <x>\nexport module mig.math;\n",
+                ),
+                ("src/math-part.cppm", "export module mig.math:part;\n"),
+                ("src/main.cpp", "import mig.math;\nint main() {}\n"),
+            ],
+        );
+        let info = parse_cmake(
+            "project(migdemo)
+add_library(miglib STATIC)
+target_sources(miglib PUBLIC FILE_SET CXX_MODULES FILES src/math-part.cppm src/math.cppm)
+add_executable(migdemo src/main.cpp)
+target_link_libraries(migdemo PRIVATE miglib)
+",
+        );
+        let layout = detect_layout(tmp.path(), &info);
+        let module = layout.module.unwrap();
+        assert_eq!(module.name, "mig.math");
+        assert_eq!(module.root, PathBuf::from("src/math.cppm"));
+        assert!(layout.sources.is_empty(), "src/ is the default");
+        assert!(layout.exclude.is_empty());
+        assert!(layout.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_layout_prefers_the_module_named_after_the_project() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_files(
+            tmp.path(),
+            &[
+                ("src/util.cppm", "export module acme.util;\n"),
+                ("src/geo.cppm", "export module acme.geo;\n"),
+            ],
+        );
+        let info = parse_cmake("project(geo)\nadd_library(geo src/util.cppm src/geo.cppm)\n");
+        let layout = detect_layout(tmp.path(), &info);
+        assert_eq!(layout.module.unwrap().name, "acme.geo");
+    }
+
+    #[test]
+    fn test_layout_source_dirs_and_excludes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let info = parse_cmake(
+            "project(app)
+add_library(core lib/core/a.cpp lib/core/nested/b.cpp lib/io/c.cpp)
+add_executable(app app/main.cpp)
+target_link_libraries(app core)
+add_executable(example lib/core/example.cpp)
+add_executable(tests tests/t.cpp)
+",
+        );
+        let layout = detect_layout(tmp.path(), &info);
+        assert_eq!(layout.sources, vec!["app", "lib/core", "lib/io"]);
+        assert_eq!(layout.exclude, vec!["example.cpp"]);
+        assert!(layout.module.is_none());
+    }
+
+    #[test]
+    fn test_layout_warns_about_sources_in_the_project_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let info = parse_cmake("add_executable(app main.cpp ../shared/x.cpp)\n");
+        let layout = detect_layout(tmp.path(), &info);
+        assert!(layout.sources.is_empty());
+        assert_eq!(layout.warnings.len(), 2, "{:?}", layout.warnings);
+        assert!(
+            layout.warnings[0].contains("../shared/x.cpp")
+                || layout.warnings[1].contains("../shared/x.cpp")
+        );
+    }
+
+    #[test]
+    fn test_layout_searches_src_when_cmake_lists_no_sources() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_files(
+            tmp.path(),
+            &[
+                ("src/lib.cppm", "export module local.globbed;\n"),
+                ("src/impl.cpp", "module local.globbed;\n"),
+            ],
+        );
+        let info =
+            parse_cmake("file(GLOB SRCS src/*.cpp src/*.cppm)\nadd_library(globbed ${SRCS})\n");
+        let layout = detect_layout(tmp.path(), &info);
+        let module = layout.module.unwrap();
+        assert_eq!(module.name, "local.globbed");
+        assert_eq!(module.root, PathBuf::from("src/lib.cppm"));
+    }
+
+    #[test]
+    fn test_module_raises_the_standard_to_cxx20() {
+        let info = parse_cmake("project(m)\nset(CMAKE_CXX_STANDARD 17)\n");
+        let plain = build_manifest(&info, "m", &Layout::default());
+        assert_eq!(plain.toolchain.unwrap().cxx_standard.as_deref(), Some("17"));
+        let layout = Layout {
+            module: Some(Module {
+                name: "m".to_string(),
+                root: PathBuf::from("src/m.cppm"),
+            }),
+            ..Default::default()
+        };
+        let modular = build_manifest(&info, "m", &layout);
+        assert_eq!(
+            modular.toolchain.unwrap().cxx_standard.as_deref(),
+            Some("20")
+        );
+        assert_eq!(modular.compat.unwrap().cpp.as_deref(), Some(">=20"));
+    }
+
+    #[test]
+    fn test_conditional_flags_are_listed_not_applied() {
+        let cmake = "\
+project(app)
+function(setup target)
+  target_compile_definitions(${target} PRIVATE FROM_FUNCTION)
+  add_library(from_function STATIC x.cpp)
+endfunction()
+add_executable(app src/main.cpp)
+target_compile_definitions(app PRIVATE ALWAYS)
+if(WIN32)
+  target_compile_definitions(app PRIVATE ON_WINDOWS)
+  add_compile_options(-Wglobal)
+endif()
+add_executable(tool tools/tool.cpp)
+if(FUZZ)
+  target_compile_definitions(tool PRIVATE TOOL_ONLY)
+endif()
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.extra_flags, vec!["-DALWAYS"]);
+        assert_eq!(info.targets.len(), 2, "{:?}", info.targets);
+        assert_eq!(
+            info.conditional_settings,
+            vec![
+                "target_compile_definitions(app PRIVATE ON_WINDOWS)",
+                "add_compile_options(-Wglobal)"
+            ]
+        );
+        let comments = append_migration_comments("", &info);
+        assert!(comments.contains("# target_compile_definitions(app PRIVATE ON_WINDOWS)\n"));
+        assert!(!comments.contains("TOOL_ONLY"));
+    }
+
+    #[test]
+    fn test_targets_named_by_project_name_variable() {
+        let cmake = "\
+project(app)
+add_library(${PROJECT_NAME}_core STATIC src/core.cpp)
+add_executable(${PROJECT_NAME} src/main.cpp)
+target_link_libraries(${PROJECT_NAME} PRIVATE ${CMAKE_PROJECT_NAME}_core fmt::fmt)
+target_compile_definitions(${PROJECT_NAME} PRIVATE APP=1)
+";
+        let info = parse_cmake(cmake);
+        assert_eq!(info.build_type, Some(BuildType::Binary));
+        assert_eq!(info.sources, vec!["src/core.cpp", "src/main.cpp"]);
+        assert_eq!(info.linked_libraries, vec!["fmt::fmt"]);
+        assert_eq!(info.extra_flags, vec!["-DAPP=1"]);
+    }
+
+    #[test]
+    fn test_comment_text_stays_on_one_line() {
+        let info = CmakeInfo {
+            linked_libraries: vec!["evil\n[package]\nname = \"x\"".to_string()],
+            ..Default::default()
+        };
+        let comments = append_migration_comments("", &info);
+        assert!(comments.lines().all(|l| l.is_empty() || l.starts_with('#')));
+    }
+
+    #[test]
+    fn test_manifest_without_module_has_no_module_section() {
+        let info = parse_cmake("project(plain)\nadd_executable(plain src/main.cpp)\n");
+        let manifest = build_manifest(&info, "plain", &Layout::default());
+        assert!(manifest.module.is_none());
+        let toml = manifest.to_toml_string().unwrap();
+        assert!(!toml.contains("[module]"), "{}", toml);
     }
 }
