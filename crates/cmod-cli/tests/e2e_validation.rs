@@ -1112,6 +1112,120 @@ fn test_e2e_workspace_build() {
     );
 }
 
+/// A workspace whose members `crates/*` match: `b`, a binary, imports
+/// `local.a` from the static library `a` through a dependency keyed `alib`.
+fn write_glob_workspace(root: &Path) {
+    fs::write(
+        root.join("cmod.toml"),
+        "[package]\nname = \"ws\"\nversion = \"0.1.0\"\n\n\
+         [workspace]\nmembers = [\"crates/*\"]\n",
+    )
+    .unwrap();
+    for dir in ["crates/a/src", "crates/b/src"] {
+        fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    fs::write(
+        root.join("crates/a/cmod.toml"),
+        "[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n\
+         [module]\nname = \"local.a\"\nroot = \"src/lib.cppm\"\n\n\
+         [build]\ntype = \"static-lib\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("crates/a/src/lib.cppm"),
+        "export module local.a;\nexport int answer() { return 42; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("crates/b/cmod.toml"),
+        "[package]\nname = \"b\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nalib = { path = \"../a\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("crates/b/src/main.cpp"),
+        "import local.a;\nint main() { return answer() == 42 ? 0 : 1; }\n",
+    )
+    .unwrap();
+}
+
+/// Members a glob matches are named by their package, and a path
+/// dependency on one, whatever its key, builds it first. They were named
+/// `crates/a`, so a dependency keyed `a` matched nothing: `b` built before
+/// `a`, without its interface.
+#[test]
+fn test_e2e_workspace_glob_members_link_through_path_dependencies() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write_glob_workspace(root);
+
+    let output = run_cmod(root, &["-v", "workspace", "list"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(err.contains("Build order a -> b"), "{}", err);
+
+    if !has_llvm_clang() {
+        eprintln!("Skipping the build: LLVM Clang not found");
+        return;
+    }
+    let output = run_cmod_with_llvm(root, &["build"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(root.join("build/debug/a/liba.a").exists());
+    let run = Command::new(root.join("build/debug/b/b"))
+        .status()
+        .expect("failed to run built binary");
+    assert!(run.success());
+}
+
+/// Removing a member a glob matches excludes it: dropping a `members` entry
+/// would not.
+#[test]
+fn test_e2e_workspace_remove_excludes_a_glob_member() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    write_glob_workspace(root);
+
+    let output = run_cmod(root, &["workspace", "remove", "b"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains("added to [workspace] exclude"));
+    let manifest = fs::read_to_string(root.join("cmod.toml")).unwrap();
+    assert!(
+        manifest.contains("members = [\"crates/*\"]"),
+        "{}",
+        manifest
+    );
+    assert!(
+        manifest.contains("exclude = [\"crates/b\"]"),
+        "{}",
+        manifest
+    );
+    let output = run_cmod(root, &["workspace", "list"]);
+    assert!(
+        stderr(&output).contains("1 member(s)"),
+        "{}",
+        stderr(&output)
+    );
+
+    // Adding it back undoes the exclude; removing it by its directory
+    // excludes it again.
+    let output = run_cmod(root, &["workspace", "add", "crates/b"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = run_cmod(root, &["workspace", "list"]);
+    assert!(
+        stderr(&output).contains("2 member(s)"),
+        "{}",
+        stderr(&output)
+    );
+    let output = run_cmod(root, &["workspace", "remove", "./crates/b"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = run_cmod(root, &["workspace", "list"]);
+    assert!(
+        stderr(&output).contains("1 member(s)"),
+        "{}",
+        stderr(&output)
+    );
+}
+
 // ─── Group 7: Clean Command ─────────────────────────────────────────────────
 
 #[test]

@@ -605,7 +605,11 @@ cmod workspace add <NAME> [--scaffold]
 Without flags, behavior is inferred: an existing directory with a
 `cmod.toml` is registered as-is; a missing directory is scaffolded with a
 starter `cmod.toml` and `src/lib.cppm`; an existing directory without a
-manifest is rejected.
+manifest is rejected. `<NAME>` is the member's directory, relative to the
+workspace root (`libs/util`); the member is named by its `[package] name`
+(`util` when scaffolded, which must be usable as a C++ module name). Adding
+a member drops an `exclude` entry naming its directory, and adds no `members`
+entry when a glob already matches it.
 
 | Option | Description |
 |--------|-------------|
@@ -618,6 +622,9 @@ Remove a member from the workspace.
 ```
 cmod workspace remove <NAME>
 ```
+
+`<NAME>` is the member's name or directory. The `members` entry naming the
+directory is dropped; a member a glob matches is added to `exclude` instead.
 
 ---
 
