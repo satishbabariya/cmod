@@ -33,7 +33,16 @@ pub struct WorkspaceManager {
     pub members: Vec<WorkspaceMember>,
     /// For each member, the members it depends on, by index: computed when
     /// the members change through `load`, `add_member` or `remove_member`.
-    member_deps: Vec<Vec<usize>>,
+    member_deps: MemberDeps,
+}
+
+/// The members each member depends on, by index, with the member paths
+/// and dependencies they were computed from: `members` is public, so a
+/// change made to it directly is noticed.
+#[derive(Default)]
+struct MemberDeps {
+    from: Vec<(PathBuf, BTreeMap<String, Dependency>)>,
+    deps: Vec<Vec<usize>>,
 }
 
 /// A member `WorkspaceManager::add_member` added.
@@ -107,9 +116,9 @@ impl WorkspaceManager {
             root: root.to_path_buf(),
             root_manifest,
             members,
-            member_deps: Vec::new(),
+            member_deps: MemberDeps::default(),
         };
-        ws.member_deps = ws.compute_member_deps();
+        ws.refresh_member_deps();
         Ok(ws)
     }
 
@@ -289,11 +298,29 @@ impl WorkspaceManager {
     /// For each member, the members it depends on, by index; recomputed
     /// when `members` was changed directly.
     fn member_deps(&self) -> std::borrow::Cow<'_, [Vec<usize>]> {
-        if self.member_deps.len() == self.members.len() {
-            std::borrow::Cow::Borrowed(&self.member_deps)
+        let current = self.members.len() == self.member_deps.from.len()
+            && self
+                .members
+                .iter()
+                .zip(&self.member_deps.from)
+                .all(|(m, (path, deps))| m.path == *path && m.manifest.dependencies == *deps);
+        if current {
+            std::borrow::Cow::Borrowed(&self.member_deps.deps)
         } else {
             std::borrow::Cow::Owned(self.compute_member_deps())
         }
+    }
+
+    /// Compute `member_deps` for the members as they are.
+    fn refresh_member_deps(&mut self) {
+        self.member_deps = MemberDeps {
+            from: self
+                .members
+                .iter()
+                .map(|m| (m.path.clone(), m.manifest.dependencies.clone()))
+                .collect(),
+            deps: self.compute_member_deps(),
+        };
     }
 
     /// For each member, the members it depends on through path
@@ -521,7 +548,7 @@ impl WorkspaceManager {
             rel_path: rel_path.clone(),
             manifest: member_manifest,
         });
-        self.member_deps = self.compute_member_deps();
+        self.refresh_member_deps();
 
         Ok(AddedMember {
             name: member_name,
@@ -588,7 +615,7 @@ impl WorkspaceManager {
         }
         self.save_member_lists()?;
         let member = self.members.remove(idx);
-        self.member_deps = self.compute_member_deps();
+        self.refresh_member_deps();
 
         Ok(RemovedMember {
             name: member.name,
@@ -1548,6 +1575,50 @@ lib = { path = "./lib" }
             "[package]\r\nname = \"ws\"\r\nversion = \"0.1.0\"\r\n\r\n[workspace]\r\nmembers = [\r\n  \"core\",\r\n  \"v1..2\",\r\n]\r\n"
         );
         assert!(ws.add_member("../outside", false).is_err());
+    }
+
+    #[test]
+    fn test_a_dependency_changed_in_memory_changes_the_build_order() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_root(root, "members = [\"a\", \"b\"]\n");
+        write_member(root, "a", "a", "b = { path = \"../b\" }\n");
+        write_member(root, "b", "b", "");
+        let mut ws = WorkspaceManager::load(root).unwrap();
+        let names = |ws: &WorkspaceManager| -> Vec<String> {
+            ws.build_order()
+                .unwrap()
+                .iter()
+                .map(|m| m.name.clone())
+                .collect()
+        };
+        assert_eq!(names(&ws), ["b", "a"]);
+
+        // The same members, with the dependency turned around.
+        ws.members[0].manifest.dependencies.clear();
+        let path = Dependency::Detailed(cmod_core::manifest::DetailedDependency {
+            version: None,
+            git: None,
+            branch: None,
+            rev: None,
+            tag: None,
+            path: Some(PathBuf::from("../a")),
+            features: vec![],
+            optional: false,
+            default_features: true,
+            workspace: false,
+        });
+        ws.members[1]
+            .manifest
+            .dependencies
+            .insert("a".to_string(), path);
+        assert_eq!(names(&ws), ["a", "b"]);
+        assert_eq!(
+            ws.transitive_member_deps("b")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
     }
 
     #[test]
