@@ -49,6 +49,13 @@ Each command creates a subdirectory with its own `cmod.toml` and `src/` director
 members = ["core", "utils", "app"]
 ```
 
+`cmod init` in a subdirectory does the same with the full package template: the new package is added to the members of the workspace it is in (unless a member pattern such as `"libs/*"` already matches it, or `exclude` covers it), and gets no git repository of its own when the workspace has one.
+
+```bash
+mkdir -p libs/geometry && cd libs/geometry
+cmod init --name geometry   # members = [..., "libs/geometry"]
+```
+
 ### Project structure
 
 ```

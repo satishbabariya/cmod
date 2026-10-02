@@ -277,6 +277,106 @@ fn test_e2e_init_sets_up_git() {
     );
 }
 
+/// A package created inside a workspace joins its members, unless a
+/// member pattern already covers it or an exclude pattern names it.
+#[test]
+fn test_e2e_init_joins_the_enclosing_workspace() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let output = run_cmod(root, &["init", "--workspace", "--name", "ws"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let manifest = fs::read_to_string(root.join("cmod.toml"))
+        .unwrap()
+        .replace("exclude = []", "exclude = [\"scratch\"] # not ours");
+    fs::write(root.join("cmod.toml"), manifest).unwrap();
+
+    for dir in ["core", "libs/util", "scratch"] {
+        fs::create_dir_all(root.join(dir)).unwrap();
+        let name = dir.rsplit('/').next().unwrap();
+        let output = run_cmod(&root.join(dir), &["init", "--name", name]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let err = stderr(&output);
+        if dir == "scratch" {
+            assert!(
+                err.contains("[workspace] exclude covers scratch"),
+                "{}",
+                err
+            );
+        } else {
+            assert!(err.contains("to [workspace] members in"), "{}", err);
+        }
+    }
+    // Members get no repository of their own: they are in the workspace's.
+    assert!(!root.join("core/.git").exists());
+
+    let output = run_cmod(root, &["workspace", "list"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(err.contains("2 member(s)"), "{}", err);
+    assert!(err.contains("core") && err.contains("util"), "{}", err);
+    let text = fs::read_to_string(root.join("cmod.toml")).unwrap();
+    assert!(
+        text.contains("exclude = [\"scratch\"] # not ours"),
+        "{}",
+        text
+    );
+    let manifest: toml::Value = toml::from_str(&text).unwrap();
+    assert_eq!(
+        manifest["workspace"]["members"],
+        toml::Value::Array(vec!["core".into(), "libs/util".into()])
+    );
+
+    // A member pattern that already covers the package is left alone.
+    let globbed = TempDir::new().unwrap();
+    let written =
+        "[package]\nname = \"g\"\nversion = \"0.1.0\"\n\n[workspace]\nmembers = [\"crates/*\"]\n";
+    fs::write(globbed.path().join("cmod.toml"), written).unwrap();
+    fs::create_dir_all(globbed.path().join("crates/a")).unwrap();
+    let output = run_cmod(&globbed.path().join("crates/a"), &["init", "--name", "a"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("'a' of the workspace"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(globbed.path().join("cmod.toml")).unwrap(),
+        written
+    );
+
+    // A name another member has is refused before anything is written:
+    // the glob would make it a second 'a'.
+    fs::create_dir_all(globbed.path().join("crates/b")).unwrap();
+    let output = run_cmod(&globbed.path().join("crates/b"), &["init", "--name", "a"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("already has a member named 'a' (crates/a)"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!globbed.path().join("crates/b/cmod.toml").exists());
+    let output = run_cmod(globbed.path(), &["workspace", "list"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    // A cmod.toml on the way that cannot be read stops the search.
+    fs::create_dir_all(globbed.path().join("broken/pkg")).unwrap();
+    fs::write(globbed.path().join("broken/cmod.toml"), "not toml [").unwrap();
+    let output = run_cmod(
+        &globbed.path().join("broken/pkg"),
+        &["init", "--name", "pkg"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("not looking for a workspace past"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(globbed.path().join("cmod.toml")).unwrap(),
+        written
+    );
+}
+
 /// A name that cannot be the module's and namespace's C++ identifier is
 /// refused before anything is written.
 #[test]

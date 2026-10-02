@@ -331,6 +331,50 @@ impl WorkspaceManager {
             .collect()
     }
 
+    /// Whether `dir` is, or is inside, a directory `[workspace] exclude`
+    /// names.
+    pub fn is_excluded(&self, dir: &Path) -> bool {
+        let Some(ws) = &self.root_manifest.workspace else {
+            return false;
+        };
+        excludes(
+            &self.root,
+            &expand_exclude_patterns(&self.root, &ws.exclude),
+            dir,
+        )
+    }
+
+    /// Write `[workspace] members` and `exclude` to the root `cmod.toml`,
+    /// leaving the rest of the file, its comments and the entries kept as
+    /// they were.
+    fn save_member_lists(&self) -> Result<(), CmodError> {
+        let Some(ws) = &self.root_manifest.workspace else {
+            return Ok(());
+        };
+        let path = self.root.join("cmod.toml");
+        let invalid = |reason: String| CmodError::InvalidManifest {
+            reason: format!("{}: {}", path.display(), reason),
+        };
+        let text = std::fs::read_to_string(&path)?;
+        let mut doc: toml_edit::DocumentMut = text
+            .parse()
+            .map_err(|e: toml_edit::TomlError| invalid(e.to_string()))?;
+        let table = doc
+            .entry("workspace")
+            .or_insert_with(toml_edit::table)
+            .as_table_like_mut()
+            .ok_or_else(|| invalid("[workspace] is not a table".to_string()))?;
+        update_string_array(table, "members", &ws.members);
+        update_string_array(table, "exclude", &ws.exclude);
+        // toml_edit writes `\n`: keep a file's `\r\n`.
+        let mut out = doc.to_string();
+        if text.contains("\r\n") {
+            out = out.replace("\r\n", "\n").replace('\n', "\r\n");
+        }
+        std::fs::write(&path, out)?;
+        Ok(())
+    }
+
     /// Get the workspace-level version, if set.
     pub fn workspace_version(&self) -> Option<&str> {
         self.root_manifest
@@ -356,8 +400,15 @@ impl WorkspaceManager {
         must_scaffold: bool,
     ) -> Result<AddedMember, CmodError> {
         // Early-reject names that would be unsafe to use as path components.
-        if name.is_empty() || name.contains("..") || name.starts_with('/') || name.starts_with('\\')
-        {
+        let escapes = Path::new(name).components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        });
+        if name.is_empty() || escapes || name.starts_with('/') || name.starts_with('\\') {
             return Err(CmodError::InvalidManifest {
                 reason: format!("invalid member name '{}'", name),
             });
@@ -472,7 +523,7 @@ impl WorkspaceManager {
                 });
             }
         }
-        self.root_manifest.save(&self.root.join("cmod.toml"))?;
+        self.save_member_lists()?;
 
         self.members.push(WorkspaceMember {
             name: member_name.clone(),
@@ -545,7 +596,7 @@ impl WorkspaceManager {
             }
             self.root_manifest.workspace = Some(ws);
         }
-        self.root_manifest.save(&self.root.join("cmod.toml"))?;
+        self.save_member_lists()?;
         let member = self.members.remove(idx);
         self.member_deps = self.compute_member_deps();
 
@@ -629,13 +680,140 @@ fn excludes(root: &Path, excluded: &HashSet<PathBuf>, dir: &Path) -> bool {
 
 /// `path` relative to `root`, with `/` separators and no `.` components:
 /// how a member's directory is spelled (`libs/a` for `./libs/a/`).
-fn relative_path(root: &Path, path: &Path) -> String {
+pub fn relative_path(root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(root).unwrap_or(path);
     rel.components()
         .filter(|c| !matches!(c, std::path::Component::CurDir))
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Make the string array `key` of `table` hold `list`: entries no longer
+/// listed are dropped and new ones appended, so those kept keep their
+/// place and comments. An absent array is only created to hold entries.
+fn update_string_array(table: &mut dyn toml_edit::TableLike, key: &str, list: &[String]) {
+    match table.get_mut(key).and_then(|item| item.as_array_mut()) {
+        Some(array) => {
+            let mut i = 0;
+            while i < array.len() {
+                let listed = array
+                    .get(i)
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|entry| list.iter().any(|l| l == entry));
+                if listed {
+                    i += 1;
+                } else {
+                    remove_entry(array, i);
+                }
+            }
+            for entry in list {
+                if !array.iter().any(|v| v.as_str() == Some(entry)) {
+                    push_entry(array, entry);
+                }
+            }
+        }
+        None if list.is_empty() => {}
+        None => {
+            let array: toml_edit::Array = list.iter().map(String::as_str).collect();
+            table.insert(key, toml_edit::value(array));
+        }
+    }
+}
+
+/// The text before a value in an array: the rest of the line of the
+/// entry before it (its comment), then the lines leading to this one.
+fn value_prefix(value: &toml_edit::Value) -> String {
+    value
+        .decor()
+        .prefix()
+        .and_then(|p| p.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// `text` split at its first line break: the end of a line, and the lines
+/// after it (`""` when there is none).
+fn split_line_end(text: &str) -> (&str, &str) {
+    match text.find('\n') {
+        Some(at) => text.split_at(at),
+        None => (text, ""),
+    }
+}
+
+/// Give what follows the last entry of `array` (without a trailing comma,
+/// the last value holds it) to the array, which prints the same.
+fn take_last_suffix(array: &mut toml_edit::Array) {
+    if array.trailing_comma() || array.is_empty() {
+        return;
+    }
+    let last = array.len() - 1;
+    if let Some(value) = array.get_mut(last) {
+        let suffix = value
+            .decor()
+            .suffix()
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        value.decor_mut().set_suffix("");
+        let trailing = array.trailing().as_str().unwrap_or("").to_string();
+        array.set_trailing(suffix + &trailing);
+    }
+}
+
+/// Append `entry` to `array`; in an array written one entry per line, on
+/// a line of its own, indented as the first, after any comment ending the
+/// last.
+fn push_entry(array: &mut toml_edit::Array, entry: &str) {
+    if !array.iter().any(|v| value_prefix(v).contains('\n')) {
+        array.push(entry);
+        return;
+    }
+    let indent = array
+        .get(0)
+        .map(value_prefix)
+        .and_then(|p| p.rsplit_once('\n').map(|(_, indent)| indent.to_string()))
+        .unwrap_or_default();
+    take_last_suffix(array);
+    let trailing = array.trailing().as_str().unwrap_or("").to_string();
+    let (before, after) = trailing
+        .rsplit_once('\n')
+        .unwrap_or((trailing.as_str(), ""));
+    let mut value = toml_edit::Value::from(entry);
+    value
+        .decor_mut()
+        .set_prefix(format!("{}\n{}", before, indent));
+    let after = format!("\n{}", after);
+    array.push_formatted(value);
+    array.set_trailing_comma(true);
+    array.set_trailing(after);
+}
+
+/// Remove entry `index` of `array` with its line: the comment ending its
+/// line and those above it go, the comment ending the line before stays.
+fn remove_entry(array: &mut toml_edit::Array, index: usize) {
+    take_last_suffix(array);
+    let Some(removed) = array.get(index).map(value_prefix) else {
+        return;
+    };
+    // The end of the line before it, kept; on one line, the space before it.
+    let (kept, _) = split_line_end(&removed);
+    let kept = kept.to_string();
+    let multiline = removed.contains('\n');
+    if index + 1 < array.len() {
+        if let Some(next) = array.get_mut(index + 1) {
+            let prefix = value_prefix(next);
+            let (_, lines) = split_line_end(&prefix);
+            let lines = lines.to_string();
+            next.decor_mut().set_prefix(kept + &lines);
+        }
+    } else if multiline {
+        let trailing = array.trailing().as_str().unwrap_or("").to_string();
+        let (_, lines) = split_line_end(&trailing);
+        let lines = lines.to_string();
+        array.set_trailing(kept + &lines);
+    }
+    array.remove(index);
 }
 
 /// Whether a `members` or `exclude` entry is a glob pattern.
@@ -1447,6 +1625,114 @@ lib = { path = "./lib" }
         // An empty name is the directory's.
         write_member(root, "a", "", "");
         assert_eq!(WorkspaceManager::load(root).unwrap().member_names(), ["a"]);
+    }
+
+    #[test]
+    fn test_adding_and_removing_members_keeps_the_root_manifest_as_written() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let manifest = "# The monorepo.\n[package]\nname = \"ws\"\nversion = \"0.1.0\"\n\n\
+                        [workspace]\nmembers = [\n    \"core\", # the core\n]\n";
+        std::fs::write(root.join("cmod.toml"), manifest).unwrap();
+        write_member(root, "core", "core", "");
+        write_member(root, "app", "app", "");
+
+        let mut ws = WorkspaceManager::load(root).unwrap();
+        ws.add_member("app", false).unwrap();
+        let written = std::fs::read_to_string(root.join("cmod.toml")).unwrap();
+        assert!(
+            written.starts_with("# The monorepo.\n[package]\n"),
+            "{}",
+            written
+        );
+        assert!(
+            written.contains("members = [\n    \"core\", # the core\n    \"app\",\n]\n"),
+            "{}",
+            written
+        );
+        assert!(!written.contains("[dependencies]"), "{}", written);
+
+        ws.remove_member("app").unwrap();
+        let written = std::fs::read_to_string(root.join("cmod.toml")).unwrap();
+        assert!(
+            written.contains("members = [\n    \"core\", # the core\n]\n"),
+            "{}",
+            written
+        );
+        assert!(!written.contains("exclude"), "{}", written);
+        assert_eq!(
+            WorkspaceManager::load(root).unwrap().member_names(),
+            ["core"]
+        );
+    }
+
+    #[test]
+    fn test_push_entry_follows_the_array_layout() {
+        let cases = [
+            ("a = [\"x\"]", "a = [\"x\", \"y\"]"),
+            ("a = []", "a = [\"y\"]"),
+            ("a = [\n  \"x\"\n]", "a = [\n  \"x\",\n  \"y\",\n]"),
+            (
+                "a = [\n  \"x\", # x\n  # end\n]",
+                "a = [\n  \"x\", # x\n  # end\n  \"y\",\n]",
+            ),
+        ];
+        for (before, after) in cases {
+            let mut doc: toml_edit::DocumentMut = before.parse().unwrap();
+            push_entry(doc["a"].as_array_mut().unwrap(), "y");
+            assert_eq!(doc.to_string().trim_end(), after, "from {:?}", before);
+        }
+    }
+
+    #[test]
+    fn test_remove_entry_takes_its_line_and_comment() {
+        let cases = [
+            ("a = [\"x\", \"y\"]", 0, "a = [\"y\"]"),
+            ("a = [\"x\", \"y\"]", 1, "a = [\"x\"]"),
+            ("a = [\"x\", \"y\", \"z\"]", 1, "a = [\"x\", \"z\"]"),
+            (
+                "a = [\n  \"x\", # X\n  \"y\", # Y\n  \"z\", # Z\n]",
+                1,
+                "a = [\n  \"x\", # X\n  \"z\", # Z\n]",
+            ),
+            (
+                "a = [\n  \"x\", # X\n  \"y\", # Y\n]",
+                0,
+                "a = [\n  \"y\", # Y\n]",
+            ),
+            (
+                "a = [\n  \"x\", # X\n  # about y\n  \"y\", # Y\n]",
+                1,
+                "a = [\n  \"x\", # X\n]",
+            ),
+            ("a = [\n  \"x\",\n  \"y\"\n]", 1, "a = [\n  \"x\"\n]"),
+        ];
+        for (before, index, after) in cases {
+            let mut doc: toml_edit::DocumentMut = before.parse().unwrap();
+            remove_entry(doc["a"].as_array_mut().unwrap(), index);
+            assert_eq!(doc.to_string().trim_end(), after, "from {:?}", before);
+        }
+    }
+
+    #[test]
+    fn test_member_lists_keep_crlf_line_endings() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("cmod.toml"),
+            "[package]\r\nname = \"ws\"\r\nversion = \"0.1.0\"\r\n\r\n[workspace]\r\nmembers = [\r\n  \"core\",\r\n]\r\n",
+        )
+        .unwrap();
+        write_member(root, "core", "core", "");
+        write_member(root, "v1..2", "app", "");
+        let mut ws = WorkspaceManager::load(root).unwrap();
+        ws.add_member("v1..2", false).unwrap();
+        let written = std::fs::read_to_string(root.join("cmod.toml")).unwrap();
+        assert_eq!(
+            written,
+            "[package]\r\nname = \"ws\"\r\nversion = \"0.1.0\"\r\n\r\n[workspace]\r\nmembers = [\r\n  \"core\",\r\n  \"v1..2\",\r\n]\r\n"
+        );
+        assert!(ws.add_member("../outside", false).is_err());
     }
 
     #[test]
