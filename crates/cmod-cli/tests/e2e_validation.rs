@@ -1777,6 +1777,41 @@ fn test_e2e_tidy_keeps_unfetched_dependencies() {
     );
 }
 
+/// A lockfile any command saves verifies: `cmod remove` kept the hash of
+/// the lockfile it loaded, so `cmod build --verify` rejected the lockfile
+/// it had just written.
+#[test]
+fn test_e2e_lockfile_verifies_after_remove() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    init_project(tmp.path(), "lockverify");
+    let lib_dir = tmp.path().join("libs/extra");
+    fs::create_dir_all(&lib_dir).unwrap();
+    fs::write(
+        lib_dir.join("cmod.toml"),
+        "[package]\nname = \"extra\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    let output = run_cmod(tmp.path(), &["add", "extra", "--path", "./libs/extra"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = run_cmod(tmp.path(), &["resolve"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let lock = fs::read_to_string(tmp.path().join("cmod.lock")).unwrap();
+    assert!(
+        lock.contains("extra") && lock.contains("integrity"),
+        "{}",
+        lock
+    );
+
+    let output = run_cmod(tmp.path(), &["remove", "extra"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = run_cmod_with_llvm(tmp.path(), &["build", "--verify"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
 #[test]
 fn test_e2e_tidy_apply_removes() {
     let tmp = TempDir::new().unwrap();
