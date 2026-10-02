@@ -55,7 +55,7 @@ platforms = ["x86_64-linux-gnu", "arm64-macos"]  # Supported platforms
 # === Toolchain Configuration ===
 [toolchain]
 compiler = "clang"                  # clang, gcc, msvc
-version = "18.1.0"                   # Exact version or constraint
+version = "18.1.0"                   # Constraint, read as Cargo reads one: 18.1.0 or a later 18.x
 cxx_standard = "23"                  # 20, 23, 26
 stdlib = "libc++"                   # libc++, libstdc++
 target = "x86_64-unknown-linux-gnu" # Target triple

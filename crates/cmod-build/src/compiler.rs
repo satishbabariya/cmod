@@ -231,13 +231,15 @@ pub struct ClangBackend {
 impl ClangBackend {
     /// Create a new Clang backend with default paths.
     pub fn new(cxx_standard: &str, profile: Profile) -> Self {
+        let clang_path = std::env::var_os("CXX")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| find_executable("clang++"));
+        let scan_deps_path = std::env::var_os("SCAN_DEPS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| scanner_for(&clang_path));
         ClangBackend {
-            clang_path: std::env::var_os("CXX")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| find_executable("clang++")),
-            scan_deps_path: std::env::var_os("SCAN_DEPS")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| find_executable("clang-scan-deps")),
+            clang_path,
+            scan_deps_path,
             cxx_standard: cxx_standard.to_string(),
             stdlib: None,
             target: None,
@@ -1290,6 +1292,54 @@ impl CompilerBackend for MsvcBackend {
 }
 
 /// Find an executable on PATH, falling back to the name itself.
+/// The `clang-scan-deps` that goes with the compiler at `clang`, so the
+/// scan sees what the compile will: next to it, named as it is
+/// (`clang++-20` → `clang-scan-deps-20`), or next to the binary it links to
+/// (Debian's `/usr/bin/clang++` → `/usr/lib/llvm-18/bin/clang`, beside
+/// which `clang-scan-deps` is); else the first one on `PATH`.
+fn scanner_for(clang: &Path) -> PathBuf {
+    let clang = if clang.parent().is_some_and(|p| !p.as_os_str().is_empty()) {
+        clang.to_path_buf()
+    } else {
+        match which(&clang.to_string_lossy()) {
+            Some(path) => path,
+            None => return find_executable("clang-scan-deps"),
+        }
+    };
+    let name = clang
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    // `clang++-20` and `clang-20` → `-20`; a cross-prefixed or renamed
+    // compiler gets the plain name.
+    let suffix = name
+        .strip_prefix("clang++")
+        .or_else(|| name.strip_prefix("clang"))
+        .filter(|s| s.is_empty() || s.starts_with('-'))
+        .unwrap_or_default();
+    let mut names = vec![format!("clang-scan-deps{}", suffix)];
+    if !suffix.is_empty() {
+        names.push("clang-scan-deps".to_string());
+    }
+    let dirs: Vec<PathBuf> = [
+        clang.parent().map(Path::to_path_buf),
+        std::fs::canonicalize(&clang)
+            .ok()
+            .and_then(|real| real.parent().map(Path::to_path_buf)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    for dir in &dirs {
+        for name in &names {
+            if let Some(found) = find_in_dirs(name, std::slice::from_ref(dir)) {
+                return found;
+            }
+        }
+    }
+    find_executable("clang-scan-deps")
+}
+
 fn find_executable(name: &str) -> PathBuf {
     which(name).unwrap_or_else(|| PathBuf::from(name))
 }
@@ -1324,6 +1374,63 @@ fn find_in_dirs(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+
+    /// The scanner is the one next to the compiler, named like it.
+    #[test]
+    fn test_scanner_for_finds_the_compilers_own_scanner() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        touch(&bin.join("clang++-20"));
+        touch(&bin.join("clang-scan-deps-20"));
+        touch(&bin.join("clang-scan-deps"));
+        assert_eq!(
+            scanner_for(&bin.join("clang++-20")),
+            bin.join("clang-scan-deps-20")
+        );
+        // An unversioned compiler gets the unversioned scanner.
+        touch(&bin.join("clang++"));
+        assert_eq!(
+            scanner_for(&bin.join("clang++")),
+            bin.join("clang-scan-deps")
+        );
+    }
+
+    /// Debian's `/usr/bin/clang++` links into `/usr/lib/llvm-N/bin`, where
+    /// the scanner is.
+    #[cfg(unix)]
+    #[test]
+    fn test_scanner_for_follows_the_compiler_link() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let llvm = tmp.path().join("llvm-18/bin");
+        touch(&llvm.join("clang"));
+        touch(&llvm.join("clang-scan-deps"));
+        let usr_bin = tmp.path().join("usr-bin");
+        std::fs::create_dir_all(&usr_bin).unwrap();
+        std::os::unix::fs::symlink(llvm.join("clang"), usr_bin.join("clang++")).unwrap();
+        let found = scanner_for(&usr_bin.join("clang++"));
+        assert_eq!(
+            std::fs::canonicalize(found).unwrap(),
+            std::fs::canonicalize(llvm.join("clang-scan-deps")).unwrap()
+        );
+    }
+
+    /// With no scanner beside the compiler, the one on `PATH` (or the bare
+    /// name) is used.
+    #[test]
+    fn test_scanner_for_falls_back_to_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("bin");
+        touch(&bin.join("clang++"));
+        assert_eq!(
+            scanner_for(&bin.join("clang++")),
+            find_executable("clang-scan-deps")
+        );
+    }
 
     // --- MSVC backend (#48 skeleton -> #77 implementation) ---
 

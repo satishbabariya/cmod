@@ -305,6 +305,19 @@ fn build_module(
     let backend = cmod_build::compiler::make_backend(compiler_kind, &backend_cfg)?;
     let build_dir = config.build_dir();
 
+    // A compiler other than the one `[toolchain] version` asks for still
+    // builds, with a warning; `cmod toolchain check` fails on it.
+    let wants_version = config
+        .manifest
+        .toolchain
+        .as_ref()
+        .is_some_and(|tc| tc.version.is_some());
+    if wants_version {
+        if let Some(problem) = super::toolchain::unmet_version(config, &backend.version()) {
+            shell.warn(problem);
+        }
+    }
+
     // Build the module graph, scanning with the compile flags
     let scan = SourceScan::for_backend(backend.as_ref(), &build_dir, dry_run.is_none());
     let graph = build_module_graph(&sources, &config.manifest.package.name, scan.as_ref())?;
