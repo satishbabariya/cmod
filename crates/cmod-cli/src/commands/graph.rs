@@ -318,13 +318,13 @@ pub fn run(
 
     // Show critical path if requested
     if critical_path {
-        // Use persisted node timings from build state if available
-        let build_state = BuildState::load(&config.build_dir());
-        let timings: BTreeMap<String, u64> = if build_state.node_timings.is_empty() {
-            // Fallback to 1ms per node if no real timings persisted
-            build_state.nodes.keys().map(|k| (k.clone(), 1)).collect()
+        // Persisted node timings, by graph node ID as `critical_path` reads
+        // them; 1ms per node when no build recorded any.
+        let recorded = BuildState::load(&config.build_dir()).node_timings;
+        let timings: BTreeMap<String, u64> = if recorded.is_empty() {
+            graph.nodes.keys().map(|k| (k.clone(), 1)).collect()
         } else {
-            build_state.node_timings.clone()
+            node_timings(&graph, &recorded)
         };
         let path = graph.critical_path(&timings);
         if path.is_empty() {
@@ -337,7 +337,7 @@ pub fn run(
             );
             for node_id in &path {
                 let ms = timings.get(node_id).copied().unwrap_or(0);
-                shell.verbose("Node", format!("{} ({}ms)", node_id, ms));
+                shell.verbose("Node", format!("{} ({}ms)", view.label(node_id), ms));
             }
         }
     }
