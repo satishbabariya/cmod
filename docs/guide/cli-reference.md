@@ -649,6 +649,31 @@ cmod sbom [-o <FILE>]
 
 ---
 
+## Migration
+
+### `cmod migrate cmake`
+
+Generate a `cmod.toml` from the `CMakeLists.txt` in the current directory (or `[PATH]`). It fails if a `cmod.toml` already exists.
+
+```
+cmod migrate cmake [PATH]
+```
+
+The package is made from one target: an executable named after the `project()`, else a library named after it, else the first library, else the first executable. It takes the sources of that target and of the targets it links (`add_executable`, `add_library`, `target_sources`, including `FILE_SET ... FILES`), with their include directories, compile options and definitions (as `-D` flags), plus the directory-wide `include_directories`, `add_compile_options` and `add_compile_definitions`. Tests, examples and other targets are left out.
+
+| Detected | Written to |
+|----------|------------|
+| The module a primary interface among those sources exports (`export module geo;`), preferring one named after the project | `[module] name` and `root` (omitted when there is none) |
+| Directories holding the sources, unless that is `src/` | `[build] sources` |
+| Sources of other targets inside those directories | `[build] exclude` |
+| `find_package()` calls and linked libraries the file does not define | TODO comments to map to `[dependencies]` |
+
+Compile options and definitions set under `if()`, `foreach()` or `while()` are listed in TODO comments rather than applied, and `function()`/`macro()` bodies are skipped. A package with a module gets at least C++20.
+
+Paths may be written relative to the project or with `${CMAKE_CURRENT_SOURCE_DIR}`, `${PROJECT_SOURCE_DIR}` and `$<BUILD_INTERFACE:...>`; other variables, generator expressions and `add_subdirectory()` contents are not followed. When CMake lists no sources (a `file(GLOB)`), the module is looked for in `src/`.
+
+---
+
 ## Plugin Management
 
 ### `cmod plugin list`
