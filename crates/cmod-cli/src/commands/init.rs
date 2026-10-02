@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cmod_core::error::CmodError;
 use cmod_core::manifest;
@@ -45,6 +45,16 @@ pub fn run(
         validate_cpp_identifier(&project_name)?;
     }
 
+    // The workspace it will join, checked before anything is written.
+    let enclosing = if workspace {
+        Ok(None)
+    } else {
+        find_enclosing_workspace(&cwd)
+    };
+    if let Ok(Some(root)) = &enclosing {
+        refuse_duplicate_member(root, &cwd, &project_name)?;
+    }
+
     // The repository first: if it cannot be made, nothing is written and
     // `cmod init` can be run again.
     if vcs == Vcs::Git {
@@ -58,7 +68,108 @@ pub fn run(
     if vcs == Vcs::Git {
         ignore_build_dir(&cwd, shell)?;
     }
+    match enclosing {
+        Ok(Some(root)) => join_workspace(&root, &cwd, shell),
+        Ok(None) => {}
+        Err(e) => shell.warn(e),
+    }
     Ok(())
+}
+
+/// The workspace `dir` is in, as `cargo new` finds it: the nearest
+/// ancestor whose `cmod.toml` has a `[workspace]`. A `cmod.toml` on the way
+/// that cannot be read stops the search, with what to report.
+fn find_enclosing_workspace(dir: &Path) -> Result<Option<PathBuf>, String> {
+    for ancestor in dir.ancestors().skip(1) {
+        let path = ancestor.join("cmod.toml");
+        if !path.is_file() {
+            continue;
+        }
+        match manifest::Manifest::load(&path) {
+            Ok(m) if m.is_workspace() => return Ok(Some(ancestor.to_path_buf())),
+            Ok(_) => {}
+            Err(e) => {
+                return Err(format!(
+                    "not looking for a workspace past {}: {}",
+                    path.display(),
+                    e
+                ))
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Refuse to create the package `name` in `dir` when another member of the
+/// workspace at `root` has that name: joining it, or being matched by one
+/// of its patterns, would break the workspace.
+fn refuse_duplicate_member(root: &Path, dir: &Path, name: &str) -> Result<(), CmodError> {
+    let Ok(ws) = cmod_workspace::WorkspaceManager::load(root) else {
+        return Ok(());
+    };
+    if ws.is_excluded(dir) {
+        return Ok(());
+    }
+    match ws.members.iter().find(|m| m.name == name && m.path != dir) {
+        Some(member) => Err(CmodError::Other(format!(
+            "the workspace in {} already has a member named '{}' ({}); pass another --name",
+            root.display(),
+            name,
+            member.rel_path
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Add the package in `dir` to the members of the workspace at `root`.
+/// Nothing changes when a member pattern already matches it or `exclude`
+/// covers it; a workspace that cannot be updated is reported and leaves
+/// the new package as it is.
+fn join_workspace(root: &Path, dir: &Path, shell: &Shell) {
+    let rel = cmod_workspace::workspace::relative_path(root, dir);
+    let shown = root.join("cmod.toml");
+    let mut ws = match cmod_workspace::WorkspaceManager::load(root) {
+        Ok(ws) => ws,
+        Err(e) => {
+            shell.warn(format!(
+                "not added to the workspace in {}: {}",
+                shown.display(),
+                e
+            ));
+            return;
+        }
+    };
+    if let Some(member) = ws.members.iter().find(|m| m.path == dir) {
+        shell.status(
+            "Member",
+            format!("'{}' of the workspace in {}", member.name, shown.display()),
+        );
+        return;
+    }
+    if ws.is_excluded(dir) {
+        shell.note(format!(
+            "not added to the workspace in {}: [workspace] exclude covers {}",
+            shown.display(),
+            rel
+        ));
+        return;
+    }
+    match ws.add_member(&rel, false) {
+        Ok(added) => shell.status(
+            "Added",
+            format!(
+                "'{}' to [workspace] members in {}",
+                added.name,
+                shown.display()
+            ),
+        ),
+        Err(e) => shell.warn(format!(
+            "not added to the workspace in {}: {}; add it there with `cmod workspace add {}`",
+            shown.display(),
+            e,
+            rel
+        )),
+    }
 }
 
 /// Make `dir` a git repository unless it is already inside one (a package
@@ -287,7 +398,9 @@ fn init_workspace(dir: &Path, name: &str, shell: &Shell) -> Result<(), CmodError
         "Created",
         format!("workspace '{}' in {}", name, dir.display()),
     );
-    shell.note("add members with `cmod init --name <member>` in subdirectories");
+    shell.note(
+        "create members with `cmod init` in subdirectories; they are added to [workspace] members",
+    );
 
     Ok(())
 }
