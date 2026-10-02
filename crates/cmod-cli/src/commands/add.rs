@@ -35,6 +35,7 @@ pub fn run(
     let (dep_key, version_constraint) = parse_dep_specifier(&dep);
 
     // Check if dependency already exists
+    let mut previous = None;
     if let Some(existing) = config.manifest.dependencies.get(&dep_key) {
         let new_version = version_constraint.as_deref();
         let existing_version = existing.version_req();
@@ -47,7 +48,7 @@ pub fn run(
                 new_version.unwrap_or("*")
             ));
             // Remove the old entry so resolver can re-add
-            config.manifest.dependencies.remove(&dep_key);
+            previous = config.manifest.dependencies.remove(&dep_key);
         } else {
             shell.status(
                 "Unchanged",
@@ -61,8 +62,19 @@ pub fn run(
         }
     }
 
-    // Build the Dependency object
-    let dependency = if path.is_some()
+    // Build the Dependency object. A new version for a dependency given as
+    // a table keeps its source and settings unless others are given.
+    let new_source = path.is_some() || git.is_some() || branch.is_some() || rev.is_some();
+    let dependency = if let Some(Dependency::Detailed(mut kept)) = previous.filter(|_| !new_source)
+    {
+        kept.version = version_constraint;
+        for feature in features {
+            if !kept.features.contains(&feature) {
+                kept.features.push(feature);
+            }
+        }
+        Dependency::Detailed(kept)
+    } else if path.is_some()
         || git.is_some()
         || branch.is_some()
         || rev.is_some()
@@ -105,7 +117,7 @@ pub fn run(
     )?;
 
     // Save updated manifest and lockfile
-    config.manifest.save(&config.manifest_path)?;
+    config.manifest.save_dependencies(&config.manifest_path)?;
     lockfile.save(&config.lockfile_path)?;
 
     if let Some(pkg) = lockfile.find_package(&dep_key) {

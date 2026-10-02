@@ -98,7 +98,7 @@ pub fn run(apply: bool, shell: &Shell) -> Result<(), CmodError> {
         for (name, _) in &unused {
             manifest.dependencies.remove(name);
         }
-        manifest.save(&manifest_path)?;
+        manifest.save_dependencies(&manifest_path)?;
         shell.status(
             "Removed",
             format!("{} unused dependencies from cmod.toml", unused.len()),

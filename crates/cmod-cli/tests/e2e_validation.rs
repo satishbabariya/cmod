@@ -469,6 +469,49 @@ fn test_e2e_remove_dependency() {
     assert!(!manifest.contains("mylib"));
 }
 
+/// `cmod add` and `cmod remove` change `[dependencies]` only: they used to
+/// write the whole manifest anew, dropping its comments and adding every
+/// empty table.
+#[test]
+fn test_e2e_add_and_remove_keep_the_manifest_as_written() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let written = "# The app.\n[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+                   [build]\ntype = \"binary\" # for now\n";
+    fs::write(root.join("cmod.toml"), written).unwrap();
+    fs::create_dir_all(root.join("libs/mylib")).unwrap();
+    fs::write(
+        root.join("libs/mylib/cmod.toml"),
+        "[package]\nname = \"mylib\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+
+    let output = run_cmod(root, &["add", "mylib", "--path", "./libs/mylib"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        fs::read_to_string(root.join("cmod.toml")).unwrap(),
+        format!("{written}\n[dependencies]\nmylib = {{ path = \"./libs/mylib\" }}\n")
+    );
+
+    // A new version keeps the dependency's source and settings.
+    let output = run_cmod(root, &["add", "mylib@^1", "--features", "fast"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        fs::read_to_string(root.join("cmod.toml")).unwrap(),
+        format!(
+            "{written}\n[dependencies]\n\
+             mylib = {{ version = \"^1\", path = \"./libs/mylib\", features = [\"fast\"] }}\n"
+        )
+    );
+
+    let output = run_cmod(root, &["remove", "mylib"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        fs::read_to_string(root.join("cmod.toml")).unwrap(),
+        format!("{written}\n[dependencies]\n")
+    );
+}
+
 #[test]
 fn test_e2e_remove_nonexistent_fails() {
     let tmp = TempDir::new().unwrap();

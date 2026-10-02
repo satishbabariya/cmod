@@ -116,7 +116,7 @@ pub struct Module {
 }
 
 /// A dependency can be specified as a simple version string or an expanded table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Dependency {
     /// Simple version string: `"^1.2"`
@@ -125,7 +125,7 @@ pub enum Dependency {
     Detailed(DetailedDependency),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetailedDependency {
     #[serde(default)]
     pub version: Option<String>,
@@ -534,10 +534,23 @@ impl Manifest {
     }
 
     /// Write manifest to a file.
+    ///
+    /// This writes the whole manifest anew: to change part of a manifest
+    /// someone wrote, use [`Manifest::save_dependencies`] or
+    /// [`edit_toml_file`], which keep the rest as written.
     pub fn save(&self, path: &Path) -> Result<(), CmodError> {
         let content = self.to_toml_string()?;
         std::fs::write(path, content)?;
         Ok(())
+    }
+
+    /// Write this manifest's `[dependencies]` to the manifest at `path`,
+    /// leaving the rest of the file as written (see
+    /// [`sync_dependency_table`]).
+    pub fn save_dependencies(&self, path: &Path) -> Result<(), CmodError> {
+        edit_toml_file(path, |doc| {
+            sync_dependency_table(doc, &["dependencies"], &self.dependencies)
+        })
     }
 
     /// Find the manifest file by searching upward from the given directory.
@@ -950,9 +963,591 @@ pub fn default_workspace_manifest(name: &str) -> Manifest {
     }
 }
 
+/// Make the string array `key` of `table` hold `list`: entries no longer
+/// listed are dropped and new ones appended, so those kept keep their
+/// place and comments. An absent array is only created to hold entries.
+pub fn sync_string_array(table: &mut dyn toml_edit::TableLike, key: &str, list: &[String]) {
+    match table.get_mut(key).and_then(|item| item.as_array_mut()) {
+        Some(array) => {
+            let mut i = 0;
+            while i < array.len() {
+                let listed = array
+                    .get(i)
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|entry| list.iter().any(|l| l == entry));
+                if listed {
+                    i += 1;
+                } else {
+                    remove_entry(array, i);
+                }
+            }
+            for entry in list {
+                if !array.iter().any(|v| v.as_str() == Some(entry)) {
+                    push_entry(array, entry);
+                }
+            }
+        }
+        None if list.is_empty() => {}
+        None => {
+            let array: toml_edit::Array = list.iter().map(String::as_str).collect();
+            table.insert(key, toml_edit::value(array));
+        }
+    }
+}
+
+/// The text before a value in an array: the rest of the line of the
+/// entry before it (its comment), then the lines leading to this one.
+fn value_prefix(value: &toml_edit::Value) -> String {
+    value
+        .decor()
+        .prefix()
+        .and_then(|p| p.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// `text` split at its first line break: the end of a line, and the lines
+/// after it (`""` when there is none).
+fn split_line_end(text: &str) -> (&str, &str) {
+    match text.find('\n') {
+        Some(at) => text.split_at(at),
+        None => (text, ""),
+    }
+}
+
+/// Give what follows the last entry of `array` (without a trailing comma,
+/// the last value holds it) to the array, which prints the same.
+fn take_last_suffix(array: &mut toml_edit::Array) {
+    if array.trailing_comma() || array.is_empty() {
+        return;
+    }
+    let last = array.len() - 1;
+    if let Some(value) = array.get_mut(last) {
+        let suffix = value
+            .decor()
+            .suffix()
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        value.decor_mut().set_suffix("");
+        let trailing = array.trailing().as_str().unwrap_or("").to_string();
+        array.set_trailing(suffix + &trailing);
+    }
+}
+
+/// Append `entry` to `array`; in an array written one entry per line, on
+/// a line of its own, indented as the first, after any comment ending the
+/// last.
+fn push_entry(array: &mut toml_edit::Array, entry: &str) {
+    if !array.iter().any(|v| value_prefix(v).contains('\n')) {
+        array.push(entry);
+        return;
+    }
+    let indent = array
+        .get(0)
+        .map(value_prefix)
+        .and_then(|p| p.rsplit_once('\n').map(|(_, indent)| indent.to_string()))
+        .unwrap_or_default();
+    take_last_suffix(array);
+    let trailing = array.trailing().as_str().unwrap_or("").to_string();
+    let (before, after) = trailing
+        .rsplit_once('\n')
+        .unwrap_or((trailing.as_str(), ""));
+    let mut value = toml_edit::Value::from(entry);
+    value
+        .decor_mut()
+        .set_prefix(format!("{}\n{}", before, indent));
+    let after = format!("\n{}", after);
+    array.push_formatted(value);
+    array.set_trailing_comma(true);
+    array.set_trailing(after);
+}
+
+/// Remove entry `index` of `array` with its line: the comment ending its
+/// line and those above it go, the comment ending the line before stays.
+fn remove_entry(array: &mut toml_edit::Array, index: usize) {
+    take_last_suffix(array);
+    let Some(removed) = array.get(index).map(value_prefix) else {
+        return;
+    };
+    // The end of the line before it, kept; on one line, the space before it.
+    let (kept, _) = split_line_end(&removed);
+    let kept = kept.to_string();
+    let multiline = removed.contains('\n');
+    if index + 1 < array.len() {
+        if let Some(next) = array.get_mut(index + 1) {
+            let prefix = value_prefix(next);
+            let (_, lines) = split_line_end(&prefix);
+            let lines = lines.to_string();
+            next.decor_mut().set_prefix(kept + &lines);
+        }
+    } else if multiline {
+        let trailing = array.trailing().as_str().unwrap_or("").to_string();
+        let (_, lines) = split_line_end(&trailing);
+        let lines = lines.to_string();
+        array.set_trailing(kept + &lines);
+    }
+    array.remove(index);
+}
+
+/// Edit the TOML file at `path` in place: parse it, let `edit` change the
+/// document, and write it back with everything `edit` left alone as it
+/// was. Lines end as most of the file's did; the file is replaced at once,
+/// so it is never left half written.
+pub fn edit_toml_file(
+    path: &Path,
+    edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), CmodError>,
+) -> Result<(), CmodError> {
+    let text = std::fs::read_to_string(path)?;
+    let mut doc: toml_edit::DocumentMut =
+        text.parse()
+            .map_err(|e: toml_edit::TomlError| CmodError::InvalidManifest {
+                reason: format!("{}: {}", path.display(), e),
+            })?;
+    edit(&mut doc).map_err(|e| match e {
+        CmodError::InvalidManifest { reason } => CmodError::InvalidManifest {
+            reason: format!("{}: {}", path.display(), reason),
+        },
+        e => e,
+    })?;
+    // toml_edit writes `\n`.
+    let mut out = doc.to_string();
+    let crlf = text.matches("\r\n").count();
+    if crlf * 2 > text.matches('\n').count() {
+        out = out.replace("\r\n", "\n").replace('\n', "\r\n");
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".cmod-tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, out)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    Ok(())
+}
+
+/// Make the dependency table at `table_path` of `doc` (`["dependencies"]`)
+/// hold `deps`, leaving the rest of the document as written:
+///
+/// - a dependency no longer listed is removed with its line and the
+///   comments right above it; comments above a blank line before it stay,
+///   with the line after it;
+/// - a changed dependency is rewritten in place, keeping its comments,
+///   and a table (`[dependencies.fmt]`) stays a table;
+/// - a new one is written as a version string, or an inline table of the
+///   fields that differ from their defaults;
+/// - an unchanged one is not touched.
+///
+/// The table is only created to hold dependencies.
+pub fn sync_dependency_table(
+    doc: &mut toml_edit::DocumentMut,
+    table_path: &[&str],
+    deps: &BTreeMap<String, Dependency>,
+) -> Result<(), CmodError> {
+    let not_a_table = || CmodError::InvalidManifest {
+        reason: format!("[{}] is not a table", table_path.join(".")),
+    };
+    let mut item = doc.as_item_mut();
+    for (depth, key) in table_path.iter().enumerate() {
+        let table = item.as_table_like_mut().ok_or_else(not_a_table)?;
+        if table.get(key).is_none() {
+            if deps.is_empty() {
+                return Ok(());
+            }
+            let mut new = toml_edit::Table::new();
+            new.set_implicit(depth + 1 < table_path.len());
+            table.insert(key, toml_edit::Item::Table(new));
+        }
+        item = table.get_mut(key).ok_or_else(not_a_table)?;
+    }
+    let table = item.as_table_like_mut().ok_or_else(not_a_table)?;
+
+    let gone: Vec<String> = table
+        .iter()
+        .map(|(key, _)| key.to_string())
+        .filter(|key| !deps.contains_key(key))
+        .collect();
+    for key in gone {
+        remove_dependency_entry(table, &key);
+    }
+    for (key, dep) in deps {
+        let value = dependency_value(dep)?;
+        match table.get_mut(key) {
+            Some(item) if parse_dependency_item(item).as_ref() == Some(dep) => {}
+            Some(item) => replace_dependency_item(item, value),
+            None => {
+                table.insert(key, toml_edit::Item::Value(value));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The dependency `item` declares, if it declares one.
+fn parse_dependency_item(item: &toml_edit::Item) -> Option<Dependency> {
+    #[derive(Deserialize)]
+    struct Entry {
+        d: Dependency,
+    }
+    let mut value = item.clone().into_value().ok()?;
+    value.decor_mut().clear();
+    if let toml_edit::Value::InlineTable(table) = &mut value {
+        table.fmt();
+    }
+    toml::from_str::<Entry>(&format!("d = {}", value))
+        .ok()
+        .map(|e| e.d)
+}
+
+/// Make `item` declare what `value` does, keeping its comments: a table
+/// (`[dependencies.fmt]`) keeps its form and the fields that stay, with
+/// theirs; a value (inline tables hold no comments) keeps the comment
+/// after it.
+fn replace_dependency_item(item: &mut toml_edit::Item, value: toml_edit::Value) {
+    if let (Some(table), toml_edit::Value::InlineTable(fields)) = (item.as_table_mut(), &value) {
+        let gone: Vec<String> = table
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .filter(|key| !fields.contains_key(key))
+            .collect();
+        for key in gone {
+            table.remove(&key);
+        }
+        for (key, field) in fields.iter() {
+            let mut field = field.clone();
+            match table.get_mut(key).and_then(|i| i.as_value_mut()) {
+                Some(old) => {
+                    *field.decor_mut() = old.decor().clone();
+                    *old = field;
+                }
+                None => {
+                    field.decor_mut().clear();
+                    table.insert(key, toml_edit::Item::Value(field));
+                }
+            }
+        }
+        return;
+    }
+    let mut value = value;
+    if let Some(old) = item.as_value() {
+        *value.decor_mut() = old.decor().clone();
+    }
+    *item = toml_edit::Item::Value(value);
+}
+
+/// Remove dependency `key` of `table` with its line and the comments right
+/// above it. What is above a blank line before it is about the lines that
+/// follow, so it moves to the next entry.
+fn remove_dependency_entry(table: &mut dyn toml_edit::TableLike, key: &str) {
+    let prefix = table
+        .key(key)
+        .and_then(|k| k.leaf_decor().prefix())
+        .and_then(|p| p.as_str())
+        .unwrap_or("")
+        .to_string();
+    let lines: Vec<&str> = prefix.split_inclusive('\n').collect();
+    let section: String = match lines
+        .iter()
+        .rposition(|l| l.trim().is_empty() && l.ends_with('\n'))
+    {
+        Some(blank) => lines[..=blank].concat(),
+        None => String::new(),
+    };
+    let keys: Vec<String> = table.iter().map(|(k, _)| k.to_string()).collect();
+    let next = keys
+        .iter()
+        .position(|k| k == key)
+        .and_then(|at| keys.get(at + 1))
+        .cloned();
+    table.remove(key);
+    if section.is_empty() {
+        return;
+    }
+    if let Some(mut next_key) = next.as_deref().and_then(|n| table.key_mut(n)) {
+        let old = next_key
+            .leaf_decor()
+            .prefix()
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_string();
+        next_key.leaf_decor_mut().set_prefix(section + &old);
+    }
+}
+
+/// `dep` as it is written in `[dependencies]`: a version string, or an
+/// inline table of the fields that differ from their defaults.
+fn dependency_value(dep: &Dependency) -> Result<toml_edit::Value, CmodError> {
+    let detailed = match dep {
+        Dependency::Simple(version) => return Ok(version.as_str().into()),
+        Dependency::Detailed(detailed) => detailed,
+    };
+    let mut table = toml_edit::InlineTable::new();
+    let strings = [
+        ("version", detailed.version.as_deref()),
+        ("git", detailed.git.as_deref()),
+        ("branch", detailed.branch.as_deref()),
+        ("rev", detailed.rev.as_deref()),
+        ("tag", detailed.tag.as_deref()),
+    ];
+    for (key, value) in strings {
+        if let Some(value) = value {
+            table.insert(key, value.into());
+        }
+    }
+    if let Some(path) = &detailed.path {
+        let path = path.to_str().ok_or_else(|| CmodError::InvalidManifest {
+            reason: format!("dependency path {} is not UTF-8", path.display()),
+        })?;
+        table.insert("path", path.into());
+    }
+    if !detailed.features.is_empty() {
+        let features: toml_edit::Array = detailed.features.iter().map(String::as_str).collect();
+        table.insert("features", features.into());
+    }
+    if detailed.optional {
+        table.insert("optional", true.into());
+    }
+    if !detailed.default_features {
+        table.insert("default_features", false.into());
+    }
+    if detailed.workspace {
+        table.insert("workspace", true.into());
+    }
+    table.fmt();
+    Ok(table.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_push_entry_follows_the_array_layout() {
+        let cases = [
+            ("a = [\"x\"]", "a = [\"x\", \"y\"]"),
+            ("a = []", "a = [\"y\"]"),
+            ("a = [\n  \"x\"\n]", "a = [\n  \"x\",\n  \"y\",\n]"),
+            (
+                "a = [\n  \"x\", # x\n  # end\n]",
+                "a = [\n  \"x\", # x\n  # end\n  \"y\",\n]",
+            ),
+        ];
+        for (before, after) in cases {
+            let mut doc: toml_edit::DocumentMut = before.parse().unwrap();
+            push_entry(doc["a"].as_array_mut().unwrap(), "y");
+            assert_eq!(doc.to_string().trim_end(), after, "from {:?}", before);
+        }
+    }
+
+    #[test]
+    fn test_remove_entry_takes_its_line_and_comment() {
+        let cases = [
+            ("a = [\"x\", \"y\"]", 0, "a = [\"y\"]"),
+            ("a = [\"x\", \"y\"]", 1, "a = [\"x\"]"),
+            ("a = [\"x\", \"y\", \"z\"]", 1, "a = [\"x\", \"z\"]"),
+            (
+                "a = [\n  \"x\", # X\n  \"y\", # Y\n  \"z\", # Z\n]",
+                1,
+                "a = [\n  \"x\", # X\n  \"z\", # Z\n]",
+            ),
+            (
+                "a = [\n  \"x\", # X\n  \"y\", # Y\n]",
+                0,
+                "a = [\n  \"y\", # Y\n]",
+            ),
+            (
+                "a = [\n  \"x\", # X\n  # about y\n  \"y\", # Y\n]",
+                1,
+                "a = [\n  \"x\", # X\n]",
+            ),
+            ("a = [\n  \"x\",\n  \"y\"\n]", 1, "a = [\n  \"x\"\n]"),
+        ];
+        for (before, index, after) in cases {
+            let mut doc: toml_edit::DocumentMut = before.parse().unwrap();
+            remove_entry(doc["a"].as_array_mut().unwrap(), index);
+            assert_eq!(doc.to_string().trim_end(), after, "from {:?}", before);
+        }
+    }
+
+    #[test]
+    fn test_save_dependencies_keeps_the_manifest_as_written() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("cmod.toml");
+        let written = "# My package.\n[package]\nname = \"p\"\nversion = \"0.1.0\"\n\n\
+                       [dependencies]\n# Formatting.\n\"github.com/fmtlib/fmt\" = \"^10\" # pinned\n\
+                       old = { path = \"../old\" }\n\n[build]\ntype = \"binary\"\n";
+        std::fs::write(&path, written).unwrap();
+
+        let mut manifest = Manifest::load(&path).unwrap();
+        manifest.dependencies.remove("old");
+        manifest.dependencies.insert(
+            "util".to_string(),
+            Dependency::Detailed(DetailedDependency {
+                version: None,
+                git: None,
+                branch: None,
+                rev: None,
+                tag: None,
+                path: Some(PathBuf::from("../util")),
+                features: vec!["fast".to_string()],
+                optional: false,
+                default_features: true,
+                workspace: false,
+            }),
+        );
+        manifest.save_dependencies(&path).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# My package.\n[package]\nname = \"p\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\n# Formatting.\n\"github.com/fmtlib/fmt\" = \"^10\" # pinned\n\
+             util = { path = \"../util\", features = [\"fast\"] }\n\n[build]\ntype = \"binary\"\n"
+        );
+        let reloaded = Manifest::load(&path).unwrap();
+        assert_eq!(reloaded.dependencies.len(), 2);
+        assert!(reloaded.dependencies["util"].is_path());
+
+        // A changed dependency is rewritten; the manifest gains no table.
+        let mut manifest = reloaded;
+        manifest.dependencies.insert(
+            "github.com/fmtlib/fmt".to_string(),
+            Dependency::Simple("^11".to_string()),
+        );
+        manifest.save_dependencies(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("\"github.com/fmtlib/fmt\" = \"^11\""),
+            "{}",
+            text
+        );
+        assert!(!text.contains("[features]"), "{}", text);
+    }
+
+    /// `deps` synced into the `[dependencies]` of `before`.
+    fn synced(before: &str, deps: &[(&str, Dependency)]) -> String {
+        let mut doc: toml_edit::DocumentMut = before.parse().unwrap();
+        let deps: BTreeMap<String, Dependency> = deps
+            .iter()
+            .map(|(k, d)| (k.to_string(), d.clone()))
+            .collect();
+        sync_dependency_table(&mut doc, &["dependencies"], &deps).unwrap();
+        doc.to_string()
+    }
+
+    fn simple(version: &str) -> Dependency {
+        Dependency::Simple(version.to_string())
+    }
+
+    #[test]
+    fn test_a_changed_dependency_keeps_its_comments() {
+        assert_eq!(
+            synced(
+                "[dependencies]\n# Formatting lib\nfmt = \"^10\" # pinned for ABI\n",
+                &[("fmt", simple("^11"))]
+            ),
+            "[dependencies]\n# Formatting lib\nfmt = \"^11\" # pinned for ABI\n"
+        );
+        // A table stays one, with the fields that stay.
+        let detailed = Dependency::Detailed(DetailedDependency {
+            version: Some("^11".to_string()),
+            git: Some("https://example.com/fmt".to_string()),
+            branch: None,
+            rev: None,
+            tag: None,
+            path: None,
+            features: vec![],
+            optional: false,
+            default_features: true,
+            workspace: false,
+        });
+        assert_eq!(
+            synced(
+                "[dependencies.fmt]\n# Where from.\ngit = \"https://example.com/fmt\"\nversion = \"^10\" # was\noptional = true\n",
+                &[("fmt", detailed)]
+            ),
+            "[dependencies.fmt]\n# Where from.\ngit = \"https://example.com/fmt\"\nversion = \"^11\" # was\n"
+        );
+    }
+
+    #[test]
+    fn test_a_removed_dependency_leaves_the_section_comment() {
+        let before = "[dependencies]\n# Runtime dependencies, keep sorted\n\n# The formatter.\n\
+                      fmt = \"^10\"\nb = \"^2\"\n";
+        assert_eq!(
+            synced(before, &[("b", simple("^2"))]),
+            "[dependencies]\n# Runtime dependencies, keep sorted\n\nb = \"^2\"\n"
+        );
+        // Without a blank line, the comment is the dependency's.
+        assert_eq!(
+            synced(
+                "[dependencies]\n# The formatter.\nfmt = \"^10\"\nb = \"^2\"\n",
+                &[("b", simple("^2"))]
+            ),
+            "[dependencies]\nb = \"^2\"\n"
+        );
+        // A table goes with its header.
+        assert_eq!(
+            synced(
+                "[package]\nname = \"p\"\n\n[dependencies.fmt]\nversion = \"^10\"\n\n[dependencies.b]\nversion = \"^2\"\n",
+                &[("b", Dependency::Detailed(DetailedDependency {
+                    version: Some("^2".to_string()),
+                    git: None,
+                    branch: None,
+                    rev: None,
+                    tag: None,
+                    path: None,
+                    features: vec![],
+                    optional: false,
+                    default_features: true,
+                    workspace: false,
+                }))]
+            ),
+            "[package]\nname = \"p\"\n\n[dependencies.b]\nversion = \"^2\"\n"
+        );
+    }
+
+    #[test]
+    fn test_no_dependencies_add_no_table() {
+        let before = "[package]\nname = \"p\"\n";
+        assert_eq!(synced(before, &[]), before);
+    }
+
+    #[test]
+    fn test_edit_toml_file_keeps_the_usual_line_ending() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("cmod.toml");
+        // Mostly LF, with one CRLF line: written with LF throughout.
+        std::fs::write(&path, "a = 1\nb = 2\r\nc = 3\n").unwrap();
+        edit_toml_file(&path, |doc| {
+            doc["d"] = toml_edit::value(4);
+            Ok(())
+        })
+        .unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.starts_with("a = 1\n"), "{:?}", out);
+        assert!(out.ends_with("d = 4\n"), "{:?}", out);
+        assert!(!tmp.path().join("cmod.toml.cmod-tmp").exists());
+    }
+
+    #[test]
+    fn test_save_dependencies_adds_the_table_when_missing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("cmod.toml");
+        std::fs::write(
+            &path,
+            "[package]\r\nname = \"p\"\r\nversion = \"0.1.0\"\r\n",
+        )
+        .unwrap();
+        let mut manifest = Manifest::load(&path).unwrap();
+        manifest
+            .dependencies
+            .insert("a".to_string(), Dependency::Simple("^1".to_string()));
+        manifest.save_dependencies(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[package]\r\nname = \"p\"\r\nversion = \"0.1.0\"\r\n\r\n[dependencies]\r\na = \"^1\"\r\n"
+        );
+    }
 
     #[test]
     fn test_parse_minimal_manifest() {

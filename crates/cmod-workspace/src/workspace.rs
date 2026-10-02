@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use cmod_core::error::CmodError;
-use cmod_core::manifest::{Dependency, Manifest};
+use cmod_core::manifest::{edit_toml_file, sync_string_array, Dependency, Manifest};
 
 /// A resolved workspace member.
 #[derive(Debug, Clone)]
@@ -351,28 +351,18 @@ impl WorkspaceManager {
         let Some(ws) = &self.root_manifest.workspace else {
             return Ok(());
         };
-        let path = self.root.join("cmod.toml");
-        let invalid = |reason: String| CmodError::InvalidManifest {
-            reason: format!("{}: {}", path.display(), reason),
-        };
-        let text = std::fs::read_to_string(&path)?;
-        let mut doc: toml_edit::DocumentMut = text
-            .parse()
-            .map_err(|e: toml_edit::TomlError| invalid(e.to_string()))?;
-        let table = doc
-            .entry("workspace")
-            .or_insert_with(toml_edit::table)
-            .as_table_like_mut()
-            .ok_or_else(|| invalid("[workspace] is not a table".to_string()))?;
-        update_string_array(table, "members", &ws.members);
-        update_string_array(table, "exclude", &ws.exclude);
-        // toml_edit writes `\n`: keep a file's `\r\n`.
-        let mut out = doc.to_string();
-        if text.contains("\r\n") {
-            out = out.replace("\r\n", "\n").replace('\n', "\r\n");
-        }
-        std::fs::write(&path, out)?;
-        Ok(())
+        edit_toml_file(&self.root.join("cmod.toml"), |doc| {
+            let table = doc
+                .entry("workspace")
+                .or_insert_with(toml_edit::table)
+                .as_table_like_mut()
+                .ok_or_else(|| CmodError::InvalidManifest {
+                    reason: "[workspace] is not a table".to_string(),
+                })?;
+            sync_string_array(table, "members", &ws.members);
+            sync_string_array(table, "exclude", &ws.exclude);
+            Ok(())
+        })
     }
 
     /// Get the workspace-level version, if set.
@@ -687,133 +677,6 @@ pub fn relative_path(root: &Path, path: &Path) -> String {
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
-}
-
-/// Make the string array `key` of `table` hold `list`: entries no longer
-/// listed are dropped and new ones appended, so those kept keep their
-/// place and comments. An absent array is only created to hold entries.
-fn update_string_array(table: &mut dyn toml_edit::TableLike, key: &str, list: &[String]) {
-    match table.get_mut(key).and_then(|item| item.as_array_mut()) {
-        Some(array) => {
-            let mut i = 0;
-            while i < array.len() {
-                let listed = array
-                    .get(i)
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|entry| list.iter().any(|l| l == entry));
-                if listed {
-                    i += 1;
-                } else {
-                    remove_entry(array, i);
-                }
-            }
-            for entry in list {
-                if !array.iter().any(|v| v.as_str() == Some(entry)) {
-                    push_entry(array, entry);
-                }
-            }
-        }
-        None if list.is_empty() => {}
-        None => {
-            let array: toml_edit::Array = list.iter().map(String::as_str).collect();
-            table.insert(key, toml_edit::value(array));
-        }
-    }
-}
-
-/// The text before a value in an array: the rest of the line of the
-/// entry before it (its comment), then the lines leading to this one.
-fn value_prefix(value: &toml_edit::Value) -> String {
-    value
-        .decor()
-        .prefix()
-        .and_then(|p| p.as_str())
-        .unwrap_or("")
-        .to_string()
-}
-
-/// `text` split at its first line break: the end of a line, and the lines
-/// after it (`""` when there is none).
-fn split_line_end(text: &str) -> (&str, &str) {
-    match text.find('\n') {
-        Some(at) => text.split_at(at),
-        None => (text, ""),
-    }
-}
-
-/// Give what follows the last entry of `array` (without a trailing comma,
-/// the last value holds it) to the array, which prints the same.
-fn take_last_suffix(array: &mut toml_edit::Array) {
-    if array.trailing_comma() || array.is_empty() {
-        return;
-    }
-    let last = array.len() - 1;
-    if let Some(value) = array.get_mut(last) {
-        let suffix = value
-            .decor()
-            .suffix()
-            .and_then(|s| s.as_str())
-            .unwrap_or("")
-            .to_string();
-        value.decor_mut().set_suffix("");
-        let trailing = array.trailing().as_str().unwrap_or("").to_string();
-        array.set_trailing(suffix + &trailing);
-    }
-}
-
-/// Append `entry` to `array`; in an array written one entry per line, on
-/// a line of its own, indented as the first, after any comment ending the
-/// last.
-fn push_entry(array: &mut toml_edit::Array, entry: &str) {
-    if !array.iter().any(|v| value_prefix(v).contains('\n')) {
-        array.push(entry);
-        return;
-    }
-    let indent = array
-        .get(0)
-        .map(value_prefix)
-        .and_then(|p| p.rsplit_once('\n').map(|(_, indent)| indent.to_string()))
-        .unwrap_or_default();
-    take_last_suffix(array);
-    let trailing = array.trailing().as_str().unwrap_or("").to_string();
-    let (before, after) = trailing
-        .rsplit_once('\n')
-        .unwrap_or((trailing.as_str(), ""));
-    let mut value = toml_edit::Value::from(entry);
-    value
-        .decor_mut()
-        .set_prefix(format!("{}\n{}", before, indent));
-    let after = format!("\n{}", after);
-    array.push_formatted(value);
-    array.set_trailing_comma(true);
-    array.set_trailing(after);
-}
-
-/// Remove entry `index` of `array` with its line: the comment ending its
-/// line and those above it go, the comment ending the line before stays.
-fn remove_entry(array: &mut toml_edit::Array, index: usize) {
-    take_last_suffix(array);
-    let Some(removed) = array.get(index).map(value_prefix) else {
-        return;
-    };
-    // The end of the line before it, kept; on one line, the space before it.
-    let (kept, _) = split_line_end(&removed);
-    let kept = kept.to_string();
-    let multiline = removed.contains('\n');
-    if index + 1 < array.len() {
-        if let Some(next) = array.get_mut(index + 1) {
-            let prefix = value_prefix(next);
-            let (_, lines) = split_line_end(&prefix);
-            let lines = lines.to_string();
-            next.decor_mut().set_prefix(kept + &lines);
-        }
-    } else if multiline {
-        let trailing = array.trailing().as_str().unwrap_or("").to_string();
-        let (_, lines) = split_line_end(&trailing);
-        let lines = lines.to_string();
-        array.set_trailing(kept + &lines);
-    }
-    array.remove(index);
 }
 
 /// Whether a `members` or `exclude` entry is a glob pattern.
@@ -1664,54 +1527,6 @@ lib = { path = "./lib" }
             WorkspaceManager::load(root).unwrap().member_names(),
             ["core"]
         );
-    }
-
-    #[test]
-    fn test_push_entry_follows_the_array_layout() {
-        let cases = [
-            ("a = [\"x\"]", "a = [\"x\", \"y\"]"),
-            ("a = []", "a = [\"y\"]"),
-            ("a = [\n  \"x\"\n]", "a = [\n  \"x\",\n  \"y\",\n]"),
-            (
-                "a = [\n  \"x\", # x\n  # end\n]",
-                "a = [\n  \"x\", # x\n  # end\n  \"y\",\n]",
-            ),
-        ];
-        for (before, after) in cases {
-            let mut doc: toml_edit::DocumentMut = before.parse().unwrap();
-            push_entry(doc["a"].as_array_mut().unwrap(), "y");
-            assert_eq!(doc.to_string().trim_end(), after, "from {:?}", before);
-        }
-    }
-
-    #[test]
-    fn test_remove_entry_takes_its_line_and_comment() {
-        let cases = [
-            ("a = [\"x\", \"y\"]", 0, "a = [\"y\"]"),
-            ("a = [\"x\", \"y\"]", 1, "a = [\"x\"]"),
-            ("a = [\"x\", \"y\", \"z\"]", 1, "a = [\"x\", \"z\"]"),
-            (
-                "a = [\n  \"x\", # X\n  \"y\", # Y\n  \"z\", # Z\n]",
-                1,
-                "a = [\n  \"x\", # X\n  \"z\", # Z\n]",
-            ),
-            (
-                "a = [\n  \"x\", # X\n  \"y\", # Y\n]",
-                0,
-                "a = [\n  \"y\", # Y\n]",
-            ),
-            (
-                "a = [\n  \"x\", # X\n  # about y\n  \"y\", # Y\n]",
-                1,
-                "a = [\n  \"x\", # X\n]",
-            ),
-            ("a = [\n  \"x\",\n  \"y\"\n]", 1, "a = [\n  \"x\"\n]"),
-        ];
-        for (before, index, after) in cases {
-            let mut doc: toml_edit::DocumentMut = before.parse().unwrap();
-            remove_entry(doc["a"].as_array_mut().unwrap(), index);
-            assert_eq!(doc.to_string().trim_end(), after, "from {:?}", before);
-        }
     }
 
     #[test]

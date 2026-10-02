@@ -12,14 +12,15 @@ pub fn run(name: String, shell: &Shell) -> Result<(), CmodError> {
     // Remove from manifest
     Resolver::remove_dependency(&mut config.manifest, &name)?;
 
+    // Save updated manifest, then the lockfile: a manifest that cannot be
+    // written leaves both as they were.
+    config.manifest.save_dependencies(&config.manifest_path)?;
+
     // Update lockfile: remove the package
     if let Ok(mut lockfile) = Lockfile::load(&config.lockfile_path) {
         lockfile.remove_package(&name);
         lockfile.save(&config.lockfile_path)?;
     }
-
-    // Save updated manifest
-    config.manifest.save(&config.manifest_path)?;
 
     shell.status("Removing", format!("dependency '{}'", name));
 
