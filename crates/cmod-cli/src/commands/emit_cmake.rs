@@ -6,6 +6,10 @@
 //! CMake 3.28+ scans and orders; targets link the targets of the
 //! dependencies their manifests declare, which also gives them those
 //! dependencies' modules and include directories.
+//!
+//! Git dependencies get targets only as the native build admits them: named
+//! in the lockfile and checked out at the locked commit, under the same
+//! `[security] signature_policy`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -13,12 +17,13 @@ use std::path::{Path, PathBuf};
 use cmod_build::runner;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
+use cmod_core::lockfile::Lockfile;
 use cmod_core::manifest::Manifest;
 use cmod_core::shell::Shell;
 use cmod_core::types::{BuildType, ModuleUnitKind};
 use cmod_workspace::WorkspaceManager;
 
-use super::common::{detect_include_dirs, find_dep_on_disk};
+use super::common::{detect_include_dirs, locked_checkout_on_disk};
 
 /// Run `cmod emit-cmake`.
 pub fn run(shell: &Shell) -> Result<(), CmodError> {
@@ -35,7 +40,16 @@ pub fn run(shell: &Shell) -> Result<(), CmodError> {
         vec![config.root.clone()]
     };
 
-    let mut graph = PackageGraph::new(&config);
+    // Without a lockfile, no git dependency can be admitted.
+    let lockfile = if config.lockfile_path.exists() {
+        let lockfile = Lockfile::load(&config.lockfile_path)?;
+        super::build::enforce_signature_policy(&config, &lockfile, shell)?;
+        Some(lockfile)
+    } else {
+        None
+    };
+
+    let mut graph = PackageGraph::new(&config, lockfile.as_ref());
     for root in &roots {
         graph.add(root, true, shell)?;
     }
@@ -78,15 +92,17 @@ enum TargetKind {
 /// where dependencies come first.
 struct PackageGraph<'a> {
     root: &'a Config,
+    lockfile: Option<&'a Lockfile>,
     packages: Vec<Package>,
     index: HashMap<PathBuf, usize>,
     taken: HashMap<String, usize>,
 }
 
 impl<'a> PackageGraph<'a> {
-    fn new(root: &'a Config) -> Self {
+    fn new(root: &'a Config, lockfile: Option<&'a Lockfile>) -> Self {
         PackageGraph {
             root,
+            lockfile,
             packages: Vec::new(),
             index: HashMap::new(),
             taken: HashMap::new(),
@@ -99,8 +115,14 @@ impl<'a> PackageGraph<'a> {
     /// libraries.
     fn add(&mut self, dir: &Path, top: bool, shell: &Shell) -> Result<(), CmodError> {
         let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-        if self.index.contains_key(&dir) {
-            return Ok(());
+        match self.index.get(&dir) {
+            Some(&usize::MAX) => {
+                return Err(CmodError::CircularDependency {
+                    cycle: format!("{} (path dependencies)", dir.display()),
+                })
+            }
+            Some(_) => return Ok(()),
+            None => {}
         }
         // Reserve the slot so a dependency cycle stops here.
         self.index.insert(dir.clone(), usize::MAX);
@@ -118,21 +140,11 @@ impl<'a> PackageGraph<'a> {
             for (name, dep) in &config.manifest.dependencies {
                 let dep_dir = match dep.path() {
                     Some(path) => Some(dir.join(path)),
-                    None => find_dep_on_disk(
-                        &self.root.root.join("vendor"),
-                        &self.root.deps_dir(),
-                        name,
-                    ),
+                    None => self.admitted_checkout(name, shell),
                 };
-                match dep_dir {
-                    Some(dep_dir) => {
-                        self.add(&dep_dir, false, shell)?;
-                        deps.push(dep_dir.canonicalize().unwrap_or(dep_dir));
-                    }
-                    None => shell.warn(format!(
-                        "{}: not checked out, so it has no target; run `cmod build` first",
-                        name
-                    )),
+                if let Some(dep_dir) = dep_dir {
+                    self.add(&dep_dir, false, shell)?;
+                    deps.push(dep_dir.canonicalize().unwrap_or(dep_dir));
                 }
             }
         }
@@ -142,6 +154,35 @@ impl<'a> PackageGraph<'a> {
         self.packages.push(package);
         self.index.insert(dir, slot);
         Ok(())
+    }
+
+    /// The checkout of git dependency `name`, as the native build admits
+    /// it: in the lockfile and on disk at the locked commit (or vendored).
+    fn admitted_checkout(&self, name: &str, shell: &Shell) -> Option<PathBuf> {
+        let Some(lockfile) = self.lockfile else {
+            shell.warn(format!(
+                "{}: no lockfile, so it has no target; run `cmod build` first",
+                name
+            ));
+            return None;
+        };
+        let Some(pkg) = lockfile.packages.iter().find(|p| p.name == name) else {
+            shell.warn(format!(
+                "{}: not in the lockfile, so it has no target; run `cmod resolve` first",
+                name
+            ));
+            return None;
+        };
+        let checkout =
+            locked_checkout_on_disk(pkg, &self.root.root.join("vendor"), &self.root.deps_dir());
+        if checkout.is_none() {
+            shell.warn(format!(
+                "{}: not checked out at the locked commit, so it has no target; \
+                 run `cmod build` first",
+                name
+            ));
+        }
+        checkout
     }
 
     fn describe(
@@ -239,10 +280,12 @@ impl<'a> PackageGraph<'a> {
 
     fn render(&self, config: &Config) -> String {
         let manifest: &Manifest = &config.manifest;
+        // A standard is a number (`20`, `23`); anything else gets the default.
         let cxx_standard = manifest
             .toolchain
             .as_ref()
             .and_then(|tc| tc.cxx_standard.clone())
+            .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
             .unwrap_or_else(|| "20".to_string());
         let mut out = String::new();
         out.push_str("# Generated by cmod emit-cmake: do not edit manually.\n");
@@ -250,7 +293,7 @@ impl<'a> PackageGraph<'a> {
         out.push_str("cmake_minimum_required(VERSION 3.28)\n");
         out.push_str(&format!(
             "project({} VERSION {} LANGUAGES CXX)\n\n",
-            manifest.package.name,
+            cmake_quote(&manifest.package.name),
             cmake_version(&manifest.package.version)
         ));
         out.push_str(&format!("set(CMAKE_CXX_STANDARD {})\n", cxx_standard));
@@ -287,7 +330,7 @@ impl<'a> PackageGraph<'a> {
 
     fn render_package(&self, out: &mut String, p: &Package, targets: &BTreeMap<&Path, &str>) {
         let rel = |path: &Path| cmake_path(path, &self.root.root);
-        out.push_str(&format!("# {}\n", rel(&p.dir)));
+        out.push_str(&format!("# {}\n", comment_text(&rel(&p.dir))));
         let (decl, visibility) = match p.kind {
             TargetKind::Executable => (format!("add_executable({})", p.target), "PRIVATE"),
             TargetKind::Static => (format!("add_library({} STATIC)", p.target), "PUBLIC"),
@@ -377,6 +420,14 @@ fn cmake_path(path: &Path, root: &Path) -> String {
     }
 }
 
+/// `text` safe to follow `#`: a line break would end the comment, and what
+/// follows would run as CMake.
+fn comment_text(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
 /// Quote `arg` when CMake would split or expand it.
 fn cmake_quote(arg: &str) -> String {
     if arg
@@ -422,6 +473,63 @@ mod tests {
         assert_eq!(cmake_version("0.1.0-alpha.8"), "0.1.0");
         assert_eq!(cmake_version("1.2+build"), "1.2");
         assert_eq!(cmake_version("v1"), "0");
+    }
+
+    fn write_package(dir: &Path, name: &str, deps: &str) {
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("cmod.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n\
+                 [build]\ntype = \"static-lib\"\n\n[dependencies]\n{deps}"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src/lib.cppm"),
+            format!("export module local.{name};\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_path_dependency_cycle_is_an_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_package(&tmp.path().join("a"), "a", "b = { path = \"../b\" }\n");
+        write_package(&tmp.path().join("b"), "b", "a = { path = \"../a\" }\n");
+        let config = Config::load(&tmp.path().join("a")).unwrap();
+        let shell = Shell::new(cmod_core::shell::Verbosity::Quiet);
+        let mut graph = PackageGraph::new(&config, None);
+        let result = graph.add(&tmp.path().join("a"), true, &shell);
+        assert!(
+            matches!(result, Err(CmodError::CircularDependency { .. })),
+            "{:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_unlocked_git_dependency_gets_no_target() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        write_package(&root, "root", "\"github.com/x/y\" = \"^1.0\"\n");
+        // A checkout is on disk, but no lockfile admits it.
+        write_package(&root.join("build/deps/github.com_x_y"), "y", "");
+        let config = Config::load(&root).unwrap();
+        let shell = Shell::new(cmod_core::shell::Verbosity::Quiet);
+        let mut graph = PackageGraph::new(&config, None);
+        graph.add(&root, true, &shell).unwrap();
+        assert_eq!(graph.packages.len(), 1);
+        assert!(!graph.render(&config).contains("add_library(y"));
+    }
+
+    #[test]
+    fn test_comment_text_stays_one_line() {
+        assert_eq!(
+            comment_text("libs/x\nmessage(FATAL_ERROR boom)"),
+            "libs/x?message(FATAL_ERROR boom)"
+        );
+        assert_eq!(comment_text("libs/dep"), "libs/dep");
     }
 
     #[test]

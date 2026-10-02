@@ -1779,7 +1779,7 @@ pub fn run_hook(
 /// - `"require"`: fail if any git dependency lacks a content hash (proxy for signature)
 /// - `"warn"`: emit warnings for unsigned/unhashed deps
 /// - `"none"` / absent: no enforcement
-fn enforce_signature_policy(
+pub(crate) fn enforce_signature_policy(
     config: &Config,
     lockfile: &Lockfile,
     shell: &Shell,
