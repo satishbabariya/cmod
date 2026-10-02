@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::Path;
 
 use cmod_core::error::CmodError;
@@ -40,47 +41,230 @@ pub fn run(
 
     // Validate project name
     validate_project_name(&project_name)?;
+    if !workspace {
+        validate_cpp_identifier(&project_name)?;
+    }
 
+    // The repository first: if it cannot be made, nothing is written and
+    // `cmod init` can be run again.
+    if vcs == Vcs::Git {
+        init_repository(&cwd, shell)?;
+    }
     if workspace {
         init_workspace(&cwd, &project_name, shell)?;
     } else {
         init_module(&cwd, &project_name, shell)?;
     }
     if vcs == Vcs::Git {
-        init_git(&cwd, shell)?;
+        ignore_build_dir(&cwd, shell)?;
     }
     Ok(())
 }
 
-/// Ignore the build directory, and make `dir` a git repository unless it
-/// is already inside one (a package in a monorepo, a workspace member).
-fn init_git(dir: &Path, shell: &Shell) -> Result<(), CmodError> {
+/// Make `dir` a git repository unless it is already inside one (a package
+/// in a monorepo, a workspace member). Inside a repository that ignores
+/// `dir`, it gets its own, as Cargo does: the outer one would not track it.
+fn init_repository(dir: &Path, shell: &Shell) -> Result<(), CmodError> {
+    match git2::Repository::discover(dir) {
+        Ok(repo) => {
+            if !is_ignored_by(&repo, dir) {
+                return Ok(());
+            }
+        }
+        Err(e) if e.code() == git2::ErrorCode::NotFound => {}
+        // An enclosing repository cmod cannot open (owned by someone else,
+        // damaged): a repository here would be nested in it.
+        Err(e) => {
+            return Err(CmodError::GitError {
+                reason: format!(
+                "cannot tell whether {} is in a git repository ({}); fix that, or pass --vcs none",
+                dir.display(),
+                e.message()
+            ),
+            })
+        }
+    }
+    git2::Repository::init(dir).map_err(|e| CmodError::GitError {
+        reason: format!(
+            "failed to create a git repository in {}: {}",
+            dir.display(),
+            e.message()
+        ),
+    })?;
+    shell.verbose("Created", "git repository");
+    Ok(())
+}
+
+/// Whether `repo` ignores the directory `dir` inside its work tree.
+fn is_ignored_by(repo: &git2::Repository, dir: &Path) -> bool {
+    let (Some(workdir), Ok(dir)) = (repo.workdir(), dir.canonicalize()) else {
+        return false;
+    };
+    let Ok(workdir) = workdir.canonicalize() else {
+        return false;
+    };
+    match dir.strip_prefix(&workdir) {
+        Ok(rel) if !rel.as_os_str().is_empty() => {
+            let rel = format!("{}/", rel.to_string_lossy().replace('\\', "/"));
+            repo.is_path_ignored(Path::new(&rel)).unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+/// Ignore the build directory in `dir/.gitignore`, appending to one that
+/// exists (whatever its encoding) unless it already ignores `build`.
+fn ignore_build_dir(dir: &Path, shell: &Shell) -> Result<(), CmodError> {
     let gitignore = dir.join(".gitignore");
-    let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
-    if !existing
+    let existing = match std::fs::read(&gitignore) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e.into()),
+    };
+    if String::from_utf8_lossy(&existing)
         .lines()
         .any(|line| matches!(line.trim(), "/build" | "/build/" | "build" | "build/"))
     {
-        let separator = if existing.is_empty() || existing.ends_with('\n') {
-            ""
+        return Ok(());
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&gitignore)?;
+    if !existing.is_empty() && !existing.ends_with(b"\n") {
+        file.write_all(b"\n")?;
+    }
+    file.write_all(b"/build/\n")?;
+    shell.verbose(
+        if existing.is_empty() {
+            "Created"
         } else {
-            "\n"
-        };
-        std::fs::write(&gitignore, format!("{}{}/build/\n", existing, separator))?;
-        shell.verbose("Created", ".gitignore");
-    }
-
-    if git2::Repository::discover(dir).is_err() {
-        git2::Repository::init(dir).map_err(|e| CmodError::GitError {
-            reason: format!(
-                "failed to create a git repository in {}: {}",
-                dir.display(),
-                e
-            ),
-        })?;
-        shell.verbose("Created", "git repository");
-    }
+            "Updated"
+        },
+        ".gitignore",
+    );
     Ok(())
+}
+
+/// C++20 keywords, which cannot name a namespace or a module component.
+const CPP_KEYWORDS: &[&str] = &[
+    "alignas",
+    "alignof",
+    "and",
+    "and_eq",
+    "asm",
+    "auto",
+    "bitand",
+    "bitor",
+    "bool",
+    "break",
+    "case",
+    "catch",
+    "char",
+    "char8_t",
+    "char16_t",
+    "char32_t",
+    "class",
+    "compl",
+    "concept",
+    "const",
+    "consteval",
+    "constexpr",
+    "constinit",
+    "const_cast",
+    "continue",
+    "co_await",
+    "co_return",
+    "co_yield",
+    "decltype",
+    "default",
+    "delete",
+    "do",
+    "double",
+    "dynamic_cast",
+    "else",
+    "enum",
+    "explicit",
+    "export",
+    "extern",
+    "false",
+    "float",
+    "for",
+    "friend",
+    "goto",
+    "if",
+    "import",
+    "inline",
+    "int",
+    "long",
+    "module",
+    "mutable",
+    "namespace",
+    "new",
+    "noexcept",
+    "not",
+    "not_eq",
+    "nullptr",
+    "operator",
+    "or",
+    "or_eq",
+    "private",
+    "protected",
+    "public",
+    "register",
+    "reinterpret_cast",
+    "requires",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "static_assert",
+    "static_cast",
+    "struct",
+    "switch",
+    "template",
+    "this",
+    "thread_local",
+    "throw",
+    "true",
+    "try",
+    "typedef",
+    "typeid",
+    "typename",
+    "union",
+    "unsigned",
+    "using",
+    "virtual",
+    "void",
+    "volatile",
+    "wchar_t",
+    "while",
+    "xor",
+    "xor_eq",
+];
+
+/// The module (`local.<name>`) and namespace are named after the package:
+/// its name, with `-` as `_`, must be a C++ identifier that is neither a
+/// keyword nor a name reserved to the implementation (`std`, `__x`, `_X`).
+fn validate_cpp_identifier(name: &str) -> Result<(), CmodError> {
+    let ident = sanitize_cpp_name(name);
+    let mut chars = ident.chars();
+    let well_formed = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let reserved = CPP_KEYWORDS.contains(&ident.as_str())
+        || ident == "std"
+        || ident.starts_with("__")
+        || (ident.starts_with('_') && ident.chars().nth(1).is_some_and(|c| c.is_ascii_uppercase()));
+    if well_formed && !reserved {
+        return Ok(());
+    }
+    Err(CmodError::Other(format!(
+        "'{}' cannot name the package's module and namespace ('{}' is not a usable C++ identifier); pass --name with letters, digits, '_' or '-', not starting with a digit or naming a keyword",
+        name, ident
+    )))
 }
 
 /// Validate a project name for safety and correctness.
@@ -144,7 +328,7 @@ fn init_module(dir: &Path, name: &str, shell: &Shell) -> Result<(), CmodError> {
              export namespace {ns} {{\n\
              \n\
              /// A greeting from this module.\n\
-             const char* greeting() {{ return \"Hello from {module}!\"; }}\n\
+             const char *greeting() {{ return \"Hello from {module}!\"; }}\n\
              \n\
              }} // namespace {ns}\n",
             module = module_name,
@@ -175,7 +359,8 @@ fn init_module(dir: &Path, name: &str, shell: &Shell) -> Result<(), CmodError> {
              import {module};\n\
              \n\
              int main() {{\n    \
-             return std::strcmp({ns}::greeting(), \"Hello from {module}!\") == 0 ? 0 : 1;\n}}\n",
+             const char *greeting = {ns}::greeting();\n    \
+             return std::strncmp(greeting, \"Hello\", 5) == 0 ? 0 : 1;\n}}\n",
             module = module_name,
             ns = cpp_name
         ),
