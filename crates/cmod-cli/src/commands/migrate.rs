@@ -680,6 +680,7 @@ fn tokenize_args(args: &str) -> Vec<String> {
     tokens
 }
 
+/// `project(<name> [VERSION <version>] ...)`.
 fn parse_project(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
     if tokens.is_empty() {
@@ -699,6 +700,7 @@ fn parse_project(args: &str, info: &mut CmakeInfo) {
     }
 }
 
+/// `set(<variable> <value>...)`: the C++ standard and version variables.
 fn parse_set(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
     if tokens.len() < 2 {
@@ -757,6 +759,8 @@ fn source_args(tokens: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// `add_executable(<name> [WIN32] [MACOSX_BUNDLE] [EXCLUDE_FROM_ALL] <sources>...)`,
+/// and its `IMPORTED` and `ALIAS` forms.
 fn parse_add_executable(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
     let Some(name) = tokens.first() else {
@@ -788,6 +792,8 @@ fn parse_add_executable(args: &str, info: &mut CmakeInfo) {
     target.sources.extend(sources);
 }
 
+/// `add_library(<name> [STATIC|SHARED|MODULE|OBJECT] <sources>...)`, and its
+/// `INTERFACE`, `IMPORTED` and `ALIAS` forms.
 fn parse_add_library(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
     let Some(name) = tokens.first() else {
@@ -867,6 +873,7 @@ fn parse_add_library(args: &str, info: &mut CmakeInfo) {
     target.sources.extend(sources);
 }
 
+/// `find_package(<package> ...)`: a dependency to map by hand.
 fn parse_find_package(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
     if let Some(pkg) = tokens.first() {
@@ -907,6 +914,7 @@ fn parse_target_sources(args: &str, info: &mut CmakeInfo) {
     target_mut(info, name).sources.extend(files);
 }
 
+/// `target_link_libraries(<target> [<visibility>] <items>...)`.
 fn parse_target_link_libraries(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
     let Some(name) = tokens.first() else {
@@ -933,6 +941,7 @@ fn parse_target_link_libraries(args: &str, info: &mut CmakeInfo) {
     target_mut(info, name).links.extend(links);
 }
 
+/// `target_compile_options(<target> [BEFORE] <visibility> <options>...)`.
 fn parse_target_compile_options(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
     let Some(name) = tokens.first() else {
@@ -959,6 +968,8 @@ fn define_flags(tokens: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// `target_compile_definitions(<target> <visibility> <definitions>...)`, as
+/// `-D` flags.
 fn parse_target_compile_definitions(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
     let Some(name) = tokens.first() else {
@@ -985,6 +996,7 @@ fn include_dir_args(tokens: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// `target_include_directories(<target> [SYSTEM] [BEFORE|AFTER] <visibility> <dirs>...)`.
 fn parse_target_include_directories(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
     let Some(name) = tokens.first() else {
@@ -1106,11 +1118,13 @@ fn collect_product(info: &mut CmakeInfo) {
     info.linked_libraries = links;
 }
 
+/// Drop repeated items, keeping the first of each.
 fn dedup_in_order(items: &mut Vec<String>) {
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.clone()));
 }
 
+/// `target_compile_features(<target> <visibility> cxx_std_<N>...)`: the C++ standard.
 fn parse_target_compile_features(args: &str, info: &mut CmakeInfo) {
     let tokens = tokenize_args(args);
     for token in &tokens {
@@ -1169,6 +1183,7 @@ fn is_cpp_source(path: &str) -> bool {
     )
 }
 
+/// `path` with `/` separators, as cmod.toml paths and exclude patterns use.
 fn slash_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -1221,10 +1236,36 @@ fn detect_layout(project_dir: &Path, info: &CmakeInfo) -> Layout {
         layout.sources = roots.iter().map(|r| slash_path(r)).collect();
     }
 
+    // An exclude pattern is matched in every source directory, against
+    // paths relative to it and against bare file names: one that would also
+    // match a product source is left out, with a warning.
+    let product_names: Vec<String> = product
+        .iter()
+        .flat_map(|source| {
+            let path = Path::new(source);
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            let rels = roots
+                .iter()
+                .filter_map(move |r| path.strip_prefix(r).ok().map(slash_path));
+            name.into_iter().chain(rels)
+        })
+        .collect();
     for other in info.other_sources.iter().filter(|s| is_cpp_source(s)) {
         let path = Path::new(other.as_str());
-        if let Some(rel) = roots.iter().find_map(|r| path.strip_prefix(r).ok()) {
-            layout.exclude.push(slash_path(rel));
+        let Some(rel) = roots.iter().find_map(|r| path.strip_prefix(r).ok()) else {
+            continue;
+        };
+        let pattern = glob::Pattern::escape(&slash_path(rel));
+        let hits_product = glob::Pattern::new(&pattern)
+            .map(|pat| product_names.iter().any(|name| pat.matches(name)))
+            .unwrap_or(true);
+        if hits_product {
+            layout.warnings.push(format!(
+                "{} belongs to another target, but excluding it would exclude the package's own sources too; cmod builds it as part of the package",
+                other
+            ));
+        } else if !layout.exclude.contains(&pattern) {
+            layout.exclude.push(pattern);
         }
     }
 
@@ -2031,6 +2072,33 @@ add_executable(tests tests/t.cpp)
         assert_eq!(layout.sources, vec!["app", "lib/core", "lib/io"]);
         assert_eq!(layout.exclude, vec!["example.cpp"]);
         assert!(layout.module.is_none());
+    }
+
+    #[test]
+    fn test_layout_never_excludes_a_product_source() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let info = parse_cmake(
+            "project(app)
+add_library(core lib/core/geo.cpp lib/core/nested/util.cpp)
+add_executable(app app/main.cpp)
+target_link_libraries(app core)
+add_executable(example lib/core/main.cpp)
+add_executable(tool lib/core/util.cpp)
+add_executable(bench lib/core/bench[1].cpp)
+",
+        );
+        let layout = detect_layout(tmp.path(), &info);
+        assert_eq!(layout.sources, vec!["app", "lib/core"]);
+        // `main.cpp` would also drop app/main.cpp, and `util.cpp` the
+        // library's nested/util.cpp, so neither is excluded.
+        assert_eq!(layout.exclude, vec!["bench[[]1[]].cpp"]);
+        assert_eq!(layout.warnings.len(), 2, "{:?}", layout.warnings);
+        assert!(layout.warnings[0].starts_with("lib/core/main.cpp "));
+        assert!(layout.warnings[1].starts_with("lib/core/util.cpp "));
+        // The escaped pattern matches the file it names, and only it.
+        let pattern = glob::Pattern::new(&layout.exclude[0]).unwrap();
+        assert!(pattern.matches("bench[1].cpp"));
+        assert!(!pattern.matches("bench1.cpp"));
     }
 
     #[test]
