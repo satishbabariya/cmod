@@ -225,6 +225,55 @@ fn test_e2e_init_test_file_content() {
     assert!(test.contains("int main()"));
 }
 
+/// `cmod init` makes a git repository with the build directory ignored,
+/// except inside an existing repository (no nested one) or with
+/// `--vcs none`.
+#[test]
+fn test_e2e_init_sets_up_git() {
+    let tmp = TempDir::new().unwrap();
+    init_project(tmp.path(), "vcs");
+    assert!(tmp.path().join(".git").is_dir());
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(".gitignore")).unwrap(),
+        "/build/\n"
+    );
+
+    // A member inside that repository gets no repository of its own, and
+    // an existing .gitignore is extended, not replaced.
+    let member = tmp.path().join("member");
+    fs::create_dir_all(&member).unwrap();
+    fs::write(member.join(".gitignore"), "*.log").unwrap();
+    let output = run_cmod(&member, &["init", "--name", "member"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!member.join(".git").exists());
+    assert_eq!(
+        fs::read_to_string(member.join(".gitignore")).unwrap(),
+        "*.log\n/build/\n"
+    );
+
+    let plain = TempDir::new().unwrap();
+    let output = run_cmod(plain.path(), &["init", "--name", "plain", "--vcs", "none"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!plain.path().join(".git").exists());
+    assert!(!plain.path().join(".gitignore").exists());
+}
+
+/// The generated package builds, runs, says hello, and passes its test.
+#[test]
+fn test_e2e_init_runs_and_tests() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    init_project(tmp.path(), "greeter");
+    let output = run_cmod_with_llvm(tmp.path(), &["run"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output).trim(), "Hello from local.greeter!");
+    let output = run_cmod_with_llvm(tmp.path(), &["test"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
 // ─── Group 2: Dependency Management ─────────────────────────────────────────
 
 #[test]
@@ -521,6 +570,11 @@ fn test_e2e_build_has_no_unused_argument_warnings() {
         tmp.path().join("src/lib.cppm"),
         "module;\n#include <answer.h>\nexport module local.quiet;\n\
          export int answer() { return ANSWER; }\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("src/main.cpp"),
+        "import local.quiet;\nint main() { return answer() == 42 ? 0 : 1; }\n",
     )
     .unwrap();
 

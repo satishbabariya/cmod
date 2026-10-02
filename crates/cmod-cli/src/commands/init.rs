@@ -4,8 +4,23 @@ use cmod_core::error::CmodError;
 use cmod_core::manifest;
 use cmod_core::shell::Shell;
 
+/// Version control for a new package, as `--vcs` selects it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Vcs {
+    /// A git repository (unless the directory is already in one) and a
+    /// `.gitignore` for the build directory.
+    Git,
+    /// No version control files.
+    None,
+}
+
 /// Run `cmod init` — initialize a new module or workspace.
-pub fn run(workspace: bool, name: Option<String>, shell: &Shell) -> Result<(), CmodError> {
+pub fn run(
+    workspace: bool,
+    name: Option<String>,
+    vcs: Vcs,
+    shell: &Shell,
+) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
 
     // Check if cmod.toml already exists
@@ -27,10 +42,45 @@ pub fn run(workspace: bool, name: Option<String>, shell: &Shell) -> Result<(), C
     validate_project_name(&project_name)?;
 
     if workspace {
-        init_workspace(&cwd, &project_name, shell)
+        init_workspace(&cwd, &project_name, shell)?;
     } else {
-        init_module(&cwd, &project_name, shell)
+        init_module(&cwd, &project_name, shell)?;
     }
+    if vcs == Vcs::Git {
+        init_git(&cwd, shell)?;
+    }
+    Ok(())
+}
+
+/// Ignore the build directory, and make `dir` a git repository unless it
+/// is already inside one (a package in a monorepo, a workspace member).
+fn init_git(dir: &Path, shell: &Shell) -> Result<(), CmodError> {
+    let gitignore = dir.join(".gitignore");
+    let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
+    if !existing
+        .lines()
+        .any(|line| matches!(line.trim(), "/build" | "/build/" | "build" | "build/"))
+    {
+        let separator = if existing.is_empty() || existing.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        std::fs::write(&gitignore, format!("{}{}/build/\n", existing, separator))?;
+        shell.verbose("Created", ".gitignore");
+    }
+
+    if git2::Repository::discover(dir).is_err() {
+        git2::Repository::init(dir).map_err(|e| CmodError::GitError {
+            reason: format!(
+                "failed to create a git repository in {}: {}",
+                dir.display(),
+                e
+            ),
+        })?;
+        shell.verbose("Created", "git repository");
+    }
+    Ok(())
 }
 
 /// Validate a project name for safety and correctness.
@@ -89,8 +139,16 @@ fn init_module(dir: &Path, name: &str, shell: &Shell) -> Result<(), CmodError> {
     std::fs::write(
         dir.join("src/lib.cppm"),
         format!(
-            "export module {};\n\nexport namespace {} {{\n\n}} // namespace {}\n",
-            module_name, cpp_name, cpp_name
+            "export module {module};\n\
+             \n\
+             export namespace {ns} {{\n\
+             \n\
+             /// A greeting from this module.\n\
+             const char* greeting() {{ return \"Hello from {module}!\"; }}\n\
+             \n\
+             }} // namespace {ns}\n",
+            module = module_name,
+            ns = cpp_name
         ),
     )?;
 
@@ -98,17 +156,28 @@ fn init_module(dir: &Path, name: &str, shell: &Shell) -> Result<(), CmodError> {
     std::fs::write(
         dir.join("src/main.cpp"),
         format!(
-            "import {};\n\nint main() {{\n    return 0;\n}}\n",
-            module_name
+            "#include <cstdio>\n\
+             \n\
+             import {module};\n\
+             \n\
+             int main() {{\n    std::puts({ns}::greeting());\n    return 0;\n}}\n",
+            module = module_name,
+            ns = cpp_name
         ),
     )?;
 
-    // Create stub test file
+    // Create a test of the module
     std::fs::write(
         dir.join("tests/main.cpp"),
         format!(
-            "import {};\n\nint main() {{\n    return 0;\n}}\n",
-            module_name
+            "#include <cstring>\n\
+             \n\
+             import {module};\n\
+             \n\
+             int main() {{\n    \
+             return std::strcmp({ns}::greeting(), \"Hello from {module}!\") == 0 ? 0 : 1;\n}}\n",
+            module = module_name,
+            ns = cpp_name
         ),
     )?;
 

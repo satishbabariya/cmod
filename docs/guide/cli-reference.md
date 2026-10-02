@@ -38,15 +38,16 @@ These flags can be used with any command:
 Initialize a new module or workspace.
 
 ```
-cmod init [--workspace] [--name <NAME>]
+cmod init [--workspace] [--name <NAME>] [--vcs <git|none>]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--workspace` | Initialize as a workspace instead of a single module |
 | `--name <NAME>` | Project name (defaults to the current directory name) |
+| `--vcs <git\|none>` | `git` (default): a git repository, unless the directory is already in one, and a `.gitignore` ignoring `/build/`; `none`: neither |
 
-Creates a `cmod.toml` manifest and a `src/` directory with a placeholder module interface.
+Creates a `cmod.toml` manifest, a module interface (`src/lib.cppm`) exporting a greeting, a `src/main.cpp` printing it, and a test (`tests/main.cpp`): `cmod run` prints `Hello from local.<name>!` and `cmod test` passes.
 
 **Examples:**
 

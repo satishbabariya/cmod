@@ -40,13 +40,16 @@ This creates:
 
 ```
 hello/
+├── .gitignore       # Ignores /build/ (and a git repository is created, unless already in one)
 ├── cmod.toml        # Project manifest
 ├── src/
-│   ├── lib.cppm     # Module interface unit (stub)
-│   └── main.cpp     # Entry point (stub)
+│   ├── lib.cppm     # Module interface unit, exporting hello::greeting()
+│   └── main.cpp     # Entry point, printing it
 └── tests/
-    └── main.cpp     # Test entry point (stub)
+    └── main.cpp     # Test of the module
 ```
+
+It already builds and runs: `cmod run` prints `Hello from local.hello!`. Pass `--vcs none` to `cmod init` to create no repository or `.gitignore`.
 
 The generated `cmod.toml` includes `[package]`, `[module]`, `[toolchain]`, `[build]`, and other sections. The key fields are:
 
@@ -77,7 +80,7 @@ incremental = true
 
 ### Write the module interface
 
-The generated `src/lib.cppm` is a minimal stub. Replace it with your module code:
+Replace the generated `src/lib.cppm` with your module code:
 
 ```cpp
 module;
@@ -98,7 +101,7 @@ inline auto greet(std::string_view name) -> std::string {
 
 ### Write the entry point
 
-The generated `src/main.cpp` is a stub that imports the module. Replace it with your code:
+Replace the generated `src/main.cpp` with your code:
 
 ```cpp
 #include <iostream>
