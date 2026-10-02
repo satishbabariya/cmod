@@ -51,10 +51,12 @@ The standard library choice affects ABI compatibility and cache keys.
 cmod resolves which binaries to invoke in a fixed order — there is no
 config-file search or automatic Homebrew probing:
 
-| Binary | 1. Environment variable | 2. `PATH` lookup | 3. Fallback |
-|--------|------------------------|------------------|-------------|
+| Binary | 1. Environment variable | 2. Lookup | 3. Fallback |
+|--------|------------------------|-----------|-------------|
 | C++ compiler | `CXX` | first `clang++` on `PATH` | literal `clang++` (OS lookup at spawn) |
-| Dependency scanner | `SCAN_DEPS` | first `clang-scan-deps` on `PATH` | literal `clang-scan-deps` |
+| Dependency scanner | `SCAN_DEPS` | the compiler's own: next to it, named like it (`clang++-20` → `clang-scan-deps-20`), or next to the binary it links to (Debian's `/usr/bin/clang++` → `/usr/lib/llvm-18/bin/`); then the first `clang-scan-deps` on `PATH` | literal `clang-scan-deps` |
+
+The scanner is looked up beside the compiler so that it is the same LLVM: with only `clang-scan-deps-18` on `PATH` (Debian and Ubuntu packages), `CXX=clang++-20` scans with `clang-scan-deps-20`, and a plain `clang++` with LLVM 18's own scanner.
 
 The environment variables take absolute precedence and accept full paths:
 
@@ -65,7 +67,8 @@ cmod build
 ```
 
 `cmod toolchain show` prints the resolved configuration (compiler, standard,
-target); `cmod toolchain check` verifies the detected compiler executes.
+target) and the compiler a build runs; `cmod toolchain check` runs it (see
+[Validate toolchain](#validate-toolchain)).
 
 ### macOS note
 
@@ -101,7 +104,24 @@ Displays the resolved toolchain configuration: compiler, version, C++ standard, 
 cmod toolchain check
 ```
 
-Verifies that the required compiler is available on your `PATH` and can execute successfully.
+Runs the compiler a build would use (`CXX`, or the one found as above) and reports its path and version, then:
+
+- fails if it does not run, or if its version does not satisfy `[toolchain] version`;
+- warns if it cannot build C++20 modules (Apple's clang, GCC before 14);
+- for Clang, reports the dependency scanner, or warns that none was found and imports will be read from the source text.
+
+### Compiler version
+
+```toml
+[toolchain]
+compiler = "clang"
+version = "18"        # any 18.x
+# version = "18.1.0"  # 18.1.0 or a later 18.x
+# version = "=18.1.8" # exactly 18.1.8
+# version = ">=17, <20"
+```
+
+`version` is a constraint read as Cargo reads one. `cmod build` warns when the compiler does not satisfy it; `cmod toolchain check` fails.
 
 ## Cross-Compilation
 
