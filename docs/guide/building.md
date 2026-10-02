@@ -226,7 +226,11 @@ Export a `CMakeLists.txt` for projects that need CMake integration:
 
 ```bash
 cmod emit-cmake
+cmake -S . -B cmake-build -G Ninja
+cmake --build cmake-build
 ```
+
+It needs CMake 3.28+ and a generator that supports C++20 modules (Ninja). Each package gets its own target: the package itself, or every member of a workspace, plus its path dependencies and its git dependencies checked out at their locked commits (run `cmod build` first), under the same `[security] signature_policy` as `cmod build`. Module interfaces and partitions go in a `CXX_MODULES` file set, include directories and `[build] extra_flags` carry over, and each target links the targets of the dependencies its manifest declares.
 
 ### LSP Server
 

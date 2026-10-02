@@ -705,7 +705,7 @@ fn main() {
             PluginAction::Run { name, args } => commands::plugin::run_plugin(&name, &args, &shell),
         },
         Commands::Plan => commands::build::plan(&shell, cli.target.clone()),
-        Commands::EmitCmake => commands::build::emit_cmake(&shell),
+        Commands::EmitCmake => commands::emit_cmake::run(&shell),
         Commands::Migrate { from } => match from {
             MigrateFrom::Cmake { path } => commands::migrate::run(path, &shell),
         },

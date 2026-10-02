@@ -32,7 +32,8 @@ cmod/
 │   │   │   ├── main.rs                    # Entry point, clap parsing, subcommand dispatch
 │   │   │   └── commands/                  # One file per subcommand, plus:
 │   │   │       ├── common.rs              # Shared helpers: dep clone, topo sort, artifact collection
-│   │   │       ├── build.rs               # cmod build + plan + emit-cmake + lifecycle hooks
+│   │   │       ├── build.rs               # cmod build + plan + lifecycle hooks
+│   │   │       ├── emit_cmake.rs          # cmod emit-cmake (CMake 3.28+ CXX_MODULES targets)
 │   │   │       ├── migrate.rs             # cmod migrate (from CMake)
 │   │   │       ├── plugin.rs              # cmod plugin
 │   │   │       ├── plugin_sandbox.rs      # Plugin sandbox enforcement

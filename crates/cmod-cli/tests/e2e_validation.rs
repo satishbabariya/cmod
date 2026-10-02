@@ -1121,6 +1121,122 @@ fn test_e2e_emit_cmake_content() {
     assert!(cmake.contains("lib.cppm") || cmake.contains("main.cpp"));
 }
 
+/// CMake 3.28+ (C++20 module support) and Ninja, with the PATH
+/// `run_cmod_with_llvm` uses.
+fn has_cmake_for_modules() -> bool {
+    let path = format!(
+        "/opt/homebrew/opt/llvm/bin:{}",
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let cmake_ok = Command::new("cmake")
+        .arg("--version")
+        .env("PATH", &path)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let version = stdout(&o).split_whitespace().nth(2)?.to_string();
+            let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+            Some((parts.next()?, parts.next()?))
+        })
+        .is_some_and(|v| v >= (3, 28));
+    let ninja_ok = Command::new("ninja")
+        .arg("--version")
+        .env("PATH", &path)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    cmake_ok && ninja_ok
+}
+
+/// The generated CMakeLists.txt builds: module interfaces and partitions
+/// in a `CXX_MODULES` file set, the include directory, and a path
+/// dependency's module as a linked target. It used to list every source in
+/// one target and nothing else, so CMake rejected every module.
+#[test]
+fn test_e2e_emit_cmake_builds_with_cmake() {
+    if !has_llvm_clang() || !has_cmake_for_modules() {
+        eprintln!("Skipping: LLVM Clang, CMake 3.28+ or Ninja not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    write_rebuild_manifest(
+        tmp.path(),
+        "cmk",
+        "\n[dependencies]\ndep = { path = \"libs/dep\" }\n",
+    );
+    let src = tmp.path().join("src");
+    fs::create_dir_all(tmp.path().join("include")).unwrap();
+    fs::write(tmp.path().join("include/answer.h"), "#define ANSWER 21\n").unwrap();
+    fs::write(
+        src.join("lib.cppm"),
+        "export module local.cmk;\nexport import :part;\nexport int twice(int x);\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("part.cppm"),
+        "module;\n#include <answer.h>\nexport module local.cmk:part;\n\
+         export int answer() { return ANSWER; }\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("impl.cpp"),
+        "module local.cmk;\nint twice(int x) { return 2 * x; }\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("main.cpp"),
+        "import local.cmk;\nimport local.dep;\n#include <cstdio>\n\
+         int main() { std::printf(\"%d\\n\", twice(answer()) + offset()); }\n",
+    )
+    .unwrap();
+    let dep = tmp.path().join("libs/dep");
+    fs::create_dir_all(dep.join("src")).unwrap();
+    fs::write(
+        dep.join("cmod.toml"),
+        "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+         [module]\nname = \"local.dep\"\nroot = \"src/lib.cppm\"\n\n\
+         [build]\ntype = \"static-lib\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dep.join("src/lib.cppm"),
+        "export module local.dep;\nexport int offset() { return 100; }\n",
+    )
+    .unwrap();
+
+    let output = run_cmod_with_llvm(tmp.path(), &["emit-cmake"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let path = format!(
+        "/opt/homebrew/opt/llvm/bin:{}",
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let cmake = |args: &[&str]| {
+        let output = Command::new("cmake")
+            .args(args)
+            .current_dir(tmp.path())
+            .env("PATH", &path)
+            .env("CXX", "clang++")
+            .output()
+            .expect("failed to run cmake");
+        let cmakelists = fs::read_to_string(tmp.path().join("CMakeLists.txt")).unwrap();
+        assert!(
+            output.status.success(),
+            "cmake {:?} failed:\n{}\n{}\n{}",
+            args,
+            stdout(&output),
+            stderr(&output),
+            cmakelists
+        );
+    };
+    cmake(&["-S", ".", "-B", "cmake-build", "-G", "Ninja"]);
+    cmake(&["--build", "cmake-build"]);
+    let run = Command::new(tmp.path().join("cmake-build/cmk"))
+        .output()
+        .expect("failed to run the CMake-built binary");
+    assert_eq!(stdout(&run).trim(), "142");
+}
+
 // ─── Group 10: Compile Commands ─────────────────────────────────────────────
 
 #[test]
