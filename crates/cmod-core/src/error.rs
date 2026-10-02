@@ -64,6 +64,12 @@ pub enum CmodError {
     #[error("module scan failed: {reason}")]
     ModuleScanFailed { reason: String },
 
+    /// A check over the sources found problems: unformatted files, lint
+    /// warnings under `--deny-warnings`, failed `cmod check` rules. Nothing
+    /// was built, so it is not reported as a build failure.
+    #[error("{reason}")]
+    CheckFailed { reason: String },
+
     // Test errors
     #[error("test failed: {reason}")]
     TestFailed { reason: String },
@@ -110,6 +116,7 @@ impl CmodError {
             CmodError::BuildFailed { .. }
             | CmodError::CompilerNotFound { .. }
             | CmodError::ModuleScanFailed { .. }
+            | CmodError::CheckFailed { .. }
             | CmodError::TestFailed { .. }
             | CmodError::TestsFailed { .. }
             | CmodError::TestTimeout { .. } => EXIT_BUILD_FAILURE,
@@ -144,6 +151,9 @@ mod tests {
                 compiler: "clang".into(),
             },
             CmodError::ModuleScanFailed {
+                reason: "test".into(),
+            },
+            CmodError::CheckFailed {
                 reason: "test".into(),
             },
         ];
