@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use cmod_core::config::Config;
@@ -6,10 +7,13 @@ use cmod_core::lockfile::Lockfile;
 use cmod_core::shell::Shell;
 use cmod_core::types::{is_acceptable_package_name, sanitize_package_name_for_path};
 
+use super::common::{sha256_hex, verify_vendored, VendorChecksum, VENDOR_CHECKSUM_FILE};
+
 /// Run `cmod vendor` — vendor dependencies for offline builds.
-pub fn run(sync: bool, shell: &Shell) -> Result<(), CmodError> {
+pub fn run(sync: bool, offline: bool, shell: &Shell) -> Result<(), CmodError> {
     let cwd = std::env::current_dir()?;
-    let config = Config::load(&cwd)?;
+    let mut config = Config::load(&cwd)?;
+    config.offline = offline;
 
     let lockfile = Lockfile::load(&config.lockfile_path)?;
 
@@ -41,7 +45,11 @@ pub fn run(sync: bool, shell: &Shell) -> Result<(), CmodError> {
         let safe_component = sanitize_package_name_for_path(&pkg.name);
         let pkg_dir = vendor_dir.join(&safe_component);
 
-        if pkg_dir.exists() && !sync {
+        // Already vendored at the locked commit, and unchanged.
+        if !sync
+            && pkg_dir.join(VENDOR_CHECKSUM_FILE).exists()
+            && verify_vendored(pkg, &pkg_dir).is_ok()
+        {
             shell.verbose("Vendored", format!("{} (already)", pkg.name));
             vendored += 1;
             continue;
@@ -68,6 +76,14 @@ pub fn run(sync: bool, shell: &Shell) -> Result<(), CmodError> {
     }
 
     generate_vendor_config(&vendor_dir, &lockfile)?;
+    // Vendored packages build into their own build/ directories.
+    let gitignore = vendor_dir.join(".gitignore");
+    if !gitignore.exists() {
+        std::fs::write(
+            &gitignore,
+            "# Written by `cmod vendor`: build outputs of vendored packages\n*/build/\n",
+        )?;
+    }
 
     shell.status(
         "Vendored",
@@ -77,7 +93,11 @@ pub fn run(sync: bool, shell: &Shell) -> Result<(), CmodError> {
     Ok(())
 }
 
-/// Vendor a Git-sourced dependency by copying from the deps checkout.
+/// Vendor a Git-sourced dependency: the files of its locked commit, taken
+/// from the build's checkout when it has the commit or else from a fresh
+/// clone, without the repository itself (a `.git` inside `vendor/` would be
+/// committed as an embedded repository, not as files), and a
+/// [`VENDOR_CHECKSUM_FILE`] recording the commit and every file's SHA-256.
 fn vendor_git_dep(
     config: &Config,
     pkg: &cmod_core::lockfile::LockedPackage,
@@ -90,54 +110,164 @@ fn vendor_git_dep(
             reason: format!("unsafe package name: '{}'", pkg.name),
         });
     }
+    let Some(commit) = pkg.commit.as_deref() else {
+        shell.warn(format!("no locked commit for {}, skipping", pkg.name));
+        return Ok(());
+    };
+    let oid = git2::Oid::from_str(commit).map_err(|e| CmodError::GitError {
+        reason: format!("invalid commit hash '{}': {}", commit, e),
+    })?;
 
-    let deps_dir = config.deps_dir();
-    let checkout = deps_dir.join(sanitize_package_name_for_path(&pkg.name));
-
-    if checkout.exists() {
-        shell.verbose("Copying", format!("{} from deps checkout...", pkg.name));
-        copy_dir_recursive(&checkout, dest)?;
-    } else if let Some(ref repo_url) = pkg.repo {
-        shell.verbose("Cloning", format!("{} for vendor...", pkg.name));
-        let repo = open_or_clone(repo_url, dest)?;
-
-        if let Some(ref commit_hash) = pkg.commit {
-            let oid = git2::Oid::from_str(commit_hash).map_err(|e| CmodError::GitError {
-                reason: format!("invalid commit hash: {}", e),
-            })?;
-            cmod_resolver::git::checkout_commit(&repo, oid)?;
+    let checkout = config
+        .deps_dir()
+        .join(sanitize_package_name_for_path(&pkg.name));
+    let local = git2::Repository::open(&checkout)
+        .ok()
+        .filter(|repo| repo.find_commit(oid).is_ok());
+    // Declared before the clone so it outlives the repository opened in it.
+    let clone_dir;
+    let repo = match local {
+        Some(repo) => {
+            shell.verbose("Exporting", format!("{} from the deps checkout", pkg.name));
+            repo
         }
-    } else {
-        shell.warn(format!("no source for {}, skipping", pkg.name));
-    }
+        None => {
+            let Some(url) = pkg.repo.as_deref() else {
+                shell.warn(format!("no source for {}, skipping", pkg.name));
+                return Ok(());
+            };
+            if config.offline {
+                return Err(CmodError::GitError {
+                    reason: format!(
+                        "{} is not checked out at commit {}, and --offline does not fetch",
+                        pkg.name, commit
+                    ),
+                });
+            }
+            shell.verbose("Cloning", format!("{} for vendor...", pkg.name));
+            clone_dir = tempfile::TempDir::new()?;
+            git2::Repository::clone(url, clone_dir.path()).map_err(|e| CmodError::GitError {
+                reason: format!("failed to clone {}: {}", url, e),
+            })?
+        }
+    };
 
-    Ok(())
+    export_commit(&repo, oid, dest, &pkg.name, shell)
 }
 
-/// Open an existing vendored clone or clone fresh.
-///
-/// A previous `vendor --sync` may have left a non-empty directory here, and
-/// git2 refuses to clone into one (#38). Reuse the directory when it is a
-/// valid repo (fetching so a newly locked commit is available); otherwise
-/// clear it and clone from scratch. Fetch failures are tolerated so offline
-/// re-syncs still work when the locked commit is already present.
-fn open_or_clone(url: &str, dest: &Path) -> Result<git2::Repository, CmodError> {
-    if dest.join(".git").exists() {
-        let repo = git2::Repository::open(dest).map_err(|e| CmodError::GitError {
-            reason: format!("failed to open vendored repo at {}: {}", dest.display(), e),
-        })?;
-        if let Ok(mut remote) = repo.find_remote("origin") {
-            let _ = remote.fetch(&[] as &[&str], None, None);
-        }
-        return Ok(repo);
-    }
+/// Write the files of commit `oid` to `dest`, replacing what is there, and
+/// the [`VENDOR_CHECKSUM_FILE`] listing them.
+fn export_commit(
+    repo: &git2::Repository,
+    oid: git2::Oid,
+    dest: &Path,
+    name: &str,
+    shell: &Shell,
+) -> Result<(), CmodError> {
+    let git_err = |e: git2::Error| CmodError::GitError {
+        reason: format!("{}: {}", name, e),
+    };
+    let tree = repo
+        .find_commit(oid)
+        .map_err(git_err)?
+        .tree()
+        .map_err(git_err)?;
 
     if dest.exists() {
         std::fs::remove_dir_all(dest)?;
     }
-    git2::Repository::clone(url, dest).map_err(|e| CmodError::GitError {
-        reason: format!("failed to clone {}: {}", url, e),
+    std::fs::create_dir_all(dest)?;
+
+    let mut files = BTreeMap::new();
+    let mut failure = None;
+    tree.walk(git2::TreeWalkMode::PreOrder, |dir, entry| {
+        let Some(entry_name) = entry.name() else {
+            return git2::TreeWalkResult::Ok;
+        };
+        let rel = format!("{}{}", dir, entry_name);
+        match entry.kind() {
+            Some(git2::ObjectType::Blob) => {
+                let result = repo
+                    .find_blob(entry.id())
+                    .map_err(git_err)
+                    .and_then(|blob| write_blob(dest, &rel, entry.filemode(), blob.content()));
+                match result {
+                    Ok(Some(sum)) => {
+                        files.insert(rel, sum);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        failure = Some(e);
+                        return git2::TreeWalkResult::Abort;
+                    }
+                }
+            }
+            Some(git2::ObjectType::Commit) => {
+                shell.warn(format!("{}: submodule {} is not vendored", name, rel));
+            }
+            _ => {}
+        }
+        git2::TreeWalkResult::Ok
     })
+    .map_err(|e| failure.take().unwrap_or_else(|| git_err(e)))?;
+
+    let checksum = VendorChecksum {
+        commit: oid.to_string(),
+        files,
+    };
+    let json = serde_json::to_string_pretty(&checksum)
+        .map_err(|e| CmodError::Other(format!("{}: {}", name, e)))?;
+    std::fs::write(dest.join(VENDOR_CHECKSUM_FILE), json + "\n")?;
+    Ok(())
+}
+
+/// Write one blob of the tree to `dest/rel`: a file (executable when git
+/// says so) or, on Unix, a symbolic link. Returns the file's SHA-256, or
+/// `None` for a link, which the checksums leave out.
+fn write_blob(
+    dest: &Path,
+    rel: &str,
+    filemode: i32,
+    content: &[u8],
+) -> Result<Option<String>, CmodError> {
+    let path = dest.join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if filemode == 0o120000 && write_symlink(&path, content)? {
+        return Ok(None);
+    }
+    std::fs::write(&path, content)?;
+    if filemode == 0o100755 {
+        make_executable(&path)?;
+    }
+    Ok(Some(sha256_hex(content)))
+}
+
+/// Create the symbolic link `path` pointing at `target`; false where links
+/// are not created (Windows), which then gets a file holding the target.
+#[cfg(unix)]
+fn write_symlink(path: &Path, target: &[u8]) -> std::io::Result<bool> {
+    use std::os::unix::ffi::OsStrExt;
+    std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(target), path)?;
+    Ok(true)
+}
+
+#[cfg(not(unix))]
+fn write_symlink(_path: &Path, _target: &[u8]) -> std::io::Result<bool> {
+    Ok(false)
+}
+
+/// Mark `path` executable, as git records the file.
+#[cfg(unix)]
+fn make_executable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Vendor a path-sourced dependency by symlinking or copying.
@@ -180,16 +310,12 @@ fn remove_stale_entries(vendor_dir: &Path, lockfile: &Lockfile) -> Result<(), Cm
 
 /// Generate vendor/config.toml mapping deps to local paths.
 fn generate_vendor_config(vendor_dir: &Path, lockfile: &Lockfile) -> Result<(), CmodError> {
-    let mut config = String::from("# Auto-generated by `cmod vendor`\n\n");
+    let mut config =
+        String::from("# Auto-generated by `cmod vendor`; paths are relative to this directory\n\n");
 
     for pkg in &lockfile.packages {
         let safe = sanitize_package_name_for_path(&pkg.name);
-        config.push_str(&format!(
-            "[source.\"{}\"]\npath = \"{}/{}\"\n",
-            pkg.name,
-            vendor_dir.display(),
-            safe,
-        ));
+        config.push_str(&format!("[source.\"{}\"]\npath = \"{}\"\n", pkg.name, safe,));
         if let Some(ref commit) = pkg.commit {
             config.push_str(&format!("commit = \"{}\"\n", commit));
         }
@@ -197,30 +323,6 @@ fn generate_vendor_config(vendor_dir: &Path, lockfile: &Lockfile) -> Result<(), 
     }
 
     std::fs::write(vendor_dir.join("config.toml"), config)?;
-    Ok(())
-}
-
-/// Recursively copy a directory.
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), CmodError> {
-    std::fs::create_dir_all(dest)?;
-
-    for entry in walkdir::WalkDir::new(src)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let relative = entry.path().strip_prefix(src).unwrap_or(entry.path());
-        let target = dest.join(relative);
-
-        if entry.file_type().is_dir() {
-            std::fs::create_dir_all(&target)?;
-        } else {
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(entry.path(), &target)?;
-        }
-    }
-
     Ok(())
 }
 
@@ -324,24 +426,91 @@ mod tests {
         );
     }
 
+    /// The vendored copy is the commit's files with their checksums, no
+    /// repository: a `.git` in `vendor/` would be committed as an embedded
+    /// repository, not as files.
     #[test]
-    fn test_copy_dir_recursive() {
-        let src = TempDir::new().unwrap();
-        let dest = TempDir::new().unwrap();
+    fn test_vendor_git_dep_exports_files_with_checksums() {
+        let tmp = TempDir::new().unwrap();
+        let upstream = tmp.path().join("upstream");
+        let commit = init_fixture_repo(&upstream);
+        let config = setup_project(&tmp);
+        let dest = config.root.join("vendor").join("dep");
+        let pkg = make_locked_pkg("dep", upstream.to_str().unwrap(), &commit);
 
-        std::fs::write(src.path().join("a.txt"), "hello").unwrap();
-        let sub = src.path().join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(sub.join("b.txt"), "world").unwrap();
+        vendor_git_dep(&config, &pkg, &dest, &quiet_shell()).unwrap();
 
-        let dest_path = dest.path().join("out");
-        copy_dir_recursive(src.path(), &dest_path).unwrap();
-
-        assert!(dest_path.join("a.txt").exists());
-        assert!(dest_path.join("sub/b.txt").exists());
+        assert!(!dest.join(".git").exists());
+        let checksum: VendorChecksum = serde_json::from_str(
+            &std::fs::read_to_string(dest.join(VENDOR_CHECKSUM_FILE)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(checksum.commit, commit);
         assert_eq!(
-            std::fs::read_to_string(dest_path.join("a.txt")).unwrap(),
-            "hello"
+            checksum.files.get("lib.cppm"),
+            Some(&sha256_hex(b"export module fixture;"))
+        );
+        assert!(verify_vendored(&pkg, &dest).is_ok());
+    }
+
+    /// Exported from the build's checkout when it has the locked commit, so
+    /// vendoring works offline after a build.
+    #[test]
+    fn test_vendor_git_dep_uses_the_deps_checkout() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = setup_project(&tmp);
+        let checkout = config.deps_dir().join("github.com_acme_dep");
+        let commit = init_fixture_repo(&checkout);
+        config.offline = true;
+        let pkg = make_locked_pkg(
+            "github.com/acme/dep",
+            "https://invalid.example/dep",
+            &commit,
+        );
+        let dest = config.root.join("vendor").join("github.com_acme_dep");
+
+        vendor_git_dep(&config, &pkg, &dest, &quiet_shell()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest.join("lib.cppm")).unwrap(),
+            "export module fixture;"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_export_commit_keeps_executable_bits_and_links() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let repo_dir = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        let repo = git2::Repository::init(&repo_dir).unwrap();
+        std::fs::write(repo_dir.join("run.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(
+            repo_dir.join("run.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("run.sh", repo_dir.join("link.sh")).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("run.sh")).unwrap();
+        index.add_path(Path::new("link.sh")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        let dest = tmp.path().join("out");
+        export_commit(&repo, oid, &dest, "x", &quiet_shell()).unwrap();
+        let mode = std::fs::metadata(dest.join("run.sh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0o111);
+        assert_eq!(
+            std::fs::read_link(dest.join("link.sh")).unwrap(),
+            Path::new("run.sh")
         );
     }
 
@@ -369,6 +538,8 @@ mod tests {
         let content = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
         assert!(content.contains("[source.\"fmt\"]"));
         assert!(content.contains("commit = \"abc123\""));
+        // Relative, so the vendor directory works wherever it is checked out.
+        assert!(content.contains("path = \"fmt\"\n"), "{}", content);
     }
 
     #[test]

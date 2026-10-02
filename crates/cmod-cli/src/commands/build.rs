@@ -108,6 +108,35 @@ pub fn run(
             }
         }
 
+        // A checkout the build would use must not have been changed: a
+        // vendored copy is checked against its checksums when it is used,
+        // a checkout in build/deps/ against its commit here.
+        let deps_dir = config.deps_dir();
+        for pkg in &lockfile.packages {
+            if pkg.source.as_deref() != Some("git") {
+                continue;
+            }
+            let Some(dir) =
+                super::common::find_dep_on_disk(&config.root.join("vendor"), &deps_dir, &pkg.name)
+            else {
+                continue;
+            };
+            if !dir.starts_with(&deps_dir) || !dir.join(".git").exists() {
+                continue;
+            }
+            let modified = super::common::modified_tracked_files(&dir)?;
+            if !modified.is_empty() {
+                return Err(CmodError::SecurityViolation {
+                    reason: format!(
+                        "the checkout of '{}' in {} has local changes ({}); delete it to fetch the locked commit again",
+                        pkg.name,
+                        dir.display(),
+                        modified.join(", ")
+                    ),
+                });
+            }
+        }
+
         shell.verbose(
             "Verified",
             format!("lockfile integrity ({} packages)", lockfile.packages.len()),
@@ -540,7 +569,13 @@ fn build_vendored_dependencies(
                 }
             }
         } else {
-            match super::common::ensure_dep_on_disk(pkg, &vendor_dir, &deps_dir, shell) {
+            match super::common::ensure_dep_on_disk(
+                pkg,
+                &vendor_dir,
+                &deps_dir,
+                config.offline,
+                shell,
+            ) {
                 Ok(Some(d)) => d,
                 Ok(None) => continue,
                 Err(e) => return Err(e),
@@ -1889,11 +1924,16 @@ pub fn plan(shell: &Shell, target_override: Option<String>) -> Result<(), CmodEr
                 continue;
             }
 
-            let dep_dir =
-                match super::common::ensure_dep_on_disk(pkg, &vendor_dir, &deps_dir, shell)? {
-                    Some(d) => d,
-                    None => continue,
-                };
+            let dep_dir = match super::common::ensure_dep_on_disk(
+                pkg,
+                &vendor_dir,
+                &deps_dir,
+                config.offline,
+                shell,
+            )? {
+                Some(d) => d,
+                None => continue,
+            };
 
             let mut dep_config = Config::load(&dep_dir)?;
             dep_config.profile = config.profile;

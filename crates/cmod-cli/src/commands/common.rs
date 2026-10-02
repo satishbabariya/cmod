@@ -3,12 +3,14 @@
 //! Functions in this module are used by `build`, `test`, `compile-commands`,
 //! and `plan` to locate vendored/resolved dependency artifacts on disk.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use cmod_build::runner;
 use cmod_core::config::Config;
+use cmod_core::error::CmodError;
 use cmod_core::lockfile::{LockedPackage, Lockfile};
+use cmod_core::types::sanitize_package_name_for_path;
 
 /// Collected artifacts from a built dependency.
 #[derive(Debug, Default, Clone)]
@@ -80,23 +82,133 @@ pub fn remote_cache_client(
 
 /// Find a dependency on disk, checking `vendor/` first, then `build/deps/`.
 ///
-/// The vendor directory uses real path separators (e.g., `vendor/github.com/user/repo`),
-/// while the deps directory uses sanitized names (e.g., `build/deps/github.com_user_repo`).
+/// Both directories name a package's directory after it with path
+/// separators replaced (`github.com_user_repo`), as `cmod vendor` and the
+/// resolver write it. `vendor/github.com/user/repo`, laid out by hand, is
+/// found too.
 pub fn find_dep_on_disk(vendor_dir: &Path, deps_dir: &Path, pkg_name: &str) -> Option<PathBuf> {
-    // Try vendor/ first (uses real path separators as written by `cmod vendor`)
-    let vendor_path = vendor_dir.join(pkg_name);
-    if vendor_path.exists() {
-        return Some(vendor_path);
+    let sanitized = sanitize_package_name_for_path(pkg_name);
+    [
+        vendor_dir.join(&sanitized),
+        vendor_dir.join(pkg_name),
+        deps_dir.join(&sanitized),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+}
+
+/// The file `cmod vendor` writes in each package it vendors: the commit it
+/// exported and the SHA-256 of every file, so a build can tell the vendored
+/// copy is still that commit.
+pub const VENDOR_CHECKSUM_FILE: &str = ".cmod-checksum.json";
+
+/// The contents of [`VENDOR_CHECKSUM_FILE`].
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct VendorChecksum {
+    /// The locked commit the files were exported from.
+    pub commit: String,
+    /// Path relative to the package (with `/`) → SHA-256 of its contents.
+    pub files: BTreeMap<String, String>,
+}
+
+/// Hex SHA-256 of `bytes`.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
+/// The first eight characters of a commit, for messages.
+fn short_commit(commit: &str) -> &str {
+    &commit[..8.min(commit.len())]
+}
+
+/// Check that the vendored copy of `pkg` in `dir` is its locked commit: the
+/// commit [`VENDOR_CHECKSUM_FILE`] records, with every file it lists
+/// unchanged, or for a vendored git checkout its HEAD. A copy without
+/// either, or a package with no locked commit, is taken as it is.
+pub fn verify_vendored(pkg: &LockedPackage, dir: &Path) -> Result<(), CmodError> {
+    let Some(expected) = pkg.commit.as_deref() else {
+        return Ok(());
+    };
+    let stale = |actual: &str| {
+        CmodError::Other(format!(
+            "vendored {} is commit {}, but cmod.lock locks {}; run `cmod vendor --sync`",
+            pkg.name,
+            short_commit(actual),
+            short_commit(expected)
+        ))
+    };
+
+    let checksum_path = dir.join(VENDOR_CHECKSUM_FILE);
+    if checksum_path.exists() {
+        let checksum: VendorChecksum =
+            serde_json::from_str(&std::fs::read_to_string(&checksum_path)?).map_err(|e| {
+                CmodError::Other(format!("unreadable {}: {}", checksum_path.display(), e))
+            })?;
+        if checksum.commit != expected {
+            return Err(stale(&checksum.commit));
+        }
+        let changed: Vec<&str> = checksum
+            .files
+            .iter()
+            .filter(|(rel, sum)| {
+                std::fs::read(dir.join(rel))
+                    .map(|bytes| sha256_hex(&bytes))
+                    .ok()
+                    != Some((*sum).clone())
+            })
+            .map(|(rel, _)| rel.as_str())
+            .collect();
+        if !changed.is_empty() {
+            let shown: Vec<&str> = changed.iter().take(5).copied().collect();
+            let more = match changed.len() - shown.len() {
+                0 => String::new(),
+                n => format!(" and {} more", n),
+            };
+            return Err(CmodError::SecurityViolation {
+                reason: format!(
+                    "vendored {} differs from commit {}: {}{} changed or missing; run `cmod vendor --sync` to restore it",
+                    pkg.name,
+                    short_commit(expected),
+                    shown.join(", "),
+                    more
+                ),
+            });
+        }
+        return Ok(());
     }
 
-    // Try build/deps/ (uses sanitized underscores as written by the resolver)
-    let sanitized = pkg_name.replace(['/', '\\'], "_");
-    let deps_path = deps_dir.join(&sanitized);
-    if deps_path.exists() {
-        return Some(deps_path);
+    if dir.join(".git").exists() {
+        let head = git2::Repository::open(dir)
+            .and_then(|repo| repo.head()?.peel_to_commit().map(|c| c.id().to_string()))
+            .map_err(|e| CmodError::GitError {
+                reason: format!("vendored {}: {}", pkg.name, e),
+            })?;
+        if head != expected {
+            return Err(stale(&head));
+        }
     }
+    Ok(())
+}
 
-    None
+/// Tracked files of the git checkout in `dir` that differ from its HEAD
+/// (build outputs and other untracked files aside), relative to `dir`.
+pub fn modified_tracked_files(dir: &Path) -> Result<Vec<String>, CmodError> {
+    let repo = git2::Repository::open(dir).map_err(|e| CmodError::GitError {
+        reason: format!("failed to open {}: {}", dir.display(), e),
+    })?;
+    let mut options = git2::StatusOptions::new();
+    options.include_untracked(false).include_ignored(false);
+    let statuses = repo
+        .statuses(Some(&mut options))
+        .map_err(|e| CmodError::GitError {
+            reason: format!("failed to read the status of {}: {}", dir.display(), e),
+        })?;
+    Ok(statuses
+        .iter()
+        .filter(|entry| entry.status() != git2::Status::CURRENT)
+        .filter_map(|entry| entry.path().map(String::from))
+        .collect())
 }
 
 /// Files directly in `dir` with extension `ext`, sorted. Sorted because the
@@ -153,19 +265,23 @@ pub fn locked_checkout_on_disk(
             .ok()
             .filter(|head| head.to_string() == *expected)
             .map(|_| d),
-        _ => Some(d),
+        _ => verify_vendored(pkg, &d).ok().map(|_| d),
     }
 }
 
 /// Ensure a git dependency is present on disk, cloning it if necessary.
 ///
-/// First checks `vendor/` and `build/deps/` via `find_dep_on_disk()`. If the dep
-/// is not found, clones it from the lockfile's `repo` URL and checks out the
-/// locked `commit` hash. Returns the path if the dep has a `cmod.toml`, or `None`.
+/// First checks `vendor/` and `build/deps/` via `find_dep_on_disk()`. A
+/// vendored copy must be the locked commit ([`verify_vendored`]); a
+/// checkout in `build/deps/` at another commit is replaced. A dependency
+/// not on disk is cloned from the lockfile's `repo` URL at the locked
+/// `commit`, except `offline`, which fails instead (and leaves a stale
+/// checkout alone). Returns the path if the dep has a `cmod.toml`, or `None`.
 pub fn ensure_dep_on_disk(
     pkg: &LockedPackage,
     vendor_dir: &Path,
     deps_dir: &Path,
+    offline: bool,
     shell: &cmod_core::shell::Shell,
 ) -> Result<Option<PathBuf>, cmod_core::error::CmodError> {
     // Try finding it on disk first
@@ -181,6 +297,9 @@ pub fn ensure_dep_on_disk(
                         .map(|head_oid| head_oid.to_string() == *expected_commit)
                         .unwrap_or(false);
                     if !matches {
+                        if offline {
+                            return Err(not_fetched_offline(pkg));
+                        }
                         // Stale checkout — remove so fetch_repo gets a clean directory
                         let _ = std::fs::remove_dir_all(&d);
                     } else {
@@ -190,6 +309,7 @@ pub fn ensure_dep_on_disk(
                     return Ok(Some(d));
                 }
             } else {
+                verify_vendored(pkg, &d)?;
                 return Ok(Some(d));
             }
         }
@@ -211,8 +331,12 @@ pub fn ensure_dep_on_disk(
         None => return Ok(None),
     };
 
+    if offline {
+        return Err(not_fetched_offline(pkg));
+    }
+
     // Clone to build/deps/ using sanitized name
-    let sanitized = pkg.name.replace(['/', '\\'], "_");
+    let sanitized = sanitize_package_name_for_path(&pkg.name);
     let dest = deps_dir.join(&sanitized);
 
     shell.status(
@@ -234,6 +358,17 @@ pub fn ensure_dep_on_disk(
         Ok(Some(dest))
     } else {
         Ok(None)
+    }
+}
+
+/// The error for a git dependency an `--offline` build would have to fetch.
+fn not_fetched_offline(pkg: &LockedPackage) -> CmodError {
+    CmodError::GitError {
+        reason: format!(
+            "{} is not vendored or checked out at commit {}, and --offline does not fetch; run `cmod vendor` (or build once without --offline)",
+            pkg.name,
+            short_commit(pkg.commit.as_deref().unwrap_or_default())
+        ),
     }
 }
 
@@ -438,6 +573,7 @@ mod tests {
         let repo = git2::Repository::init(&dir).unwrap();
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("cmod.toml")).unwrap();
+        index.write().unwrap();
         let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
         let sig = git2::Signature::now("t", "t@example.com").unwrap();
         let commit = repo
@@ -471,6 +607,148 @@ mod tests {
         let (dir, _) = checkout(&deps);
         assert_eq!(locked_checkout_on_disk(&pkg, &vendor, &deps), None);
         assert!(dir.join("cmod.toml").exists(), "stale checkout was removed");
+    }
+
+    /// A vendored copy of `github.com/acme/dep` at `commit`, as `cmod
+    /// vendor` writes it.
+    fn vendored(vendor: &Path, commit: &str) -> PathBuf {
+        let dir = vendor.join("github.com_acme_dep");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("cmod.toml"), "[package]\nname = \"dep\"\n").unwrap();
+        std::fs::write(dir.join("src/lib.cppm"), "export module dep;\n").unwrap();
+        let files = ["cmod.toml", "src/lib.cppm"]
+            .iter()
+            .map(|rel| {
+                let bytes = std::fs::read(dir.join(rel)).unwrap();
+                (rel.to_string(), sha256_hex(&bytes))
+            })
+            .collect();
+        let checksum = VendorChecksum {
+            commit: commit.to_string(),
+            files,
+        };
+        std::fs::write(
+            dir.join(VENDOR_CHECKSUM_FILE),
+            serde_json::to_string(&checksum).unwrap(),
+        )
+        .unwrap();
+        dir
+    }
+
+    const COMMIT: &str = "1111111111111111111111111111111111111111";
+
+    #[test]
+    fn find_dep_on_disk_finds_what_cmod_vendor_writes() {
+        let tmp = TempDir::new().unwrap();
+        let vendor = tmp.path().join("vendor");
+        let deps = tmp.path().join("deps");
+        let name = "github.com/acme/dep";
+        assert_eq!(find_dep_on_disk(&vendor, &deps, name), None);
+
+        let (checkout_dir, _) = checkout(&deps);
+        assert_eq!(find_dep_on_disk(&vendor, &deps, name), Some(checkout_dir));
+
+        // Laid out by hand, then as `cmod vendor` writes it: vendor/ wins.
+        let by_hand = vendor.join("github.com/acme/dep");
+        std::fs::create_dir_all(&by_hand).unwrap();
+        assert_eq!(find_dep_on_disk(&vendor, &deps, name), Some(by_hand));
+        let dir = vendored(&vendor, COMMIT);
+        assert_eq!(find_dep_on_disk(&vendor, &deps, name), Some(dir));
+    }
+
+    #[test]
+    fn verify_vendored_checks_the_commit_and_every_file() {
+        let tmp = TempDir::new().unwrap();
+        let dir = vendored(tmp.path(), COMMIT);
+        assert!(verify_vendored(&git_package(COMMIT), &dir).is_ok());
+        // A package without a locked commit is taken as it is.
+        let mut unlocked = git_package(COMMIT);
+        unlocked.commit = None;
+        assert!(verify_vendored(&unlocked, &dir).is_ok());
+
+        // Locked at another commit: stale.
+        let other = "2222222222222222222222222222222222222222";
+        let err = verify_vendored(&git_package(other), &dir).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("is commit 11111111, but cmod.lock locks 22222222"),
+            "{}",
+            err
+        );
+
+        // Build outputs beside the files are fine; a changed or deleted file is not.
+        std::fs::create_dir_all(dir.join("build/debug")).unwrap();
+        std::fs::write(dir.join("build/debug/libdep.a"), "x").unwrap();
+        assert!(verify_vendored(&git_package(COMMIT), &dir).is_ok());
+        std::fs::write(dir.join("src/lib.cppm"), "export module evil;\n").unwrap();
+        std::fs::remove_file(dir.join("cmod.toml")).unwrap();
+        let err = verify_vendored(&git_package(COMMIT), &dir).unwrap_err();
+        assert!(
+            matches!(err, CmodError::SecurityViolation { .. }),
+            "{:?}",
+            err
+        );
+        assert!(
+            err.to_string()
+                .contains("cmod.toml, src/lib.cppm changed or missing"),
+            "{}",
+            err
+        );
+    }
+
+    /// A vendored git checkout (as older `cmod vendor` left them) must be
+    /// at the locked commit.
+    #[test]
+    fn verify_vendored_checks_the_head_of_a_vendored_checkout() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, commit) = checkout(&tmp.path().join("vendor"));
+        assert!(verify_vendored(&git_package(&commit), &dir).is_ok());
+        assert!(verify_vendored(&git_package(COMMIT), &dir).is_err());
+    }
+
+    #[test]
+    fn modified_tracked_files_ignores_untracked_files() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, _) = checkout(tmp.path());
+        std::fs::create_dir_all(dir.join("build")).unwrap();
+        std::fs::write(dir.join("build/out.o"), "x").unwrap();
+        assert!(modified_tracked_files(&dir).unwrap().is_empty());
+        std::fs::write(dir.join("cmod.toml"), "changed").unwrap();
+        assert_eq!(modified_tracked_files(&dir).unwrap(), vec!["cmod.toml"]);
+    }
+
+    /// Offline, a missing or stale checkout is an error: nothing is fetched,
+    /// and the stale checkout is left where it is.
+    #[test]
+    fn ensure_dep_on_disk_offline_never_fetches_or_removes() {
+        let tmp = TempDir::new().unwrap();
+        let deps = tmp.path().join("deps");
+        let vendor = tmp.path().join("vendor");
+        let shell = cmod_core::shell::Shell::from_write(
+            Box::new(std::io::sink()),
+            cmod_core::shell::Verbosity::Quiet,
+        );
+        let mut pkg = git_package(COMMIT);
+        pkg.repo = Some("https://github.com/acme/dep".to_string());
+
+        let err = ensure_dep_on_disk(&pkg, &vendor, &deps, true, &shell).unwrap_err();
+        assert!(
+            err.to_string().contains("--offline does not fetch"),
+            "{}",
+            err
+        );
+        assert!(!deps.exists());
+
+        let (dir, _) = checkout(&deps);
+        assert!(ensure_dep_on_disk(&pkg, &vendor, &deps, true, &shell).is_err());
+        assert!(dir.join("cmod.toml").exists(), "stale checkout was removed");
+
+        // Vendored at the locked commit, it is used, offline or not.
+        let vendored_dir = vendored(&vendor, COMMIT);
+        assert_eq!(
+            ensure_dep_on_disk(&pkg, &vendor, &deps, true, &shell).unwrap(),
+            Some(vendored_dir)
+        );
     }
 
     /// A root package with a path dependency `dep` whose build left one BMI,

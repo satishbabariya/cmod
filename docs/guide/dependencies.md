@@ -223,13 +223,23 @@ Vendor dependencies into your repository for offline or hermetic builds:
 
 ```bash
 cmod vendor
+git add vendor
+cmod --offline build    # builds from vendor/, fetching nothing
 ```
 
-To re-synchronize vendored deps with the lockfile:
+Each git dependency is written to `vendor/<name>` (with `/` replaced by `_`, e.g. `vendor/github.com_fmtlib_fmt`) as the files of its locked commit, without the repository, so `git add vendor` commits the files themselves. Next to them, `.cmod-checksum.json` records the commit and the SHA-256 of every file. `cmod vendor` takes them from the build's checkout in `build/deps/` when it has the locked commit, and clones otherwise. It also writes `vendor/config.toml` (paths relative to `vendor/`) and a `vendor/.gitignore` for the `build/` directories vendored packages build into.
+
+A build uses a vendored package only as the lockfile locks it: a vendored copy at another commit stops the build (run `cmod vendor --sync`), and so does a vendored file that no longer matches its checksum (a security violation, exit code 3). `cmod verify` checks the same.
+
+With `--offline`, a git dependency that is neither vendored nor checked out at its locked commit is an error rather than a fetch.
+
+To re-synchronize vendored deps with the lockfile (re-exporting every package and removing those no longer locked):
 
 ```bash
 cmod vendor --sync
 ```
+
+Without `--sync`, packages already vendored at their locked commit and unchanged are kept.
 
 ## Feature Flags
 

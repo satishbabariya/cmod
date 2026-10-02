@@ -239,6 +239,7 @@ dependencies = [
  "dirs",
  "git2",
  "glob",
+ "hex",
  "openssl",
  "semver",
  "serde",

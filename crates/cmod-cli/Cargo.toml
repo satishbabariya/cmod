@@ -37,6 +37,7 @@ dirs = { workspace = true }
 crossbeam-channel = { workspace = true }
 glob = { workspace = true }
 wait-timeout = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
-sha2 = { workspace = true }
