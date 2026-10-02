@@ -197,10 +197,38 @@ fn validate_lockfile(
                     continue;
                 }
 
-                let repo_path = deps_dir.join(&pkg.name);
-                if !repo_path.exists() {
+                let Some(repo_path) = super::common::find_dep_on_disk(
+                    &config.root.join("vendor"),
+                    &deps_dir,
+                    &pkg.name,
+                ) else {
                     shell.verbose("Skipping", format!("{} — not checked out", pkg.name));
                     continue;
+                };
+
+                // A vendored copy has no repository: its files are checked
+                // against the checksums `cmod vendor` recorded.
+                if !repo_path.starts_with(&deps_dir) {
+                    match super::common::verify_vendored(pkg, &repo_path) {
+                        Ok(()) => {
+                            shell.verbose("Verified", format!("{} — vendored copy OK", pkg.name))
+                        }
+                        Err(e) => errors.push(e.to_string()),
+                    }
+                    continue;
+                }
+
+                match super::common::modified_tracked_files(&repo_path) {
+                    Ok(modified) if !modified.is_empty() => errors.push(format!(
+                        "package '{}' checkout has local changes: {}",
+                        pkg.name,
+                        modified.join(", ")
+                    )),
+                    Ok(_) => {}
+                    Err(e) => warnings.push(format!(
+                        "could not check '{}' for local changes: {}",
+                        pkg.name, e
+                    )),
                 }
 
                 match verify_content_hash(pkg, &repo_path) {

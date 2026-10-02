@@ -2201,6 +2201,114 @@ fn test_e2e_vendor_sync() {
     );
 }
 
+/// `cmod vendor` writes the locked commit's files, which an `--offline`
+/// build then uses without fetching anything; a vendored file changed
+/// afterwards stops the build until `cmod vendor` restores it.
+#[test]
+fn test_e2e_vendored_dependency_builds_offline() {
+    if !has_llvm_clang() {
+        eprintln!("Skipping: LLVM Clang not found");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+
+    // The dependency's repository, with one commit.
+    let upstream = tmp.path().join("upstream");
+    fs::create_dir_all(upstream.join("src")).unwrap();
+    fs::write(
+        upstream.join("cmod.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2023\"\n\n\
+         [module]\nname = \"vend.dep\"\nroot = \"src/lib.cppm\"\n\n\
+         [build]\ntype = \"static-lib\"\n",
+    )
+    .unwrap();
+    fs::write(
+        upstream.join("src/lib.cppm"),
+        "export module vend.dep;\nexport int answer() { return 42; }\n",
+    )
+    .unwrap();
+    let repo = git2::Repository::init(&upstream).unwrap();
+    let mut index = repo.index().unwrap();
+    index
+        .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+        .unwrap();
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let sig = git2::Signature::now("t", "t@example.com").unwrap();
+    let commit = repo
+        .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+
+    let root = tmp.path().join("app");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("cmod.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+         [dependencies]\n\"github.com/test/dep\" = \"^1.0\"\n\n\
+         [toolchain]\ncompiler = \"clang\"\ncxx_standard = \"20\"\n\n\
+         [build]\ntype = \"binary\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/main.cpp"),
+        "import vend.dep;\nint main() { return answer() == 42 ? 0 : 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("cmod.lock"),
+        format!(
+            "version = 1\n\n[[package]]\nname = \"github.com/test/dep\"\nversion = \"1.0.0\"\n\
+             source = \"git\"\nrepo = \"{}\"\ncommit = \"{}\"\n",
+            upstream.display().to_string().replace('\\', "/"),
+            commit
+        ),
+    )
+    .unwrap();
+
+    let output = run_cmod(&root, &["vendor"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let vendored = root.join("vendor/github.com_test_dep");
+    assert!(vendored.join("src/lib.cppm").is_file());
+    assert!(
+        !vendored.join(".git").exists(),
+        "vendored with its repository"
+    );
+
+    // Offline, from vendor/ alone: nothing is fetched into build/deps.
+    let output = run_cmod_with_llvm(&root, &["--offline", "build"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!root.join("build/deps").exists());
+    let run = Command::new(root.join("build/debug/app")).status().unwrap();
+    assert!(run.success());
+
+    fs::write(
+        vendored.join("src/lib.cppm"),
+        "export module vend.dep;\nexport int answer() { return 7; }\n",
+    )
+    .unwrap();
+    let output = run_cmod_with_llvm(&root, &["--offline", "build"]);
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("src/lib.cppm changed"),
+        "{}",
+        stderr(&output)
+    );
+
+    // Restoring it needs the commit: --offline, there is no copy to take
+    // it from; online, it is cloned again.
+    let output = run_cmod(&root, &["--offline", "vendor"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("--offline does not fetch"),
+        "{}",
+        stderr(&output)
+    );
+    let output = run_cmod(&root, &["vendor"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = run_cmod_with_llvm(&root, &["--offline", "build"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
 // ─── Group 22: Cache Operations ─────────────────────────────────────────────
 
 #[test]

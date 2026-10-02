@@ -667,7 +667,7 @@ fn main() {
             ToolchainAction::Show => commands::toolchain::show(&shell),
             ToolchainAction::Check => commands::toolchain::check(&shell),
         },
-        Commands::Vendor { sync } => commands::vendor::run(sync, &shell),
+        Commands::Vendor { sync } => commands::vendor::run(sync, cli.offline, &shell),
         Commands::Lint {
             deny_warnings,
             package,

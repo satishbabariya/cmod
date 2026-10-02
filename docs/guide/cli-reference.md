@@ -284,7 +284,7 @@ cmod tidy --apply              # Remove unused dependencies
 
 ### `cmod vendor`
 
-Vendor dependencies for offline builds.
+Vendor dependencies for offline builds: each git dependency's files at its locked commit, with their checksums, under `vendor/` (see [Vendoring](dependencies.md#vendoring)).
 
 ```
 cmod vendor [--sync]
