@@ -74,6 +74,11 @@ enum Commands {
         /// Project name (defaults to directory name)
         #[arg(long)]
         name: Option<String>,
+
+        /// Version control: a git repository and a .gitignore for build/
+        /// (`git`, the default), or none
+        #[arg(long, value_enum, default_value = "git")]
+        vcs: commands::init::Vcs,
     },
 
     /// Add a dependency
@@ -525,7 +530,11 @@ fn main() {
     let shell = Shell::new(cli.verbosity());
 
     let result = match cli.command {
-        Commands::Init { workspace, name } => commands::init::run(workspace, name, &shell),
+        Commands::Init {
+            workspace,
+            name,
+            vcs,
+        } => commands::init::run(workspace, name, vcs, &shell),
         Commands::Add {
             dep,
             git,
