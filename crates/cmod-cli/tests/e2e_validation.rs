@@ -1691,6 +1691,60 @@ fn test_e2e_fmt_check_mode() {
     let _ = output.status;
 }
 
+/// `fmt --check` names the files to format by path, without calling it a
+/// build failure, and adds up a workspace's members.
+#[test]
+fn test_e2e_fmt_check_reports_unformatted_files() {
+    if !has_clang_format() {
+        eprintln!("Skipping: clang-format not available");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("cmod.toml"),
+        "[package]\nname = \"ws\"\nversion = \"0.1.0\"\nedition = \"2023\"\n\n\
+         [workspace]\nmembers = [\"a\", \"b\"]\n",
+    )
+    .unwrap();
+    for name in ["a", "b"] {
+        let dir = root.join(name);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("cmod.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2023\"\n"),
+        )
+        .unwrap();
+        fs::write(dir.join("src/ok.cpp"), "int ok() { return 0; }\n").unwrap();
+        fs::write(dir.join("src/main.cpp"), "int  main( ){return 0;}\n").unwrap();
+    }
+
+    let output = run_cmod(root, &["fmt", "--check"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let err = stderr(&output);
+    assert!(
+        err.contains(
+            "2 file(s) need formatting across 2 member(s): a/src/main.cpp, b/src/main.cpp"
+        ),
+        "{}",
+        err
+    );
+    assert!(!err.contains("build failed"), "{}", err);
+
+    let output = run_cmod(&root.join("a"), &["fmt", "--check"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("1 file(s) need formatting: src/main.cpp"),
+        "{}",
+        stderr(&output)
+    );
+
+    let output = run_cmod(root, &["fmt"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = run_cmod(root, &["fmt", "--check"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
 #[test]
 fn test_e2e_fmt_no_clang_format() {
     let tmp = TempDir::new().unwrap();

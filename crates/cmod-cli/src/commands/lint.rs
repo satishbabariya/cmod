@@ -81,7 +81,7 @@ fn lint_project(config: &Config, deny_warnings: bool, shell: &Shell) -> Result<u
     }
 
     if deny_warnings && warning_count > 0 {
-        return Err(CmodError::BuildFailed {
+        return Err(CmodError::CheckFailed {
             reason: format!(
                 "lint failed: {} warning(s) found (--deny-warnings)",
                 warning_count
@@ -132,7 +132,7 @@ fn lint_workspace(
     );
 
     if deny_warnings && total_warnings > 0 {
-        return Err(CmodError::BuildFailed {
+        return Err(CmodError::CheckFailed {
             reason: format!(
                 "lint failed: {} warning(s) across workspace (--deny-warnings)",
                 total_warnings

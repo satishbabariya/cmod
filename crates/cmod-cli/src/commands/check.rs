@@ -130,7 +130,7 @@ pub fn run(shell: &Shell) -> Result<(), CmodError> {
         );
         Ok(())
     } else {
-        Err(CmodError::BuildFailed {
+        Err(CmodError::CheckFailed {
             reason: format!("{} check(s) failed", errors.len()),
         })
     }

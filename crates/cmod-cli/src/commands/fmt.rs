@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use cmod_build::runner;
 use cmod_core::config::Config;
 use cmod_core::error::CmodError;
@@ -13,18 +15,40 @@ pub fn run(check: bool, package: Option<String>, shell: &Shell) -> Result<(), Cm
         return fmt_workspace(&config, check, package, shell);
     }
 
-    fmt_project(&config, check, shell)
+    let report = fmt_project(&config, check, shell)?;
+    if check {
+        if !report.unformatted.is_empty() {
+            return Err(unformatted_error(&report.unformatted, &config.root, None));
+        }
+        if report.files > 0 {
+            shell.status("Finished", "all files are properly formatted");
+        }
+    } else if report.files > 0 {
+        shell.status("Formatted", format!("{} files", report.files));
+    }
+    Ok(())
 }
 
-/// Format a single (non-workspace) project.
-fn fmt_project(config: &Config, check: bool, shell: &Shell) -> Result<(), CmodError> {
+/// What formatting (or checking) one package found.
+struct FmtReport {
+    /// Sources formatted or checked.
+    files: usize,
+    /// With `--check`, the sources clang-format would change.
+    unformatted: Vec<PathBuf>,
+}
+
+/// Format, or with `check` only check, the sources of one package.
+fn fmt_project(config: &Config, check: bool, shell: &Shell) -> Result<FmtReport, CmodError> {
     let src_dirs = config.format_dirs();
     let exclude = config.format_exclude();
     let sources = runner::discover_sources_multi(&src_dirs, &exclude)?;
 
     if sources.is_empty() {
         shell.warn("no source files found to format");
-        return Ok(());
+        return Ok(FmtReport {
+            files: 0,
+            unformatted: Vec::new(),
+        });
     }
 
     if !is_clang_format_available() {
@@ -41,10 +65,7 @@ fn fmt_project(config: &Config, check: bool, shell: &Shell) -> Result<(), CmodEr
     let mut unformatted = Vec::new();
 
     for source in &sources {
-        let filename = source
-            .file_name()
-            .and_then(|f| f.to_str())
-            .unwrap_or("unknown");
+        let shown = relative_to(source, &config.root);
 
         if check {
             let output = std::process::Command::new("clang-format")
@@ -52,50 +73,34 @@ fn fmt_project(config: &Config, check: bool, shell: &Shell) -> Result<(), CmodEr
                 .arg("--Werror")
                 .arg(source)
                 .output()
-                .map_err(|e| CmodError::BuildFailed {
-                    reason: format!("failed to run clang-format: {}", e),
-                })?;
+                .map_err(|e| CmodError::Other(format!("failed to run clang-format: {}", e)))?;
 
             if !output.status.success() {
-                unformatted.push(filename.to_string());
-                shell.verbose("Unformatted", filename);
+                unformatted.push(source.clone());
+                shell.verbose("Unformatted", &shown);
             }
         } else {
             let status = std::process::Command::new("clang-format")
                 .arg("-i")
                 .arg(source)
                 .status()
-                .map_err(|e| CmodError::BuildFailed {
-                    reason: format!("failed to run clang-format: {}", e),
-                })?;
+                .map_err(|e| CmodError::Other(format!("failed to run clang-format: {}", e)))?;
 
             if !status.success() {
-                return Err(CmodError::BuildFailed {
-                    reason: format!("clang-format failed for {}", filename),
-                });
+                return Err(CmodError::Other(format!(
+                    "clang-format failed for {}",
+                    shown
+                )));
             }
 
-            shell.verbose("Formatted", filename);
+            shell.verbose("Formatted", &shown);
         }
     }
 
-    if check {
-        if unformatted.is_empty() {
-            shell.status("Finished", "all files are properly formatted");
-        } else {
-            return Err(CmodError::BuildFailed {
-                reason: format!(
-                    "{} file(s) need formatting: {}",
-                    unformatted.len(),
-                    unformatted.join(", ")
-                ),
-            });
-        }
-    } else {
-        shell.status("Formatted", format!("{} files", sources.len()));
-    }
-
-    Ok(())
+    Ok(FmtReport {
+        files: sources.len(),
+        unformatted,
+    })
 }
 
 /// Format all workspace members (or a specific `--package`).
@@ -117,50 +122,57 @@ fn fmt_workspace(
         ws.members.iter().collect()
     };
 
-    let mut total_checked = 0usize;
-    let mut total_unformatted = 0usize;
-    let mut any_error = false;
+    let mut total_files = 0usize;
+    let mut unformatted = Vec::new();
 
     for member in &members {
         let member_config = super::util::create_member_config(config, member)?;
         shell.status(if check { "Checking" } else { "Formatting" }, &member.name);
 
-        match fmt_project(&member_config, check, shell) {
-            Ok(()) => {}
-            Err(CmodError::BuildFailed { ref reason }) if check => {
-                // Parse out the count from the error message
-                if let Some(count_str) = reason.split(' ').next() {
-                    if let Ok(n) = count_str.parse::<usize>() {
-                        total_unformatted += n;
-                    }
-                }
-                any_error = true;
-            }
-            Err(e) => return Err(e),
-        }
-
-        let src_dirs = member_config.format_dirs();
-        let exclude = member_config.format_exclude();
-        let sources = runner::discover_sources_multi(&src_dirs, &exclude).unwrap_or_default();
-        total_checked += sources.len();
+        let report = fmt_project(&member_config, check, shell)?;
+        total_files += report.files;
+        unformatted.extend(report.unformatted);
     }
 
-    if check && any_error {
-        return Err(CmodError::BuildFailed {
-            reason: format!(
-                "{} file(s) need formatting across {} member(s)",
-                total_unformatted,
-                members.len()
-            ),
-        });
+    if !unformatted.is_empty() {
+        return Err(unformatted_error(
+            &unformatted,
+            &config.root,
+            Some(members.len()),
+        ));
     }
 
     shell.status(
         "Finished",
-        format!("{} files across {} member(s)", total_checked, members.len()),
+        format!("{} files across {} member(s)", total_files, members.len()),
     );
 
     Ok(())
+}
+
+/// The `--check` failure naming the files to format, relative to `root`.
+fn unformatted_error(files: &[PathBuf], root: &Path, members: Option<usize>) -> CmodError {
+    let names: Vec<String> = files.iter().map(|f| relative_to(f, root)).collect();
+    let scope = match members {
+        Some(n) => format!(" across {} member(s)", n),
+        None => String::new(),
+    };
+    CmodError::CheckFailed {
+        reason: format!(
+            "{} file(s) need formatting{}: {}",
+            files.len(),
+            scope,
+            names.join(", ")
+        ),
+    }
+}
+
+/// `path` relative to `root` when it is inside it, with `/` separators.
+fn relative_to(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// Check if `clang-format` is available on PATH.
@@ -175,10 +187,22 @@ fn is_clang_format_available() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_clang_format_check_concept() {
-        let check = true;
-        let label = if check { "Checking" } else { "Formatting" };
-        assert_eq!(label, "Checking");
+    fn test_unformatted_error_names_paths_relative_to_the_root() {
+        let root = Path::new("/ws");
+        let files = vec![
+            PathBuf::from("/ws/a/src/main.cpp"),
+            PathBuf::from("/ws/b/src/main.cpp"),
+        ];
+        let err = unformatted_error(&files, root, Some(2));
+        assert_eq!(
+            err.to_string(),
+            "2 file(s) need formatting across 2 member(s): a/src/main.cpp, b/src/main.cpp"
+        );
+        let err = unformatted_error(&files[..1], Path::new("/ws/a"), None);
+        assert_eq!(err.to_string(), "1 file(s) need formatting: src/main.cpp");
+        assert_eq!(err.exit_code(), cmod_core::error::EXIT_BUILD_FAILURE);
     }
 }
