@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cmod emit-cmake` writes a CMakeLists.txt that builds** — it listed every source in one target and nothing else, so CMake rejected every module interface ("not found in a FILE_SET of type CXX_MODULES"). Include directories and path dependencies were missing too, and a workspace got a target with no sources. Every package now gets its own target: the package or each workspace member, its path dependencies and its checked-out git dependencies. Module interfaces and partitions go in a `CXX_MODULES` file set, include directories and extra flags carry over, and targets link the targets of the dependencies they declare. All eleven offline examples and the five real-world consumers CI builds now build and run with CMake 3.28 and Ninja.
+
 ## [0.1.0-alpha.8] - 2026-10-02
 
 GCC and the tools around the build catch up with the build itself. GCC 14+ packages now find their imports the way the compiler does, build completely the first time (the second build of an fmt consumer went from 6 s to 0.25 s), and link as shared libraries. `cmod test` compiles only the tests that changed, in parallel. `clang-scan-deps` finally runs, with its results cached. `cmod compile-commands` entries compile, in workspaces too. `cmod tidy --apply` no longer deletes dependencies that are in use, and a failed build reports the module that failed, or the real import cycle, instead of a cascade of errors.

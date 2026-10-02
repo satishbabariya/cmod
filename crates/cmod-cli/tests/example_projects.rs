@@ -345,3 +345,83 @@ fn test_example_library_graph_json() {
     let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert!(parsed.is_object(), "graph JSON should be an object");
 }
+
+/// CMake 3.28+ (C++20 module support) and Ninja, with the PATH
+/// `run_cmod_with_llvm` uses.
+fn has_cmake_for_modules() -> bool {
+    let path = format!(
+        "/opt/homebrew/opt/llvm/bin:{}",
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let cmake_ok = Command::new("cmake")
+        .arg("--version")
+        .env("PATH", &path)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let version = stdout(&o).split_whitespace().nth(2)?.to_string();
+            let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+            Some((parts.next()?, parts.next()?))
+        })
+        .is_some_and(|v| v >= (3, 28));
+    let ninja_ok = Command::new("ninja")
+        .arg("--version")
+        .env("PATH", &path)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    cmake_ok && ninja_ok
+}
+
+/// Every example that needs no network builds with CMake from the
+/// CMakeLists.txt `cmod emit-cmake` writes: workspaces, path dependencies,
+/// partitions, `.ixx` interfaces, header-only and shared libraries.
+#[test]
+fn test_examples_build_with_emitted_cmake() {
+    if !has_llvm_clang() || !has_cmake_for_modules() {
+        eprintln!("Skipping: LLVM Clang, CMake 3.28+ or Ninja not found");
+        return;
+    }
+    let path = format!(
+        "/opt/homebrew/opt/llvm/bin:{}",
+        std::env::var("PATH").unwrap_or_default()
+    );
+    for example in [
+        "hello",
+        "library",
+        "multi-binary",
+        "path-deps",
+        "include-dirs",
+        "ixx-modules",
+        "header-only",
+        "nested-deps",
+        "shared-lib",
+        "with-tests",
+        "workspace",
+    ] {
+        let (_tmp, dir) = copy_example(example);
+        let output = run_cmod_with_llvm(&dir, &["emit-cmake"]);
+        assert!(output.status.success(), "{}: {}", example, stderr(&output));
+        for args in [
+            &["-S", ".", "-B", "cmake-build", "-G", "Ninja"][..],
+            &["--build", "cmake-build"][..],
+        ] {
+            let output = Command::new("cmake")
+                .args(args)
+                .current_dir(&dir)
+                .env("PATH", &path)
+                .env("CXX", "clang++")
+                .output()
+                .expect("failed to run cmake");
+            assert!(
+                output.status.success(),
+                "{}: cmake {:?} failed:\n{}\n{}\n{}",
+                example,
+                args,
+                stdout(&output),
+                stderr(&output),
+                std::fs::read_to_string(dir.join("CMakeLists.txt")).unwrap_or_default()
+            );
+        }
+    }
+}

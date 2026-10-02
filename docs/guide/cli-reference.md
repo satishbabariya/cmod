@@ -380,7 +380,7 @@ cmod plan
 
 ### `cmod emit-cmake`
 
-Export a `CMakeLists.txt` for interop with CMake-based projects.
+Export a `CMakeLists.txt` for interop with CMake-based projects: a target per package (the package or each workspace member, its path dependencies and its checked-out git dependencies), with module units in `CXX_MODULES` file sets. Build it with CMake 3.28+ and Ninja. See [CMake Interop](building.md#cmake-interop).
 
 ```
 cmod emit-cmake

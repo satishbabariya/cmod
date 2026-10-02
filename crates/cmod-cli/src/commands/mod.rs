@@ -7,6 +7,7 @@ pub mod clean;
 pub mod common;
 pub mod compile_commands;
 pub mod deps;
+pub mod emit_cmake;
 pub mod explain;
 pub mod fmt;
 pub mod graph;
