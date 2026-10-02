@@ -67,11 +67,16 @@ pub fn add(name: &str, scaffold: bool, shell: &Shell) -> Result<(), CmodError> {
 
     shell.verbose("Adding", format!("member '{}' to workspace", name));
 
-    ws.add_member(name, scaffold)?;
+    let added = ws.add_member(name, scaffold)?;
 
-    shell.status("Added", format!("member '{}' to workspace", name));
-    shell.verbose("Created", format!("{}/src/lib.cppm", name));
-    shell.verbose("Created", format!("{}/cmod.toml", name));
+    if added.scaffolded {
+        shell.verbose("Created", format!("{}/cmod.toml", added.rel_path));
+        shell.verbose("Created", format!("{}/src/lib.cppm", added.rel_path));
+    }
+    shell.status(
+        "Added",
+        format!("member '{}' ({}) to workspace", added.name, added.rel_path),
+    );
 
     Ok(())
 }
@@ -89,30 +94,21 @@ pub fn remove(name: &str, shell: &Shell) -> Result<(), CmodError> {
 
     let mut ws = WorkspaceManager::load(&config.root)?;
 
-    // Check the member exists
-    if !ws.members.iter().any(|m| m.name == name) {
-        return Err(CmodError::Other(format!(
-            "member '{}' not found in workspace",
-            name
-        )));
-    }
-
-    // Remove from the members list in the manifest
-    if let Some(workspace) = &mut ws.root_manifest.workspace {
-        workspace.members.retain(|m| m != name);
-    }
-    ws.root_manifest.save(&ws.root.join("cmod.toml"))?;
-
-    // Remove from in-memory list
-    ws.members.retain(|m| m.name != name);
+    let removed = ws.remove_member(name)?;
 
     shell.verbose(
         "Removed",
-        format!("member '{}' from workspace manifest", name),
+        format!("member '{}' from workspace manifest", removed.name),
     );
+    if removed.excluded {
+        shell.note(format!(
+            "'{}' matches a [workspace] members glob, so it was added to [workspace] exclude",
+            removed.rel_path
+        ));
+    }
     shell.note("member directory was NOT deleted; remove manually if desired");
 
-    shell.status("Removed", format!("'{}' from workspace", name));
+    shell.status("Removed", format!("'{}' from workspace", removed.name));
     Ok(())
 }
 

@@ -146,119 +146,12 @@ fn ignore_build_dir(dir: &Path, shell: &Shell) -> Result<(), CmodError> {
     Ok(())
 }
 
-/// C++20 keywords, which cannot name a namespace or a module component.
-const CPP_KEYWORDS: &[&str] = &[
-    "alignas",
-    "alignof",
-    "and",
-    "and_eq",
-    "asm",
-    "auto",
-    "bitand",
-    "bitor",
-    "bool",
-    "break",
-    "case",
-    "catch",
-    "char",
-    "char8_t",
-    "char16_t",
-    "char32_t",
-    "class",
-    "compl",
-    "concept",
-    "const",
-    "consteval",
-    "constexpr",
-    "constinit",
-    "const_cast",
-    "continue",
-    "co_await",
-    "co_return",
-    "co_yield",
-    "decltype",
-    "default",
-    "delete",
-    "do",
-    "double",
-    "dynamic_cast",
-    "else",
-    "enum",
-    "explicit",
-    "export",
-    "extern",
-    "false",
-    "float",
-    "for",
-    "friend",
-    "goto",
-    "if",
-    "import",
-    "inline",
-    "int",
-    "long",
-    "module",
-    "mutable",
-    "namespace",
-    "new",
-    "noexcept",
-    "not",
-    "not_eq",
-    "nullptr",
-    "operator",
-    "or",
-    "or_eq",
-    "private",
-    "protected",
-    "public",
-    "register",
-    "reinterpret_cast",
-    "requires",
-    "return",
-    "short",
-    "signed",
-    "sizeof",
-    "static",
-    "static_assert",
-    "static_cast",
-    "struct",
-    "switch",
-    "template",
-    "this",
-    "thread_local",
-    "throw",
-    "true",
-    "try",
-    "typedef",
-    "typeid",
-    "typename",
-    "union",
-    "unsigned",
-    "using",
-    "virtual",
-    "void",
-    "volatile",
-    "wchar_t",
-    "while",
-    "xor",
-    "xor_eq",
-];
-
 /// The module (`local.<name>`) and namespace are named after the package:
 /// its name, with `-` as `_`, must be a C++ identifier that is neither a
 /// keyword nor a name reserved to the implementation (`std`, `__x`, `_X`).
 fn validate_cpp_identifier(name: &str) -> Result<(), CmodError> {
     let ident = sanitize_cpp_name(name);
-    let mut chars = ident.chars();
-    let well_formed = chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    let reserved = CPP_KEYWORDS.contains(&ident.as_str())
-        || ident == "std"
-        || ident.starts_with("__")
-        || (ident.starts_with('_') && ident.chars().nth(1).is_some_and(|c| c.is_ascii_uppercase()));
-    if well_formed && !reserved {
+    if cmod_core::types::is_usable_cpp_identifier(&ident) {
         return Ok(());
     }
     Err(CmodError::Other(format!(

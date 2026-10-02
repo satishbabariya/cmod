@@ -290,7 +290,7 @@ pub fn run(
                 .map(|ws| {
                     ws.members
                         .iter()
-                        .map(|m| m.name.clone())
+                        .map(|m| m.rel_path.clone())
                         .collect::<Vec<_>>()
                         .join(", ")
                 })

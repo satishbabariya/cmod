@@ -78,10 +78,12 @@ my-workspace/
 [workspace]
 name = "my-workspace"            # Workspace name
 version = "0.1.0"                # Unified version (optional, applied to all members)
-members = ["core", "utils", "app"]  # Member directories
-exclude = ["experimental/*"]     # Directories to exclude
+members = ["core", "utils", "app"]  # Member directories (globs allowed: "libs/*")
+exclude = ["experimental/*"]     # Directories to exclude, with what is inside them
 resolver = "2"                   # Dependency resolver version
 ```
+
+A member is named by its `[package] name`, wherever its directory is: `libs/util` with `name = "util"` is the member `util`, as `cmod run -p`, `cmod test -p` and `cmod workspace list` show it; a member with no name is named after its directory. Two members may not share a name, and a name may not contain `/`, `\` or `:`.
 
 ### Shared dependencies
 
@@ -124,6 +126,8 @@ core = { path = "../core" }
 utils = { path = "../utils" }
 ```
 
+A path dependency on a member's directory makes that member build first, and its modules importable, whatever the dependency is keyed.
+
 ## Working with Workspaces
 
 ### List members
@@ -151,6 +155,8 @@ cmod run -p app --release     # Run in release mode
 ```bash
 cmod workspace remove experimental
 ```
+
+A member is removed by name or by directory. The `members` entry naming its directory is dropped; a member that a glob matches is added to `exclude` instead (refused when that would exclude members inside its directory too). The directory is left in place.
 
 ## Example Workspace
 
