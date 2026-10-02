@@ -186,7 +186,7 @@ checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
 name = "cmod-build"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "anyhow",
  "cmod-cache",
@@ -205,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "cmod-cache"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -224,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "cmod-cli"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "anyhow",
  "clap",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "cmod-core"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "anstream",
  "anstyle",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "cmod-lsp"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "anyhow",
  "cmod-build",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "cmod-resolver"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "cmod-security"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "cmod-cache",
  "cmod-core",
@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "cmod-workspace"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "anyhow",
  "cmod-core",

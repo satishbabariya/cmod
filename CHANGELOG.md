@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.9] - 2026-10-02
+
+The commands around the build now do what they say. `cmod emit-cmake` writes a CMakeLists.txt that CMake builds, and `cmod migrate cmake` produces a package that builds (fmt's own CMakeLists.txt included). Vendored dependencies are used, can be committed, and are verified; `--offline` builds never fetch. `cmod graph` draws the module graph, `cmod sbom` writes valid CycloneDX, and every lockfile cmod writes passes `--verify`. Clang builds scan with the compiler's own `clang-scan-deps`, found on Debian and Ubuntu too, and `cmod toolchain check` checks the toolchain the build uses. `cmod init` sets up git and a package that runs, and joins the workspace it is created in. Workspace members matched by a glob build with their path dependencies. `cmod add`, `remove`, `tidy --apply` and `workspace add`/`remove` change only what they must in `cmod.toml`, keeping its comments and layout.
+
+Upgrading: workspace members are now named by their `[package] name`, so `-p crates/a` becomes `-p a`, and member build directories move (`build/debug/crates/a` → `build/debug/a`), so the first workspace build rebuilds those members. Two members sharing a package name are now an error. Run `cmod vendor` again to rewrite `vendor/` in the new layout. The first Clang build after upgrading may scan every source again. Manifest, lockfile and cache formats are unchanged.
+
 ### Fixed
 
 - **Every lockfile cmod writes verifies** — only `cmod resolve` recomputed the lockfile's integrity hash. `cmod remove` and `cmod add` kept the hash of the lockfile they loaded, so `cmod build --verify` rejected the lockfile they had just written ("integrity hash mismatch"). `cmod update` and a build's own resolve dropped the hash, which silently turned the check off. Saving a lockfile now always writes the hash of what it saves.
