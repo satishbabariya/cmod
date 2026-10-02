@@ -417,14 +417,19 @@ mod tests {
             vec!["github.com/fmtlib/fmt", "local_dep"]
         );
 
-        let uuid = sbom.serial_number.strip_prefix("urn:uuid:").unwrap();
-        let groups: Vec<&str> = uuid.split('-').collect();
+        let groups: Vec<&str> = sbom
+            .serial_number
+            .strip_prefix("urn:uuid:")
+            .unwrap()
+            .split('-')
+            .collect();
         assert_eq!(
             groups.iter().map(|g| g.len()).collect::<Vec<_>>(),
             vec![8, 4, 4, 4, 12]
         );
-        assert!(groups[2].starts_with('5'), "{}", uuid);
-        assert!("89ab".contains(&groups[3][..1]), "{}", uuid);
+        // Version 5, RFC 4122 variant.
+        assert_eq!(&groups[2][..1], "5");
+        assert!("89ab".contains(&groups[3][..1]));
     }
 
     #[test]
