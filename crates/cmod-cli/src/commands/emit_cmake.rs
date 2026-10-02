@@ -259,6 +259,19 @@ impl<'a> PackageGraph<'a> {
         if self.packages.iter().any(|p| p.kind == TargetKind::Shared) {
             out.push_str("set(CMAKE_POSITION_INDEPENDENT_CODE ON)\n");
         }
+        // Full BMIs, as `cmod build` makes with `--precompile`. CMake's
+        // one-pass compiles get reduced BMIs from newer Clangs, and Clang 23
+        // crashes importing some of those with libc++.
+        out.push_str(concat!(
+            "\n# Full BMIs, as `cmod build` makes.\n",
+            "if(CMAKE_CXX_COMPILER_ID MATCHES \"Clang\")\n",
+            "  include(CheckCXXCompilerFlag)\n",
+            "  check_cxx_compiler_flag(-fno-modules-reduced-bmi CMOD_FULL_BMI)\n",
+            "  if(CMOD_FULL_BMI)\n",
+            "    add_compile_options(-fno-modules-reduced-bmi)\n",
+            "  endif()\n",
+            "endif()\n",
+        ));
 
         let targets: BTreeMap<&Path, &str> = self
             .packages
