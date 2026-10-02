@@ -58,6 +58,9 @@ pub struct SbomComponent {
     /// Component type (library, application, etc.).
     #[serde(rename = "type")]
     pub component_type: String,
+    /// The identifier `dependencies` refer to the component by.
+    #[serde(rename = "bom-ref", skip_serializing_if = "Option::is_none", default)]
+    pub bom_ref: Option<String>,
     /// Package name.
     pub name: String,
     /// Package version.
@@ -114,6 +117,7 @@ pub fn generate_sbom(manifest: &Manifest, lockfile: &Lockfile) -> Result<Sbom, C
     // Build the top-level component
     let root_component = SbomComponent {
         component_type: "application".to_string(),
+        bom_ref: Some(manifest.package.name.clone()),
         name: manifest.package.name.clone(),
         version: manifest.package.version.clone(),
         purl: None,
@@ -145,13 +149,16 @@ pub fn generate_sbom(manifest: &Manifest, lockfile: &Lockfile) -> Result<Sbom, C
             });
         }
 
-        let mut hashes = Vec::new();
-        if let Some(ref hash) = pkg.hash {
-            hashes.push(SbomHash {
+        let hashes = pkg
+            .hash
+            .as_deref()
+            .and_then(sha256_hex_content)
+            .map(|content| SbomHash {
                 algorithm: "SHA-256".to_string(),
-                content: hash.clone(),
-            });
-        }
+                content,
+            })
+            .into_iter()
+            .collect();
 
         let purl = pkg
             .repo
@@ -160,6 +167,7 @@ pub fn generate_sbom(manifest: &Manifest, lockfile: &Lockfile) -> Result<Sbom, C
 
         components.push(SbomComponent {
             component_type: "library".to_string(),
+            bom_ref: Some(pkg.name.clone()),
             name: pkg.name.clone(),
             version: pkg.version.clone(),
             purl,
@@ -171,11 +179,18 @@ pub fn generate_sbom(manifest: &Manifest, lockfile: &Lockfile) -> Result<Sbom, C
         dep_map.insert(pkg.name.clone(), pkg.deps.clone());
     }
 
-    // Build dependency graph
+    // Build dependency graph. A reference must name a component of the
+    // BOM: a dependency the lockfile does not list is left out.
+    let listed = |name: &String| dep_map.contains_key(name);
     let mut dependencies = Vec::new();
 
     // Root depends on its direct deps
-    let root_deps: Vec<String> = manifest.dependencies.keys().cloned().collect();
+    let root_deps: Vec<String> = manifest
+        .dependencies
+        .keys()
+        .filter(|name| listed(name))
+        .cloned()
+        .collect();
     dependencies.push(SbomDependency {
         reference: manifest.package.name.clone(),
         depends_on: root_deps,
@@ -185,7 +200,7 @@ pub fn generate_sbom(manifest: &Manifest, lockfile: &Lockfile) -> Result<Sbom, C
     for (name, deps) in &dep_map {
         dependencies.push(SbomDependency {
             reference: name.clone(),
-            depends_on: deps.clone(),
+            depends_on: deps.iter().filter(|dep| listed(dep)).cloned().collect(),
         });
     }
 
@@ -262,16 +277,29 @@ fn simple_uuid(timestamp: &str, name: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(timestamp.as_bytes());
     hasher.update(name.as_bytes());
-    let hash = format!("{:x}", hasher.finalize());
-    // Format as UUID-ish: 8-4-4-4-12
+    let mut bytes: [u8; 16] = hasher.finalize()[..16].try_into().unwrap();
+    // RFC 4122, as CycloneDX requires of serial numbers: version 5 (a
+    // name-based UUID from a hash) and the RFC's variant.
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex = hex::encode(bytes);
     format!(
         "{}-{}-{}-{}-{}",
-        &hash[..8],
-        &hash[8..12],
-        &hash[12..16],
-        &hash[16..20],
-        &hash[20..32],
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32],
     )
+}
+
+/// The lockfile's content hash (`sha256:<hex>`) as CycloneDX hash content,
+/// which is the hex alone; `None` for anything else, such as the `local`
+/// of a path dependency.
+fn sha256_hex_content(hash: &str) -> Option<String> {
+    let hex = hash.strip_prefix("sha256:").unwrap_or(hash);
+    (hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| hex.to_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -333,9 +361,75 @@ mod tests {
             .unwrap()
             .contains("pkg:cmod/fmt@10.2.0"));
 
-        // Check hashes
-        assert_eq!(sbom.components[0].hashes.len(), 1);
-        assert_eq!(sbom.components[0].hashes[0].content, "deadbeef");
+        // `deadbeef` is no SHA-256: no hash is listed rather than an invalid one.
+        assert!(sbom.components[0].hashes.is_empty());
+        assert_eq!(sbom.components[0].bom_ref.as_deref(), Some("fmt"));
+    }
+
+    /// The BOM validates as CycloneDX 1.5: hash content is bare hex, every
+    /// reference names a component's `bom-ref`, and the serial number is an
+    /// RFC 4122 UUID.
+    #[test]
+    fn test_sbom_is_valid_cyclonedx() {
+        let mut manifest = cmod_core::manifest::default_manifest("myapp");
+        for name in ["github.com/fmtlib/fmt", "local_dep", "unlocked"] {
+            manifest.dependencies.insert(
+                name.to_string(),
+                cmod_core::manifest::Dependency::Simple("^1".to_string()),
+            );
+        }
+        let sha = "C04CE3C4779A073860C173C0F1478AE0736158D9223617AA3F6EEC5C97BDCF22";
+        let mut fmt = make_pkg(
+            "github.com/fmtlib/fmt",
+            "10.2.0",
+            Some("https://github.com/fmtlib/fmt"),
+        );
+        fmt.hash = Some(format!("sha256:{}", sha));
+        fmt.deps = vec!["local_dep".to_string(), "gone".to_string()];
+        let mut local = make_pkg("local_dep", "0.1.0", None);
+        local.hash = Some("local".to_string());
+        let lockfile = Lockfile {
+            version: 1,
+            integrity: None,
+            packages: vec![fmt, local],
+        };
+
+        let sbom = generate_sbom(&manifest, &lockfile).unwrap();
+        assert_eq!(
+            sbom.components[0].hashes[0].content,
+            sha.to_ascii_lowercase()
+        );
+        assert!(sbom.components[1].hashes.is_empty());
+
+        let refs: Vec<&str> = std::iter::once(&sbom.metadata.component)
+            .chain(&sbom.components)
+            .filter_map(|c| c.bom_ref.as_deref())
+            .collect();
+        assert_eq!(refs, vec!["myapp", "github.com/fmtlib/fmt", "local_dep"]);
+        for dep in &sbom.dependencies {
+            assert!(refs.contains(&dep.reference.as_str()), "{}", dep.reference);
+            for on in &dep.depends_on {
+                assert!(refs.contains(&on.as_str()), "dangling {}", on);
+            }
+        }
+        assert_eq!(
+            sbom.dependencies[0].depends_on,
+            vec!["github.com/fmtlib/fmt", "local_dep"]
+        );
+
+        let groups: Vec<&str> = sbom
+            .serial_number
+            .strip_prefix("urn:uuid:")
+            .unwrap()
+            .split('-')
+            .collect();
+        assert_eq!(
+            groups.iter().map(|g| g.len()).collect::<Vec<_>>(),
+            vec![8, 4, 4, 4, 12]
+        );
+        // Version 5, RFC 4122 variant.
+        assert_eq!(&groups[2][..1], "5");
+        assert!("89ab".contains(&groups[3][..1]));
     }
 
     #[test]
