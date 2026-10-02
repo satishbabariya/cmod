@@ -433,6 +433,52 @@ fn test_graph_json_format() {
     let _ = output;
 }
 
+/// `cmod graph` shows what each unit imports: partitions under their
+/// interface, and modules of dependencies named with the dependency.
+#[test]
+fn test_graph_shows_imports_and_dependencies() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("app");
+    let dep = tmp.path().join("shapes");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(dep.join("src")).unwrap();
+    fs::write(
+        root.join("cmod.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nshapes = { path = \"../shapes\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/lib.cppm"),
+        "export module app;\nexport import :parts;\nimport shapes;\n",
+    )
+    .unwrap();
+    fs::write(root.join("src/parts.cppm"), "export module app:parts;\n").unwrap();
+    fs::write(root.join("src/main.cpp"), "import app;\nint main() {}\n").unwrap();
+    fs::write(
+        dep.join("cmod.toml"),
+        "[package]\nname = \"shapes\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(dep.join("src/shapes.cppm"), "export module shapes;\n").unwrap();
+
+    let output = run_cmod(&root, &["graph"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "app\n└── src/main.cpp\n    └── app\n        ├── app:parts\n        └── shapes (dependency shapes)\n"
+    );
+
+    let output = run_cmod(&root, &["graph", "--format", "dot"]);
+    let dot = String::from_utf8_lossy(&output.stdout);
+    assert!(dot.contains("\"src/main.cpp\" -> \"app\";"), "{}", dot);
+    assert!(dot.contains("\"app\" -> \"shapes\";"), "{}", dot);
+}
+
 #[test]
 fn test_audit_no_deps() {
     let tmp = TempDir::new().unwrap();

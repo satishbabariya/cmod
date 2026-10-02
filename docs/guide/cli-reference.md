@@ -313,16 +313,26 @@ cmod search <QUERY> [--local-only]
 
 ### `cmod graph`
 
-Visualize the module dependency graph.
+Visualize the module dependency graph: each source of the package and what it imports. Interfaces and partitions are named by their module, other units by their path; modules of dependencies are shown with the dependency providing them.
 
 ```
 cmod graph [OPTIONS]
 ```
 
+```
+app
+└── src/main.cpp
+    └── app
+        ├── app:parts
+        └── shapes (dependency shapes)
+```
+
+The tree starts from the units nothing else imports (sources with `main`, implementation units, exported interfaces); a unit already shown is marked `(*)`. `--format dot` draws the same edges, with dependency modules dashed; `--format json` keys each unit by the same name.
+
 | Option | Description |
 |--------|-------------|
 | `--format <FORMAT>` | Output format: `ascii` (default), `dot`, `json` |
-| `--filter <PATTERN>` | Filter modules matching a pattern |
+| `--filter <PATTERN>` | Start from the units whose name contains the pattern |
 | `--status` | Show build status annotations (up-to-date, needs-rebuild, never-built) |
 | `--critical-path` | Highlight the critical path (longest compile chain) |
 | `--timing` | Annotate nodes with build timing (color-coded by duration) |
